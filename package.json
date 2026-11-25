@@ -2,9 +2,15 @@
   "name": "engineering-workbench-web",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": ">=22.9" },
+  "engines": {
+    "node": ">=22.9"
+  },
   "scripts": {
     "start": "node --env-file=.env server.mjs",
-    "check": "node --check server.mjs && node --check backend/store.mjs && node --check backend/accounts.mjs && node --check backend/records.mjs && node --check public/app.mjs && node --check public/export.mjs"
+    "wecom:bridge": "node --env-file-if-exists=.env integrations/fae-wecom-bridge/index.mjs",
+    "check": "node --check server.mjs && node --check backend/store.mjs && node --check backend/accounts.mjs && node --check backend/records.mjs && node --check public/app.mjs && node --check public/export.mjs && node --check integrations/fae-wecom-bridge/bridge.mjs && node --check integrations/fae-wecom-bridge/index.mjs"
+  },
+  "dependencies": {
+    "@wecom/aibot-node-sdk": "1.0.7"
   }
 }

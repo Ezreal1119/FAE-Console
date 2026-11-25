@@ -28,6 +28,20 @@ npm start
 - systemd 配置要求通过 HTTPS 使用登录会话。用本地端口检查服务时，首页仍可访问。
 - 附件单文件最多 20 MB。周任务可导出 ZIP，内含 CSV 和有权限下载的附件。原桌面版的本地附件需从原电脑重新上传。
 
+## 企业微信机器人
+
+`fae-wecom-bridge.service` 独立运行，通过企业微信智能机器人的 WebSocket 长连接收发消息。在机器人会话里发送 `/test`，机器人回复 `hello`。
+
+在 `/opt/fae-console/.env` 增加以下配置，使用专门为 FAE 配置的智能机器人长连接凭据。
+
+```dotenv
+WECOM_ENABLED=true
+WECOM_BOT_ID=你的机器人ID
+WECOM_BOT_SECRET=你的机器人Secret
+```
+
+首次安装 Bridge 需要在项目根目录运行 `npm ci --omit=dev`，安装 `deploy/fae-wecom-bridge.service` 并执行 `systemctl daemon-reload`。配置或更换凭据后执行 `systemctl restart fae-wecom-bridge`。运行日志可用 `journalctl -u fae-wecom-bridge -n 30 --no-pager` 查看。本地测试用 `npm run wecom:bridge`。
+
 ```bash
 npm run check
 ```

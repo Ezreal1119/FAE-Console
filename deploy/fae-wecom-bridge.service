@@ -1,0 +1,22 @@
+[Unit]
+Description=FAE Console WeCom Bridge
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fae-console
+EnvironmentFile=/opt/fae-console/.env
+UnsetEnvironment=ADMIN_ACCOUNT ADMIN_PASSWORD ADMIN_NAME
+ExecStart=/usr/bin/env node /opt/fae-console/integrations/fae-wecom-bridge/index.mjs
+DynamicUser=yes
+UMask=0077
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
