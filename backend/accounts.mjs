@@ -48,10 +48,10 @@ function publicAccount(user) {
   return { id, account, name, role, must_change_pwd, created_at };
 }
 
-function addAccount(db, account, name, password, role = '成员', mustChangePassword = false) {
+function addMemberAccount(db, account, name, password, mustChangePassword = false) {
   if (db.users.some(user => user.account === account)) throw new RequestError(409, '此登录账号已存在。');
   const user = {
-    id: db.seq.user++, account, name, role, ...credentials(password),
+    id: db.seq.user++, account, name, role: '成员', ...credentials(password),
     must_change_pwd: mustChangePassword, created_at: now()
   };
   db.users.push(user);
@@ -81,24 +81,55 @@ function createSession(db, user) {
   return { token, user: publicAccount(user) };
 }
 
-export function openAccounts(store, settings) {
-  if (!store.read().users.length) {
-    const account = settings.ADMIN_ACCOUNT || 'admin';
-    if (!settings.ADMIN_PASSWORD) throw new Error('首次启动请设置 ADMIN_PASSWORD（至少 12 位）。');
+function configureAdmin(store, settings) {
+  if (!settings.ADMIN_ACCOUNT || !settings.ADMIN_PASSWORD) {
+    throw new Error('启动前请在环境文件设置 ADMIN_ACCOUNT 和 ADMIN_PASSWORD（至少 12 位）。');
+  }
+  const account = accountName(settings.ADMIN_ACCOUNT);
+  const adminCredentials = credentials(passwordValue(settings.ADMIN_PASSWORD, 12));
+  const { users, sessions } = store.read();
+  const admins = users.filter(isAdmin);
+  if (admins.length > 1) throw new Error('数据库中有多个管理员，无法确定环境文件对应的账号。');
+  const [current] = admins;
+  if (users.some(user => user.id !== current?.id && user.account === account)) {
+    throw new Error('ADMIN_ACCOUNT 与现有成员账号重复。');
+  }
+  const name = requiredName(settings.ADMIN_NAME || current?.name || '管理员');
+
+  if (!current || current.account !== account || current.name !== name || current.must_change_pwd !== false ||
+      Object.hasOwn(current, 'salt') || Object.hasOwn(current, 'hash') ||
+      sessions.some(session => session.user_id === current.id)) {
     store.update(db => {
-      const user = addAccount(db, accountName(account), requiredName(settings.ADMIN_NAME || '管理员'),
-        passwordValue(settings.ADMIN_PASSWORD, 12), '管理员');
-      addProfile(db, user);
+      if (!current) {
+        const user = { id: db.seq.user++, account, name, role: '管理员', must_change_pwd: false, created_at: now() };
+        db.users.push(user);
+        addProfile(db, user);
+        return;
+      }
+      const user = db.users.find(item => item.id === current.id);
+      Object.assign(user, { account, name, must_change_pwd: false });
+      delete user.salt;
+      delete user.hash;
+      db.sessions = db.sessions.filter(session => session.user_id !== user.id);
+
+      const profile = db.profiles.find(item => item.owner_id === user.id);
+      if (profile && current.account !== account && profile.emp_no === current.account) {
+        Object.assign(profile, { emp_no: account, updated_at: now() });
+      }
     });
   }
+  return adminCredentials;
+}
 
+export function openAccounts(store, settings) {
+  const adminCredentials = configureAdmin(store, settings);
   const dummy = credentials(randomBytes(24).toString('base64url'));
 
   return {
     signIn({ account, password }) {
       const value = passwordValue(password, 1);
       const user = store.read().users.find(item => item.account === accountName(account));
-      const valid = verify(value, user || dummy);
+      const valid = verify(value, user && isAdmin(user) ? adminCredentials : user || dummy);
       if (!user || !valid) throw new RequestError(401, '账号或密码不正确。');
       return store.update(db => createSession(db, user));
     },
@@ -106,7 +137,7 @@ export function openAccounts(store, settings) {
     register({ account, name, password }) {
       if (settings.ALLOW_REGISTRATION === '0') throw new RequestError(403, '当前关闭自助注册，请联系管理员。');
       return store.update(db => {
-        const user = addAccount(db, accountName(account), requiredName(name), passwordValue(password));
+        const user = addMemberAccount(db, accountName(account), requiredName(name), passwordValue(password));
         addProfile(db, user);
         return createSession(db, user);
       });
@@ -132,6 +163,7 @@ export function openAccounts(store, settings) {
 
     changePassword(session, { oldPassword, newPassword }, first) {
       const user = session.user;
+      if (isAdmin(user)) throw new RequestError(403, '管理员密码由服务器环境文件管理。');
       if (Boolean(user.must_change_pwd) !== first) {
         throw new RequestError(403, first ? '当前账号无需首次改密。' : '请先设置首次登录密码。');
       }
@@ -155,7 +187,7 @@ export function openAccounts(store, settings) {
     addMember(fields) {
       const temporaryPassword = randomBytes(12).toString('base64url');
       return store.update(db => {
-        const user = addAccount(db, accountName(fields.emp_no), requiredName(fields.name), temporaryPassword, '成员', true);
+        const user = addMemberAccount(db, accountName(fields.emp_no), requiredName(fields.name), temporaryPassword, true);
         const profile = addProfile(db, user, fields);
         return { user: publicAccount(user), profile, temporaryPassword };
       });

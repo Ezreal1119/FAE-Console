@@ -358,7 +358,9 @@ function peoplePage() {
     (admin() ? panel('登录账号', table(accountHeaders, accountsRows(), '暂无账号。')) : '');
 }
 function accountPage() {
-  return heading('我的账号', '查看登录信息和修改密码。', action('修改密码', 'password', '', 'button primary')) +
+  const description = admin() ? '管理员密码由服务器环境文件管理。' : '查看登录信息和修改密码。';
+  const actions = admin() ? '' : action('修改密码', 'password', '', 'button primary');
+  return heading('我的账号', description, actions) +
     panel('账号信息', details([['账号', state.user.account], ['姓名', myName()], ['系统权限', state.user.role]]));
 }
 
