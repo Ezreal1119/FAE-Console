@@ -4,7 +4,7 @@
 
 ## 本地启动
 
-在仓库根目录的 `.env.local` 中设置管理员凭证。
+在仓库根目录的 `.env` 中设置管理员凭证。
 
 ```dotenv
 ADMIN_ACCOUNT=admin
@@ -23,7 +23,7 @@ npm start
 
 ## 阿里云部署配置
 
-- `deploy/fae-console.service` 由 systemd 管理，假定项目位于 `/opt/fae-console`。运行数据写入 `/var/lib/fae-console`，管理员凭证由 `/etc/fae-console.env` 提供。环境文件应只允许 root 读取。升级已有实例前，请先确保该文件同时包含 `ADMIN_ACCOUNT` 和 `ADMIN_PASSWORD`。
+- `deploy/fae-console.service` 由 systemd 管理，假定项目位于 `/opt/fae-console`。运行数据写入 `/var/lib/fae-console`，管理员凭证由项目根目录的 `/opt/fae-console/.env` 提供。环境文件应只允许 root 读取，并包含 `ADMIN_ACCOUNT` 和 `ADMIN_PASSWORD`。已有实例升级时，将旧环境文件里的值带到项目根目录，再重新安装服务定义并执行 `systemctl daemon-reload` 和 `systemctl restart fae-console`。
 - `deploy/fae-console.conf` 为 `fae-work-console.patrick-shenzhen.cn` 提供入口，并将网页和 API 一并转发至 `127.0.0.1:4173`。启用前请确认 DNS 和服务器防火墙，HTTPS 由 Certbot 配置。
 - systemd 配置要求通过 HTTPS 使用登录会话。用本地端口检查服务时，首页仍可访问。
 - 附件单文件最多 20 MB。周任务可导出 ZIP，内含 CSV 和有权限下载的附件。原桌面版的本地附件需从原电脑重新上传。
