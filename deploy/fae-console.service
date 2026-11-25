@@ -1,0 +1,20 @@
+[Unit]
+Description=FAE Console
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fae-console
+Environment=HOST=127.0.0.1 PORT=4173 SECURE_COOKIE=1 TRUST_PROXY=1 DATA_DIR=/var/lib/fae-console
+EnvironmentFile=-/etc/fae-console.env
+ExecStart=/usr/bin/env node /opt/fae-console/server.mjs
+DynamicUser=yes
+StateDirectory=fae-console
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

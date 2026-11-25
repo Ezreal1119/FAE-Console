@@ -5,6 +5,6 @@
   "engines": { "node": ">=22.9" },
   "scripts": {
     "start": "node --env-file-if-exists=.env.local server.mjs",
-    "check": "node --check server.mjs && node --check public/app.mjs && node --check public/export.mjs"
+    "check": "node --check server.mjs && node --check backend/store.mjs && node --check backend/accounts.mjs && node --check backend/records.mjs && node --check public/app.mjs && node --check public/export.mjs"
   }
 }

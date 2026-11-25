@@ -1,20 +1,33 @@
 # 工程小管家 Web
 
-使用 Node.js 22.9 或更高版本，无需安装第三方依赖。
+需要 Node.js 22.9 或更高版本。Web 页面和 API 在同一个 Node.js 进程内运行。
 
-    npm start
+## 本地启动
 
-打开 http://127.0.0.1:4173，使用现有工程小管家账号登录。项目默认连接桌面端使用的 WorkBuddy API。WorkBuddy 的分享访问码放在本机的 .env.local，服务端转发时使用，浏览器页面不包含访问码。换电脑时，从有权限的原发布配置取值，设置 WORKBUDDY_SHARE_CODE。也可用 WORKBUDDY_URL 指向兼容的自建 API，用 PORT 修改本地端口。
+在仓库根目录的 `.env.local` 中设置首次启动账号：
 
-## 功能
+```dotenv
+ADMIN_ACCOUNT=admin
+ADMIN_PASSWORD=填写至少12位的自选密码
+```
 
-- 工作台展示自己的待办、逾期任务、当周完成工时和任务状态。
-- 任务中心支持搜索、筛选、查看、创建、编辑、状态推进和删除，权限沿用 WorkBuddy API。
-- 需求管理支持登记、搜索、编辑和授权删除。
-- 人员管理支持个人档案、成员档案、岗位和团队选项，以及管理员添加、重置和删除账号。新增的团队与岗位备选项保存在当前浏览器，成员档案仍由后端共享。标记离职只变更档案状态。
-- 看板从任务记录汇总完成率、交付率、工时、状态分布和人员负载。
-- 新附件上传 WorkBuddy，单文件限 20MB。原桌面版留在本机的附件需要从原电脑重新上传。周任务导出为 ZIP，包内包含 CSV、可下载附件及未能下载的附件说明。
+首次启动会创建管理员和空业务库。库已初始化后，可以从环境文件移除管理员密码。应用会继续使用数据库里的账号。可选的 `ADMIN_NAME` 用于设置初始显示姓名。
 
-Web 服务不另建业务数据库。在线记录读写取决于 WorkBuddy 上现有账号及其权限。应用默认绑定本机环回地址。通过 HTTPS 部署时，设置 SECURE_COOKIE=1 启用安全会话 Cookie。
+```bash
+npm start
+```
 
-    npm run check
+打开 http://127.0.0.1:4173。可用 `HOST`、`PORT` 和 `DATA_DIR` 修改监听地址、端口和数据目录。默认数据目录为项目下的 `data/`，其中 `db.json` 保存账号、人员档案、任务、需求和会话，`attachments/` 保存任务附件。备份应同时包含两者。这个 JSON 数据库由单个服务进程写入。
+
+管理员建号或重置密码时，界面会显示生成的临时密码，成员登录后须修改。默认开启自助注册，设置 `ALLOW_REGISTRATION=0` 可以关闭。
+
+## 阿里云部署配置
+
+- `deploy/fae-console.service` 由 systemd 管理，假定项目位于 `/opt/fae-console`。运行数据写入 `/var/lib/fae-console`，可从 `/etc/fae-console.env` 读取首次启动配置。环境文件应只允许 root 读取。
+- `deploy/fae-console.conf` 为 `fae-work-console.patrick-shenzhen.cn` 提供入口，并将网页和 API 一并转发至 `127.0.0.1:4173`。启用前请确认 DNS 和服务器防火墙，HTTPS 由 Certbot 配置。
+- systemd 配置要求通过 HTTPS 使用登录会话。用本地端口检查服务时，首页仍可访问。
+- 附件单文件最多 20 MB。周任务可导出 ZIP，内含 CSV 和有权限下载的附件。原桌面版的本地附件需从原电脑重新上传。
+
+```bash
+npm run check
+```

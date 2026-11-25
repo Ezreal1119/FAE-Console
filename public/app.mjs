@@ -47,7 +47,7 @@ async function request(url, options = {}) {
   const session = state.user;
   const response = await fetch(url, {
     method: options.method || 'GET',
-    headers: options.file ? { 'X-File-Extension': options.file.name.split('.').pop() } : options.body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
     body: options.file || (options.body ? JSON.stringify(options.body) : undefined)
   }).catch(() => { throw new Error('无法连接工作台服务，请稍后再试。'); });
   const type = response.headers.get('Content-Type') || '';
@@ -114,7 +114,7 @@ function weekRange() {
 function inWeek(value, [from, to]) { return value >= from && value <= to; }
 function overdue(task) { return task.status !== '已完成' && task.dueDate && task.dueDate < isoDate(); }
 function ownTask(task) {
-  return same(task.creator_id ?? task.owner_id, state.user.id) || (!!task.owner_name && task.owner_name === myName());
+  return same(task.creator_id ?? task.owner_id, state.user.id) || same(task.assignee_id, state.user.id);
 }
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
 function canDeleteDemand(demand) { return admin() || same(demand.creator_id ?? demand.owner_id, state.user.id); }
@@ -490,7 +490,7 @@ function taskForm(task = {}) {
     if (values.file?.name) {
       if (!values.file.size || values.file.size > 20 * 1024 * 1024) throw new Error('请选择不超过 20MB 的非空附件。');
       const uploaded = await request('/api/upload', { method: 'POST', file: values.file });
-      Object.assign(patch, { attachment_path: uploaded.path, attachment_name: values.file.name, attach: values.file.name, attachPath: uploaded.path });
+      Object.assign(patch, { attachment_path: uploaded.path, attachment_name: values.file.name });
     }
     const saved = await saveRow('tasks', patch, task.id);
     updateRow('tasks', normalizeTask(saved));
@@ -548,22 +548,31 @@ function personForm(row = { display_name: state.user.name, emp_no: state.user.ac
   });
 }
 function accountAdd() {
-  modalForm('添加成员', '工号作为登录账号。成员首次登录时需设置新密码。', profileFields({}, true), async values => {
+  modalForm('添加成员', '工号作为登录账号。创建后会显示一次临时密码。', profileFields({}, true), async values => {
     const { display_name, ...rest } = values;
-    await post('/api/admin/add-member', { ...rest, name: display_name });
+    const result = await post('/api/admin/add-member', { ...rest, name: display_name });
     await refresh();
+    if (!state.user) return;
+    showTemporaryPassword(result, '成员账号已创建');
     toast('成员账号和档案已创建。');
   }, { submit: '创建成员' });
 }
 function accountReset(id) {
   const account = getRow('accounts', id);
-  modalForm('重置账号', '密码留空会重置为初始密码，并要求成员首次登录时修改。', '<div class="form-grid">' +
+  modalForm('重置账号', '密码留空时会生成新的临时密码，成员首次登录后须修改。', '<div class="form-grid">' +
     field('登录账号', 'account', account.account, 'required maxlength="100"') + field('姓名', 'name', account.name, 'required maxlength="100"') + '</div>' +
     field('新密码', 'password', '', 'type="password" minlength="6" autocomplete="new-password"'), async values => {
-    await post('/api/admin/reset-account', { ...values, userId: account.id, resetPassword: !values.password });
+    const result = await post('/api/admin/reset-account', { ...values, userId: account.id, resetPassword: !values.password });
     await refresh();
+    if (state.user && result.temporaryPassword) showTemporaryPassword(result, '已生成新的临时密码');
     toast('账号已重置。');
   });
+}
+function showTemporaryPassword(result, title) {
+  modal(title, '请将临时密码交给该成员。关闭后可通过重置账号生成新密码。',
+    field('登录账号', 'account', result.user.account, 'readonly') +
+    field('临时密码', 'temporaryPassword', result.temporaryPassword, 'readonly') +
+    '<div class="dialog-actions">' + action('完成', 'close', '', 'button primary') + '</div>');
 }
 function catalog(kind) {
   const label = dictionaries[kind];
@@ -699,6 +708,9 @@ function updateFilter(event) {
 content.addEventListener('input', updateFilter);
 dialog.addEventListener('cancel', event => {
   if (dialog.dataset.locked === 'true') event.preventDefault();
+});
+dialog.addEventListener('close', () => {
+  if (!dialog.open) dialog.replaceChildren();
 });
 $('#auth-form').addEventListener('submit', async event => {
   event.preventDefault();
