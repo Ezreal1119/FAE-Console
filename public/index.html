@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="工程小管家研发工程部协作平台">
+  <meta name="theme-color" content="#152247">
+  <title>工程小管家</title>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <main id="auth-view" class="auth-page" hidden>
+    <section class="auth-brand">
+      <div class="brand"><span class="brand-mark">工</span><span>工程小管家</span></div>
+      <div class="auth-intro">
+        <h1>研发工程部<br>协作工作台</h1>
+        <p>集中跟进任务、需求和团队投入。</p>
+        <div class="auth-flow" aria-hidden="true">
+          <span><i class="dot dot-plan"></i>待规划</span>
+          <span><i class="dot dot-start"></i>开发中</span>
+          <span><i class="dot dot-test"></i>测试中</span>
+          <span><i class="dot dot-done"></i>已完成</span>
+        </div>
+      </div>
+    </section>
+    <section class="auth-panel" aria-label="账号登录">
+      <div class="auth-inner">
+        <div class="auth-tabs">
+          <button type="button" class="auth-tab active" data-auth="login">账号登录</button>
+          <button type="button" class="auth-tab" data-auth="register">注册成员</button>
+        </div>
+        <h2 id="auth-title">登录工作台</h2>
+        <form id="auth-form">
+          <label>账号<input name="account" autocomplete="username" placeholder="请输入工号或用户名" required></label>
+          <label id="auth-name" hidden>姓名<input name="name" autocomplete="name" placeholder="请输入姓名" disabled></label>
+          <label>密码<input name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required></label>
+          <p id="auth-error" class="form-error" role="alert" hidden></p>
+          <button class="button primary auth-submit" type="submit" id="auth-submit">登录</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <div id="loading-view" class="loading-view" role="status">正在连接工程小管家…</div>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">工</span><span>工程小管家<small>研发工程部</small></span></div>
+      <nav aria-label="主导航">
+        <button class="nav-item" data-page="home"><span class="nav-icon" aria-hidden="true">▦</span>工作台</button>
+        <button class="nav-item" data-page="tasks"><span class="nav-icon" aria-hidden="true">☷</span>任务中心</button>
+        <button class="nav-item" data-page="demands"><span class="nav-icon" aria-hidden="true">◇</span>需求管理</button>
+        <button class="nav-item" data-page="people"><span class="nav-icon" aria-hidden="true">◎</span>人员管理</button>
+        <button class="nav-item" data-page="board"><span class="nav-icon" aria-hidden="true">▥</span>数据看板</button>
+        <button class="nav-item" data-page="account"><span class="nav-icon" aria-hidden="true">◉</span>我的账号</button>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="avatar" class="avatar"></span>
+        <span class="sidebar-user"><strong id="user-name"></strong><small id="user-role"></small></span>
+        <button type="button" class="signout" data-action="logout">退出</button>
+      </div>
+    </aside>
+    <main class="workspace-main">
+      <header class="topbar"><span>研发工程部</span><time id="today"></time></header>
+      <section id="content" class="content" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
