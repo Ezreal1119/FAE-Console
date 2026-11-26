@@ -40,6 +40,8 @@ function text(value) {
 }
 const shown = value => text(value == null || value === '' ? '—' : value);
 const admin = () => state.user?.role === '管理员';
+const primaryAdmin = () => state.user?.is_primary_admin === true;
+const accountRole = account => account.is_primary_admin ? '超级管理员' : account.role;
 const same = (a, b) => a != null && b != null && String(a) === String(b);
 const mineProfile = () => state.profiles.find(person => same(person.owner_id, state.user?.id));
 const myName = () => mineProfile()?.display_name || state.user?.name || '';
@@ -139,7 +141,10 @@ function ownTask(task) {
 }
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
 function canUpdateTaskProgress(task) { return canEditTask(task) || same(task.assignee_id, state.user.id); }
-function canEditProfile(person) { return admin() || same(person.owner_id, state.user.id); }
+function canEditProfile(person) {
+  return same(person.owner_id, state.user.id) ||
+    (admin() && !state.accounts.some(account => account.is_primary_admin && same(account.id, person.owner_id)));
+}
 function canManageDemand(demand) { return admin() || same(demand.creator_id ?? demand.owner_id, state.user.id); }
 function canDeleteDemand(demand) { return admin() || (canManageDemand(demand) && !demand.linked_tasks?.length); }
 const collaboratorNames = task => (task.collaborators || []).map(person => person.name).join('、');
@@ -225,7 +230,7 @@ function showWorkspace() {
   const label = myName() || state.user.account;
   $('#avatar').textContent = label.slice(0, 1);
   $('#user-name').textContent = label;
-  $('#user-role').textContent = state.user.role;
+  $('#user-role').textContent = accountRole(state.user);
   $('#today').dateTime = isoDate();
   $('#today').textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'full' }).format(new Date());
 }
@@ -514,8 +519,13 @@ function catalogOptions(kind) {
 }
 const peopleHeaders = ['姓名 / 工号', '团队', '岗位', '状态', '进行中任务', '操作'];
 const accountHeaders = ['登录账号', '姓名', '权限', '密码状态', '操作'];
+function adminRoleAction(account) {
+  if (!primaryAdmin() || !account || account.is_primary_admin) return '';
+  return action(account.role === '管理员' ? '取消授权管理员' : '授权管理员', 'account-admin-role', account.id, 'link');
+}
 function peopleRows() {
   const { peopleQuery, peopleTeam } = state.filters;
+  const accounts = new Map(state.accounts.map(account => [account.id, account]));
   return state.profiles.filter(person => (!peopleTeam || person.team === peopleTeam) &&
     hasText(peopleQuery, person.display_name, person.emp_no, person.team, person.role, person.duty)).map(person => {
     const self = same(person.owner_id, state.user.id);
@@ -523,23 +533,27 @@ function peopleRows() {
     const active = editable ? state.tasks.filter(task => task.status !== '已完成' &&
       (task.assignee_id == null ? task.owner_name === person.display_name : same(task.assignee_id, person.owner_id))) : null;
     const edit = editable ? action('编辑', 'person-edit', person.id, 'link') : '';
-    const management = admin() && !self ? action(person.status === '已离职' ? '恢复在职' : '标记离职', 'person-status', person.id, 'link') +
+    const management = editable && admin() && !self ? action(person.status === '已离职' ? '恢复在职' : '标记离职', 'person-status', person.id, 'link') +
       action('删档案', 'person-delete', person.id, 'link danger') : '';
+    const authorization = adminRoleAction(accounts.get(person.owner_id));
     return `<tr>
       <td>${action(person.display_name || '未填写姓名', 'person-detail', person.id, 'link')}<small class="muted">${shown(person.emp_no)}</small></td>
       <td>${shown(person.team)}</td><td>${shown(person.role)}</td><td>${statusBadge(person.status)}</td>
       <td>${active ? `${active.length} 项 <small class="muted">${sumHours(active)}h</small>` : '—'}</td>
-      <td><div class="row-actions">${edit + management || '—'}</div></td>
+      <td><div class="row-actions">${edit + authorization + management || '—'}</div></td>
     </tr>`;
   }).join('');
 }
 function accountsRows() {
   return state.accounts.map(account => {
-    const wecom = action(account.wecom_userid ? '编辑企微 ID' : '绑定企微 ID', 'account-wecom', account.id, 'link');
+    const person = personFor(account);
+    const wecom = !account.is_primary_admin || primaryAdmin()
+      ? action(account.wecom_userid ? '编辑企微 ID' : '绑定企微 ID', 'account-wecom', account.id, 'link') : '';
     const manage = account.role !== '管理员'
       ? action('重置账号', 'account-reset', account.id, 'link') + action('删账号', 'account-delete', account.id, 'link danger') : '';
-    return `<tr><td>${shown(account.account)}</td><td>${shown(personFor(account)?.display_name || account.name)}</td><td>${shown(account.role)}</td>
-      <td>${account.must_change_pwd ? '<span class="tag test">待首次改密</span>' : '已设置'}</td><td><div class="row-actions">${wecom + manage}</div></td></tr>`;
+    const authorization = person ? '' : adminRoleAction(account);
+    return `<tr><td>${shown(account.account)}</td><td>${shown(person?.display_name || account.name)}</td><td>${shown(accountRole(account))}</td>
+      <td>${account.must_change_pwd ? '<span class="tag test">待首次改密</span>' : '已设置'}</td><td><div class="row-actions">${wecom + authorization + manage || '—'}</div></td></tr>`;
   }).join('');
 }
 function peoplePage() {
@@ -553,10 +567,10 @@ function peoplePage() {
     (admin() ? panel('登录账号', table(accountHeaders, accountsRows(), '暂无账号。')) : '');
 }
 function accountPage() {
-  const description = admin() ? '管理员密码由服务器环境文件管理。' : '查看登录信息和修改密码。';
-  const actions = admin() ? '' : action('修改密码', 'password', '', 'button primary');
+  const description = primaryAdmin() ? '超级管理员密码由服务器环境文件管理。' : '查看登录信息和修改密码。';
+  const actions = primaryAdmin() ? '' : action('修改密码', 'password', '', 'button primary');
   return heading('我的账号', description, actions) +
-    panel('账号信息', details([['账号', state.user.account], ['姓名', myName()], ['系统权限', state.user.role]]));
+    panel('账号信息', details([['账号', state.user.account], ['姓名', myName()], ['系统权限', accountRole(state.user)]]));
 }
 
 function guidelinesTable({ caption, rows, form }, label) {
@@ -1391,6 +1405,20 @@ function accountReset(id) {
     toast('账号已重置。');
   });
 }
+function changeAccountAdminRole(id) {
+  if (!primaryAdmin()) return;
+  const account = getRow('accounts', id);
+  if (account.is_primary_admin) return;
+  const grant = account.role !== '管理员';
+  const title = grant ? '授权管理员' : '取消授权管理员';
+  const name = (personFor(account)?.display_name || account.name) + ' · ' + account.account;
+  const message = '确定将「' + name + '」' + (grant ? '设为管理员' : '还原为普通成员') + '？对方需要重新登录。';
+  modalForm(title, message, '', async () => {
+    await post('/api/admin/member-role', { userId: account.id, grant });
+    await refresh();
+    toast(grant ? '已授权管理员。' : '已取消管理员授权。');
+  }, { submit: grant ? '确认授权' : '确认取消授权' });
+}
 function accountWecom(id) {
   const account = getRow('accounts', id);
   modalForm('绑定企业微信', '为「' + account.account + '」填写企业微信通讯录中的成员 UserID。留空保存可解除绑定。',
@@ -1541,6 +1569,7 @@ const actions = {
     toast('成员档案状态已更新。');
   },
   'account-add': accountAdd, 'account-import': accountImport, 'account-reset': accountReset, 'account-wecom': accountWecom,
+  'account-admin-role': changeAccountAdminRole,
   'account-delete': id => {
     const row = getRow('accounts', id);
     confirmDelete('删除成员账号', '确定删除「' + row.account + '」的账号和档案？已登记的任务会保留。', async () => {

@@ -5,6 +5,7 @@ import { memberImportErrors } from './member-import.mjs';
 
 export const sessionSeconds = 30 * 86400;
 export const isAdmin = user => user.role === '管理员';
+export const isPrimaryAdmin = user => isAdmin(user) && user.primary_admin === true;
 export const now = () => new Date().toISOString();
 const cryptoOptions = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const derivePassword = promisify(scrypt);
@@ -49,7 +50,7 @@ function verify(password, user) {
 
 function publicAccount(user) {
   const { id, account, name, role, must_change_pwd, created_at } = user;
-  return { id, account, name, role, must_change_pwd, created_at };
+  return { id, account, name, role, must_change_pwd, created_at, is_primary_admin: isPrimaryAdmin(user) };
 }
 
 function addMemberAccount(db, account, name, passwordHash, mustChangePassword = false) {
@@ -123,26 +124,27 @@ function configureAdmin(store, settings) {
   const account = accountName(settings.ADMIN_ACCOUNT);
   const adminCredentials = credentials(passwordValue(settings.ADMIN_PASSWORD, 12));
   const { users, sessions } = store.read();
-  const admins = users.filter(isAdmin);
-  if (admins.length > 1) throw new Error('数据库中有多个管理员，无法确定环境文件对应的账号。');
-  const [current] = admins;
+  const primaryAdmins = users.filter(user => user.primary_admin === true);
+  const candidates = primaryAdmins.length ? primaryAdmins : users.filter(isAdmin);
+  if (candidates.length > 1) throw new Error('无法唯一确定环境文件对应的超级管理员账号。');
+  const [current] = candidates;
   if (users.some(user => user.id !== current?.id && user.account === account)) {
     throw new Error('ADMIN_ACCOUNT 与现有成员账号重复。');
   }
   const name = requiredName(settings.ADMIN_NAME || current?.name || '管理员');
 
-  if (!current || current.account !== account || current.name !== name || current.must_change_pwd !== false ||
+  if (!current || !isPrimaryAdmin(current) || current.account !== account || current.name !== name || current.must_change_pwd !== false ||
       Object.hasOwn(current, 'salt') || Object.hasOwn(current, 'hash') ||
       sessions.some(session => session.user_id === current.id)) {
     store.update(db => {
       if (!current) {
-        const user = { id: db.seq.user++, account, name, role: '管理员', must_change_pwd: false, created_at: now() };
+        const user = { id: db.seq.user++, account, name, role: '管理员', primary_admin: true, must_change_pwd: false, created_at: now() };
         db.users.push(user);
         addProfile(db, user);
         return;
       }
       const user = db.users.find(item => item.id === current.id);
-      Object.assign(user, { account, name, must_change_pwd: false });
+      Object.assign(user, { account, name, role: '管理员', primary_admin: true, must_change_pwd: false });
       delete user.salt;
       delete user.hash;
       db.sessions = db.sessions.filter(session => session.user_id !== user.id);
@@ -167,7 +169,7 @@ export function openAccounts(store, settings, { guidelinesEnabled = false } = {}
     signIn({ account, password }) {
       const value = passwordValue(password, 1);
       const user = store.read().users.find(item => item.account === accountName(account));
-      const valid = verify(value, user && isAdmin(user) ? adminCredentials : user || dummy);
+      const valid = verify(value, user && isPrimaryAdmin(user) ? adminCredentials : user || dummy);
       if (!user || !valid) throw new RequestError(401, '账号或密码不正确。');
       return store.update(db => createSession(db, user, guidelinesEnabled));
     },
@@ -209,7 +211,7 @@ export function openAccounts(store, settings, { guidelinesEnabled = false } = {}
 
     changePassword(session, { oldPassword, newPassword }, first) {
       const user = session.user;
-      if (isAdmin(user)) throw new RequestError(403, '管理员密码由服务器环境文件管理。');
+      if (isPrimaryAdmin(user)) throw new RequestError(403, '超级管理员密码由服务器环境文件管理。');
       if (Boolean(user.must_change_pwd) !== first) {
         throw new RequestError(403, first ? '当前账号无需首次改密。' : '请先设置首次登录密码。');
       }
@@ -232,7 +234,24 @@ export function openAccounts(store, settings, { guidelinesEnabled = false } = {}
       })) };
     },
 
-    setWecomUserId({ userId, wecomUserId }) {
+    setAdminRole(actor, { userId, grant }) {
+      if (!isPrimaryAdmin(actor)) throw new RequestError(403, '仅超级管理员可以调整管理员权限。');
+      if (!Number.isSafeInteger(userId) || typeof grant !== 'boolean') {
+        throw new RequestError(400, '成员编号或授权操作无效。');
+      }
+      return store.update(db => {
+        const user = db.users.find(item => item.id === userId);
+        if (!user) throw new RequestError(404, '未找到成员账号。');
+        if (isPrimaryAdmin(user)) throw new RequestError(403, '超级管理员的权限由服务器配置管理。');
+        if (isAdmin(user) !== grant) {
+          user.role = grant ? '管理员' : '成员';
+          db.sessions = db.sessions.filter(session => session.user_id !== user.id);
+        }
+        return { user: publicAccount(user) };
+      });
+    },
+
+    setWecomUserId(actor, { userId, wecomUserId }) {
       if (!Number.isSafeInteger(userId) || typeof wecomUserId !== 'string') {
         throw new RequestError(400, '成员编号或企业微信 UserID 无效。');
       }
@@ -243,6 +262,9 @@ export function openAccounts(store, settings, { guidelinesEnabled = false } = {}
       return store.update(db => {
         const user = db.users.find(item => item.id === userId);
         if (!user) throw new RequestError(404, '未找到成员账号。');
+        if (isPrimaryAdmin(user) && !isPrimaryAdmin(actor)) {
+          throw new RequestError(403, '仅超级管理员可以修改自己的企微绑定。');
+        }
         if (value && db.users.some(item => item.id !== user.id && item.wecom_userid?.toLowerCase() === value.toLowerCase())) {
           throw new RequestError(409, '此企业微信 UserID 已绑定其他账号。');
         }

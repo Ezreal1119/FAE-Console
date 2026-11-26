@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { openSync, closeSync, fstatSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isAdmin, now, optionalText } from './accounts.mjs';
+import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
 import { RequestError } from './store.mjs';
 
 const fields = {
@@ -160,9 +160,10 @@ function visibleTask(user, task) {
   return managesRecord(user, task) || task.assignee_id === user.id || task.collaborators?.some(person => person.id === user.id);
 }
 
-function changeable(user, table, row, op, patch) {
+function changeable(db, user, table, row, op, patch) {
   if (table === 'profiles') {
-    return op === 'delete' ? isAdmin(user) && row.owner_id !== user.id : isAdmin(user) || row.owner_id === user.id;
+    if (row.owner_id === user.id) return op !== 'delete';
+    return isAdmin(user) && !db.users.some(account => account.id === row.owner_id && isPrimaryAdmin(account));
   }
   if (managesRecord(user, row)) return true;
   if (table === 'demands' && op === 'update') return true;
@@ -279,7 +280,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
         if (id !== null) {
           const index = list.findIndex(item => item.id === id);
           if (index === -1) throw new RequestError(404, '未找到此记录。');
-          if (!changeable(user, table, list[index], op, patch)) throw new RequestError(403, '你没有权限修改或删除这条记录。');
+          if (!changeable(db, user, table, list[index], op, patch)) throw new RequestError(403, '你没有权限修改或删除这条记录。');
           if (op === 'delete') {
             if (table === 'demands') {
               const linked = db.tasks.filter(task => task.demand_id === id);

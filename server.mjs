@@ -49,6 +49,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-import-template', 'GET'], ['/api/admin/import-members', 'POST'],
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
   ['/api/admin/member-wecom', 'POST'],
+  ['/api/admin/member-role', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/demands/task-people', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
@@ -186,7 +187,8 @@ function privateApi(path, session, body) {
       accounts.changePassword(session, body, path === '/api/first-password');
       return {};
     case '/api/admin/accounts': return accounts.list();
-    case '/api/admin/member-wecom': return accounts.setWecomUserId(body);
+    case '/api/admin/member-wecom': return accounts.setWecomUserId(session.user, body);
+    case '/api/admin/member-role': return accounts.setAdminRole(session.user, body);
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
