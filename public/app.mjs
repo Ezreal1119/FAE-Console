@@ -8,7 +8,7 @@ const guidelinesBody = $('#guidelines-dialog-body');
 const guidelinesConfirm = $('#confirm-guidelines');
 const guidelinesScrollHint = $('#guidelines-scroll-hint');
 const STATUS = ['待规划', '开发中', '测试中', '已完成'];
-const PRIORITY = ['高', '中', '低'];
+const PRIORITY = ['低', '中', '高', '极高'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
@@ -745,13 +745,18 @@ function taskForm(task = {}, demand) {
   const startDate = task.startDate || (progressOnly ? isoDate() : '');
   const canChooseOwner = !progressOnly && (task.demand_id == null || admin());
   const canPlanHours = !progressOnly && (Boolean(demand) || Object.hasOwn(task, 'dispatched_at'));
+  const canEditNameAndProject = !demand && task.demand_id == null;
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
   const initialPeople = task.collaborators || [];
-  const setupFields = progressOnly ? '' : field('任务名称', 'title', task.title ?? demand?.title, 'required maxlength="180"') +
-    `<div class="form-grid">${field('项目', 'proj', task.proj ?? demand?.proj, 'maxlength="100"')}${canChooseOwner
-      ? choiceField('负责人', 'assignee_id') : field('负责人', 'owner_display', task.owner_name, 'readonly')}</div>` + collaboratorField() +
-    `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, task.pri || '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
+  const ownerField = canChooseOwner ? choiceField(demand ? '负责人（必填）' : '负责人', 'assignee_id')
+    : field('负责人', 'owner_display', task.owner_name, 'readonly');
+  const identityFields = canEditNameAndProject
+    ? field('任务名称', 'title', task.title, 'required maxlength="180"') +
+      `<div class="form-grid">${field('项目', 'proj', task.proj, 'maxlength="100"')}${ownerField}</div>`
+    : ownerField;
+  const setupFields = progressOnly ? '' : identityFields + collaboratorField() +
+    `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, PRIORITY.includes(task.pri) ? task.pri : '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
       ${canPlanHours ? field('计划工时（小时）', 'planned_hours', task.planned_hours, 'type="number" min="0" step="0.01"') : ''}</div>` +
     area('任务描述', 'desc', task.desc ?? demand?.descr);
   const executionFields = demand ? '' : `<div class="form-grid">
@@ -776,12 +781,15 @@ function taskForm(task = {}, demand) {
       });
     }
     if (!progressOnly) {
-      const title = trimmed(values.title);
-      if (!title) throw new Error('请填写任务名称。');
+      if (canEditNameAndProject) {
+        const title = trimmed(values.title);
+        if (!title) throw new Error('请填写任务名称。');
+        Object.assign(patch, { title, proj: optional(values.proj) });
+      }
       const assignee = owner?.value() ?? currentAssignee;
       if (!task.id && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
       const people = collaborators.ids();
-      Object.assign(patch, { title, proj: optional(values.proj), pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
+      Object.assign(patch, { pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
       if (canPlanHours) patch.planned_hours = values.planned_hours === '' ? null : Number(values.planned_hours);
       if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
       if (people.length !== initialPeople.length || initialPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
@@ -1136,7 +1144,9 @@ function demandForm(row = {}) {
       if (!row.id || value !== initial[key].value) patch[key] = value;
     }
     try {
-      updateRow('demands', await saveRow('demands', patch, row.id));
+      const saved = await saveRow('demands', patch, row.id);
+      updateRow('demands', saved);
+      if (saved.linked_tasks?.length) await refresh();
     } catch (error) {
       if (error.status === 409) await loadChoices().catch(() => {});
       throw error;

@@ -14,6 +14,8 @@ const fields = {
 };
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', '开发中', '测试中', '已完成'];
+const priorities = ['低', '中', '高', '极高'];
+const defaultPriority = '中';
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const taskProgressFields = new Set(['status', 'start', 'end', 'start_time', 'end_time', 'hours', 'result', 'attachment_name', 'attachment_path']);
 const expiry = 24 * 60 * 60 * 1000;
@@ -43,6 +45,10 @@ function cleanFields(table, payload) {
     } else if (key === 'collaborator_ids') {
       if (!Array.isArray(value) || !value.every(validId)) throw new RequestError(400, '合作者名单无效。');
       patch[key] = [...new Set(value)];
+    } else if (key === 'pri') {
+      const priority = optionalText(value, maximum) || defaultPriority;
+      if (!priorities.includes(priority)) throw new RequestError(400, '任务优先级无效。');
+      patch[key] = priority;
     } else {
       patch[key] = optionalText(value, maximum);
     }
@@ -73,8 +79,13 @@ function taskOwnerName(db, task) {
   return assignee ? displayName(db, assignee) : task.owner_name;
 }
 
-function publicTask(db, task) {
+function demandTaskFields(demand) {
+  return { title: demand.title, proj: demand.proj ?? null };
+}
+
+function publicTask(db, task, demand = db.demands.find(row => row.id === task.demand_id)) {
   const { dispatch_key, ...row } = task;
+  if (demand) Object.assign(row, demandTaskFields(demand));
   if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
     row.dispatched_at = row.created_at ?? null;
   }
@@ -97,7 +108,7 @@ function publicDemand(db, user, row, linkedTasks) {
       Object.assign(summary, { task_id: task.id, assignee_id: task.assignee_id,
         collaborator_ids: (task.collaborators || []).map(person => person.id) });
     }
-    return visibleTask(user, task) ? { ...summary, id: task.id, title: task.title } : summary;
+    return visibleTask(user, task) ? { ...summary, id: task.id, title: row.title } : summary;
   }) };
 }
 
@@ -209,7 +220,9 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
   }
   const row = { id: db.seq[sequence[table]]++, owner_id: user.id, owner_name: displayName(db, user), created_at: now(), ...extra };
   if (table !== 'profiles') row.creator_id = user.id;
-  if (table === 'tasks') Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], collaborators: [] });
+  if (table === 'tasks') {
+    Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], pri: defaultPriority, collaborators: [] });
+  }
   const result = applyPatch(db, user, table, row, patch, recordTaskChange, true);
   db[table].unshift(row);
   return result;
@@ -251,7 +264,11 @@ export function openRecords(store, { recordTaskChange } = {}) {
         if (table === 'profiles' && !isAdmin(user)) {
           return { data: db.profiles.map(row => row.owner_id === user.id ? row : directoryProfile(row)) };
         }
-        if (table === 'tasks') return { data: db.tasks.filter(task => visibleTask(user, task)).map(task => publicTask(db, task)) };
+        if (table === 'tasks') {
+          const demands = new Map(db.demands.map(demand => [demand.id, demand]));
+          return { data: db.tasks.filter(task => visibleTask(user, task))
+            .map(task => publicTask(db, task, demands.get(task.demand_id) ?? null)) };
+        }
         if (table === 'demands') {
           const links = new Map();
           for (const task of db.tasks) {
@@ -275,7 +292,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
             if (table === 'demands') {
               const linked = db.tasks.filter(task => task.demand_id === id);
               if (linked.length && !isAdmin(user)) throw new RequestError(403, '已派发的需求只能由管理员删除。');
-              for (const task of linked) task.demand_id = null;
+              for (const task of linked) Object.assign(task, demandTaskFields(list[index]), { demand_id: null });
             }
             const [row] = list.splice(index, 1);
             const removed = table === 'tasks' ? db.attachments.filter(file => file.task_id === row.id).map(file => file.id) : [];
@@ -309,14 +326,14 @@ export function openRecords(store, { recordTaskChange } = {}) {
           if (existing.creator_id === user.id && existing.dispatch_key === dispatchKey) return { created: existing, demand: source };
           throw new RequestError(409, '这条需求已经派发，可在需求列表增加合作者。');
         }
-        const details = { title: source.title, proj: source.proj ?? null, desc: source.descr ?? null, ...patch };
+        const details = { desc: source.descr ?? null, ...patch, ...demandTaskFields(source) };
         const row = insertRecord(db, user, 'tasks', details, recordTaskChange, { demand_id: id, dispatch_key: dispatchKey }).row;
         row.initial_receiver_id = row.assignee_id;
         row.initial_receiver_name = row.owner_name;
         return { created: row, demand: source };
       });
       const db = store.read();
-      return { task: publicTask(db, created), demand: publicRecord(db, user, 'demands', demand) };
+      return { task: publicTask(db, created, demand), demand: publicRecord(db, user, 'demands', demand) };
     },
 
     changeDemandTaskPeople(user, input) {
@@ -423,6 +440,10 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
     removed = changeAttachment(db, user, row, patch);
     delete patch.attachment_path;
     delete patch.attachment_name;
+    if (!creating && row.demand_id != null) {
+      delete patch.title;
+      delete patch.proj;
+    }
   }
   if (table === 'demands') applyDemandChoices(db, row, patch);
   Object.assign(row, patch, { updated_at: now() });
