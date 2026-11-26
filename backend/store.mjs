@@ -22,10 +22,15 @@ export function openStore(directory) {
         ['user', 'profile', 'task', 'demand'].some(key => !Number.isSafeInteger(data.seq?.[key]) || data.seq[key] < 1)) {
       throw new Error('数据库结构无效：' + file);
     }
+    if (Object.hasOwn(data, 'demandOptions') && ['proj', 'proposer'].some(key =>
+      !Array.isArray(data.demandOptions?.[key]) || data.demandOptions[key].some(value => typeof value !== 'string'))) {
+      throw new Error('需求选项结构无效：' + file);
+    }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     data = {
       version: 1, users: [], profiles: [], tasks: [], demands: [], sessions: [], attachments: [],
+      demandOptions: { proj: [], proposer: [] },
       seq: { user: 1, profile: 1, task: 1, demand: 1 }
     };
   }
@@ -49,6 +54,15 @@ export function openStore(directory) {
     }
     data = next;
     return result;
+  }
+
+  if (!Object.hasOwn(data, 'demandOptions')) {
+    update(db => {
+      db.demandOptions = Object.fromEntries(['proj', 'proposer'].map(key => {
+        const names = db.demands.map(row => typeof row[key] === 'string' ? row[key].trim() : '').filter(Boolean);
+        return [key, [...new Set(names)]];
+      }));
+    });
   }
 
   return { read: () => data, update, attachments };

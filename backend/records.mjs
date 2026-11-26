@@ -10,10 +10,11 @@ const fields = {
     title: 180, proj: 100, owner_name: 100, status: 20, pri: 20, due: 10, start: 10, end: 10,
     start_time: 10, end_time: 10, hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
-  demands: { title: 180, proj: 100, descr: 10000, responsible: 100, proposer: 100 }
+  demands: { title: 180, proj: 100, descr: 10000, responsible: 100, responsible_id: 0, proposer: 100 }
 };
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', '开发中', '测试中', '已完成'];
+const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const expiry = 24 * 60 * 60 * 1000;
 
 function recordId(value) {
@@ -32,6 +33,9 @@ function cleanFields(table, payload) {
       if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
         throw new RequestError(400, '投入工时须为非负数。');
       }
+      patch[key] = value;
+    } else if (key === 'responsible_id') {
+      if (value !== null && (!Number.isSafeInteger(value) || value < 1)) throw new RequestError(400, '责任人编号无效。');
       patch[key] = value;
     } else {
       patch[key] = optionalText(value, maximum);
@@ -61,6 +65,37 @@ function assignTask(db, task, input) {
 function publicTask(db, task) {
   const assignee = db.users.find(user => user.id === task.assignee_id);
   return assignee ? { ...task, owner_name: displayName(db, assignee) } : task;
+}
+
+function publicDemand(row, name) {
+  return { ...row, responsible: name || row.responsible || null };
+}
+
+function applyDemandChoices(db, row, patch) {
+  for (const [key, label] of Object.entries(demandOptionLabels)) {
+    if (patch[key] != null && patch[key] !== row[key] && !db.demandOptions[key].includes(patch[key])) {
+      throw new RequestError(409, label + '已不可选，请重新选择。');
+    }
+  }
+
+  const id = patch.responsible_id;
+  if (Object.hasOwn(patch, 'responsible')) {
+    const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
+    if (patch.responsible !== (assigned?.display_name || row.responsible || null)) {
+      throw new RequestError(409, '请选择人员管理中的责任人，必要时请刷新页面。');
+    }
+    delete patch.responsible;
+  }
+  if (id === undefined || (id !== null && id === row.responsible_id)) return;
+  if (id === null) {
+    patch.responsible = null;
+    return;
+  }
+  const person = db.profiles.find(profile => profile.owner_id === id && profile.status !== '已离职');
+  if (!person?.display_name || !db.users.some(user => user.id === id)) {
+    throw new RequestError(409, '责任人已不可选，请重新选择。');
+  }
+  patch.responsible = person.display_name;
 }
 
 function visibleTask(user, task) {
@@ -102,6 +137,15 @@ function removeFile(directory, id) {
   }
 }
 
+function publicRecord(db, table, row) {
+  if (table === 'tasks') return publicTask(db, row);
+  if (table === 'demands') {
+    const person = db.profiles.find(profile => profile.owner_id === row.responsible_id);
+    return publicDemand(row, person?.display_name);
+  }
+  return row;
+}
+
 export function openRecords(store) {
   function cleanupUploads() {
     const expired = store.read().attachments.filter(row => row.task_id === null && row.created_at <= Date.now() - expiry);
@@ -127,6 +171,10 @@ export function openRecords(store) {
         const db = store.read();
         if (table === 'profiles' && !isAdmin(user)) return { data: db.profiles.filter(row => row.owner_id === user.id) };
         if (table === 'tasks') return { data: db.tasks.filter(task => visibleTask(user, task)).map(task => publicTask(db, task)) };
+        if (table === 'demands') {
+          const names = new Map(db.profiles.map(profile => [profile.owner_id, profile.display_name]));
+          return { data: db.demands.map(row => publicDemand(row, names.get(row.responsible_id))) };
+        }
         return { data: db[table] };
       }
       const id = op === 'insert' ? null : recordId(Array.isArray(eq) && eq[0] === 'id' ? eq[1] : null);
@@ -156,7 +204,34 @@ export function openRecords(store) {
         return result;
       });
       removed.forEach(id => removeFile(store.attachments, id));
-      return { data: [table === 'tasks' ? publicTask(store.read(), row) : row] };
+      return { data: [publicRecord(store.read(), table, row)] };
+    },
+
+    demandChoices() {
+      const db = store.read();
+      const users = new Map(db.users.map(user => [user.id, user.account]));
+      const people = db.profiles.filter(profile => profile.status !== '已离职' && profile.display_name && users.has(profile.owner_id))
+        .map(profile => ({ id: profile.owner_id, name: profile.display_name, emp_no: profile.emp_no || users.get(profile.owner_id) }));
+      return { options: db.demandOptions, people };
+    },
+
+    changeDemandOptions({ kind, action, name }) {
+      if (typeof kind !== 'string' || !Object.hasOwn(demandOptionLabels, kind) || !['add', 'remove'].includes(action)) {
+        throw new RequestError(400, '需求选项操作无效。');
+      }
+      name = optionalText(name);
+      if (!name) throw new RequestError(400, '请填写名称。');
+      return store.update(db => {
+        const list = db.demandOptions[kind];
+        const index = list.indexOf(name);
+        if (action === 'add') {
+          if (index !== -1) throw new RequestError(409, '这个选项已存在。');
+          list.push(name);
+        } else if (index !== -1) {
+          list.splice(index, 1);
+        }
+        return { options: db.demandOptions };
+      });
     },
 
     upload(user, body) {
@@ -210,6 +285,7 @@ function applyPatch(db, user, table, row, patch) {
     delete patch.attachment_path;
     delete patch.attachment_name;
   }
+  if (table === 'demands') applyDemandChoices(db, row, patch);
   Object.assign(row, patch, { updated_at: now() });
   if (table === 'profiles') {
     if (!row.display_name) throw new RequestError(400, '请填写姓名。');

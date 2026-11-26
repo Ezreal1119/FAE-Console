@@ -6,17 +6,20 @@ const dialog = $('#dialog');
 const STATUS = ['待规划', '开发中', '测试中', '已完成'];
 const PRIORITY = ['高', '中', '低'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', demands: '需求管理', people: '人员管理', board: '数据看板', account: '我的账号' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号' };
 const dictionaries = { teams: '团队', roles: '岗位' };
+const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = { taskQuery: '', taskStatus: '', taskOwner: '', taskScope: 'all', demandQuery: '', peopleQuery: '', peopleTeam: '' };
 const state = {
   user: null, tasks: [], demands: [], profiles: [], accounts: [], page: 'home', mode: 'login',
   filters: { ...defaultFilters },
   catalog: { teams: [], roles: [] },
+  demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proj',
   loadWarnings: []
 };
 let toastTimer;
+let demandCatalogLoad;
 
 function text(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -59,7 +62,9 @@ async function request(url, options = {}) {
   }
   if (!response.ok || data?.error || data?.ok === false) {
     if (options.silentSession && response.status === 401) return null;
-    throw new Error(data?.message || data?.error || '操作失败，请稍后再试。');
+    const error = new Error(data?.message || data?.error || '操作失败，请稍后再试。');
+    error.status = response.status;
+    throw error;
   }
   return options.download ? response.blob() : data;
 }
@@ -133,6 +138,9 @@ function showAuth(error = '') {
   state.demands = [];
   state.profiles = [];
   state.accounts = [];
+  state.demandCatalog = null;
+  state.demandCatalogError = '';
+  state.demandCatalogKind = 'proj';
   state.loadWarnings = [];
   state.page = 'home';
   state.filters = { ...defaultFilters };
@@ -167,6 +175,7 @@ function showWorkspace() {
   $('#loading-view').hidden = true;
   $('#auth-view').hidden = true;
   $('#workspace').hidden = false;
+  $('[data-page="demandCatalog"]').hidden = !admin();
   const label = myName() || state.user.account;
   $('#avatar').textContent = label.slice(0, 1);
   $('#user-name').textContent = label;
@@ -306,6 +315,48 @@ function demandsPage() {
     panel('需求列表', `<div class="toolbar">${search('demandQuery', '搜索需求、项目或责任人')}</div>` + table(demandHeaders, demandRows(), '没有匹配的需求。', 'demand-rows'));
 }
 
+function demandCatalogPage() {
+  const kind = state.demandCatalogKind;
+  const label = demandOptionLabels[kind];
+  const tabs = Object.entries(demandOptionLabels).map(([key, title]) =>
+    `<button type="button" class="button" data-action="demand-catalog-tab" data-id="${key}" aria-pressed="${key === kind}">${title}</button>`).join('');
+  const header = heading('基础资料', '维护需求表单中的项目和需求提出方。') +
+    `<div class="catalog-tabs" role="group" aria-label="资料类别">${tabs}</div>`;
+  if (!state.demandCatalog) {
+    const error = state.demandCatalogError;
+    return header + panel(label, error
+      ? `<p class="form-error" role="alert">${text(error)}</p>` + action('重新加载', 'demand-catalog-load', '', 'link')
+      : '<p class="empty" role="status">正在加载基础资料…</p>');
+  }
+  const rows = unique(state.demandCatalog[kind]).map(name => `<tr><td>${text(name)}</td><td>${
+    action('删除', 'demand-option-remove', JSON.stringify([kind, name]), 'link danger')}</td></tr>`).join('');
+  return header + panel(label, table([label, '操作'], rows, '暂无选项。'), action('＋ 新增' + label, 'demand-option-add', kind, 'button primary'));
+}
+
+async function loadDemandCatalog() {
+  if (!admin()) return;
+  const session = state.user;
+  state.demandCatalog = null;
+  state.demandCatalogError = '';
+  if (state.page === 'demandCatalog') render();
+  const pending = request('/api/demand-options');
+  demandCatalogLoad = pending;
+  try {
+    const result = await pending;
+    if (demandCatalogLoad === pending && session === state.user) state.demandCatalog = result.options;
+  } catch (error) {
+    if (demandCatalogLoad === pending && session === state.user) state.demandCatalogError = error.message;
+  }
+  if (demandCatalogLoad === pending && session === state.user && state.page === 'demandCatalog') render();
+}
+
+async function changeDemandOption(kind, operation, name) {
+  const result = await post('/api/admin/demand-options', { kind, action: operation, name });
+  state.demandCatalog = result.options;
+  if (state.page === 'demandCatalog') render();
+  toast(demandOptionLabels[kind] + (operation === 'add' ? '已添加。' : '已删除。'));
+}
+
 function boardPage() {
   const { tasks } = state;
   const done = tasks.filter(task => task.status === '已完成');
@@ -364,7 +415,8 @@ function accountPage() {
     panel('账号信息', details([['账号', state.user.account], ['姓名', myName()], ['系统权限', state.user.role]]));
 }
 
-const pages = { home: workspacePage, tasks: tasksPage, demands: demandsPage, people: peoplePage, board: boardPage, account: accountPage };
+const pages = { home: workspacePage, tasks: tasksPage, demands: demandsPage, demandCatalog: demandCatalogPage,
+  people: peoplePage, board: boardPage, account: accountPage };
 function render() {
   if (!state.user) return;
   document.querySelectorAll('[data-page]').forEach(button => {
@@ -379,9 +431,10 @@ function render() {
   content.innerHTML = warnings + pages[state.page]();
 }
 function navigate(page) {
-  if (!Object.hasOwn(pages, page)) return;
+  if (!Object.hasOwn(pages, page) || (page === 'demandCatalog' && !admin())) return;
   state.page = page;
-  render();
+  if (page === 'demandCatalog') void loadDemandCatalog();
+  else render();
 }
 
 function details(entries) {
@@ -433,6 +486,7 @@ function modalForm(title, description, fields, onSave, options = {}) {
       button.disabled = false;
     }
   });
+  return form;
 }
 function confirmDelete(title, message, perform) {
   modalForm(title, message, '', perform, { danger: true, submit: '确认删除' });
@@ -513,17 +567,176 @@ async function nextTask(id) {
   toast('任务状态已更新。');
 }
 
+function demandChoiceField(label, key) {
+  return `<div class="choice-field" data-choice="${key}">
+    <label for="choice-${key}">${label}</label>
+    <div class="choice-control">
+      <input id="choice-${key}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="choices-${key}"
+        autocomplete="off" placeholder="请选择或输入关键词" disabled>
+      <span aria-hidden="true" class="choice-arrow"></span>
+      <ul id="choices-${key}" class="choice-list" role="listbox" aria-label="${label}" hidden></ul>
+    </div>
+  </div>`;
+}
+
+function bindDemandChoice(field, initial) {
+  const input = field.querySelector('input');
+  const list = field.querySelector('ul');
+  let options = [];
+  let selected = initial;
+  let query = '';
+  let results = [];
+  let active = -1;
+
+  function restore() {
+    if (selected.value === null) {
+      input.value = '';
+      return;
+    }
+    const current = options.find(option => option.value === selected.value);
+    const suffix = selected.value === initial.value ? '（原有值）' : '（不可选）';
+    input.value = current?.label ?? (selected.label ? selected.label + suffix : '');
+  }
+  function highlight(index) {
+    list.children[active]?.classList.remove('active');
+    active = index;
+    const entry = list.children[active];
+    if (entry) {
+      entry.classList.add('active');
+      input.setAttribute('aria-activedescendant', entry.id);
+      entry.scrollIntoView({ block: 'nearest' });
+    } else input.removeAttribute('aria-activedescendant');
+  }
+  function show() {
+    results = options.filter(option => hasText(query, option.label));
+    if (!query.trim() && selected.value !== null) results.push({ value: null, label: '清空选择' });
+    list.innerHTML = results.map(({ value, label }, index) =>
+      `<li role="option" id="${list.id}-${index}" data-index="${index}" aria-selected="${value === selected.value}">${text(label)}</li>`).join('') ||
+      `<li role="option" aria-disabled="true" class="muted">${query.trim() ? '没有匹配的选项' : '暂无可选项'}</li>`;
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    list.scrollTop = 0;
+    highlight(-1);
+  }
+  function close() {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    query = '';
+    restore();
+  }
+  function choose(index) {
+    selected = results[index];
+    close();
+    input.select();
+  }
+
+  input.addEventListener('focus', () => { show(); input.select(); });
+  input.addEventListener('click', () => {
+    if (list.hidden) show();
+    if (!query) input.select();
+  });
+  input.addEventListener('input', () => {
+    query = input.value;
+    show();
+    if (query.trim() && results.length) highlight(0);
+  });
+  input.addEventListener('blur', close);
+  input.addEventListener('keydown', event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (list.hidden) show();
+      if (results.length) {
+        const next = event.key === 'ArrowDown' ? active + 1 : (active === -1 ? results.length - 1 : active - 1);
+        highlight(Math.max(0, Math.min(results.length - 1, next)));
+      }
+    } else if (!list.hidden && event.key === 'Enter') {
+      event.preventDefault();
+      if (active >= 0) choose(active);
+    } else if (!list.hidden && event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      input.select();
+    }
+  });
+  list.addEventListener('mousedown', event => event.preventDefault());
+  list.addEventListener('click', event => {
+    const entry = event.target.closest('[data-index]');
+    if (entry) choose(Number(entry.dataset.index));
+  });
+
+  return {
+    value: () => selected.value,
+    setOptions(next) {
+      options = next;
+      input.disabled = false;
+      if (list.hidden) restore();
+      else show();
+    }
+  };
+}
+
 function demandForm(row = {}) {
-  modalForm(row.id ? '编辑需求' : '新建需求', '', field('需求名称', 'title', row.title, 'required maxlength="180"') +
-    `<div class="form-grid">${field('项目', 'proj', row.proj, 'maxlength="100"')}${field('责任人', 'responsible', row.responsible, 'maxlength="100"')}
-    ${field('需求提出方', 'proposer', row.proposer, 'maxlength="100"')}</div>` + area('需求说明', 'descr', row.descr), async values => {
+  const person = row.responsible_id ?? (row.responsible ? 'legacy' : null);
+  const initial = {
+    proj: { value: row.proj || null, label: row.proj },
+    responsible_id: { value: person, label: row.responsible },
+    proposer: { value: row.proposer || null, label: row.proposer }
+  };
+  const form = modalForm(row.id ? '编辑需求' : '新建需求', '', field('需求名称', 'title', row.title, 'required maxlength="180"') +
+    `<div class="form-grid">${demandChoiceField('项目', 'proj')}${demandChoiceField('责任人', 'responsible_id')}
+    ${demandChoiceField('需求提出方', 'proposer')}</div>` + area('需求说明', 'descr', row.descr) +
+    '<p class="muted text-small" data-choice-loading role="status">正在加载可选项…</p>' +
+    '<div data-choice-retry hidden><button type="button" class="link">重新加载可选项</button></div>', async values => {
     const title = trimmed(values.title);
     if (!title) throw new Error('请填写需求名称。');
-    const patch = { title, proj: optional(values.proj), descr: optional(values.descr), responsible: optional(values.responsible), proposer: optional(values.proposer) };
-    if (!row.id) patch.owner_name = myName();
-    updateRow('demands', await saveRow('demands', patch, row.id));
+    const patch = { title, descr: optional(values.descr) };
+    for (const [key, picker] of Object.entries(pickers)) {
+      const value = picker.value();
+      if (!row.id || value !== initial[key].value) patch[key] = value;
+    }
+    try {
+      updateRow('demands', await saveRow('demands', patch, row.id));
+    } catch (error) {
+      if (error.status === 409) await loadChoices().catch(() => {});
+      throw error;
+    }
     toast('需求已保存。');
   });
+  const pickers = Object.fromEntries(Object.entries(initial).map(([key, entry]) =>
+    [key, bindDemandChoice(form.querySelector(`[data-choice="${key}"]`), entry)]));
+  const submit = form.querySelector('[type=submit]');
+  const loading = form.querySelector('[data-choice-loading]');
+  const retry = form.querySelector('[data-choice-retry]');
+  const message = form.querySelector('.form-error');
+
+  async function loadChoices() {
+    const { options, people } = await request('/api/demand-options');
+    if (!form.isConnected || !dialog.open) return;
+    for (const key of Object.keys(demandOptionLabels)) {
+      pickers[key].setOptions(unique(options[key]).map(value => ({ value, label: value })));
+    }
+    pickers.responsible_id.setOptions(people.map(({ id, name, emp_no }) => ({ value: id, label: `${name} · ${emp_no}` }))
+      .sort((a, b) => sortZh(a.label, b.label)));
+  }
+  async function prepareChoices() {
+    submit.disabled = true;
+    loading.hidden = false;
+    retry.hidden = true;
+    formError(message, '');
+    try {
+      await loadChoices();
+      submit.disabled = false;
+    } catch (error) {
+      formError(message, error.message);
+      retry.hidden = false;
+    } finally {
+      loading.hidden = true;
+    }
+  }
+  retry.querySelector('button').addEventListener('click', prepareChoices);
+  void prepareChoices();
 }
 
 function personDetail(id) {
@@ -744,6 +957,26 @@ const actions = {
   'demand-delete': id => {
     const row = getRow('demands', id);
     confirmDelete('删除需求', '确定删除「' + row.title + '」？', () => removeRow('demands', row, '需求已删除。'));
+  },
+  'demand-catalog-load': loadDemandCatalog,
+  'demand-catalog-tab': kind => {
+    if (!Object.hasOwn(demandOptionLabels, kind)) return;
+    state.demandCatalogKind = kind;
+    render();
+    content.querySelector('.catalog-tabs [aria-pressed="true"]').focus();
+  },
+  'demand-option-add': kind => {
+    const label = demandOptionLabels[kind];
+    modalForm('新增' + label, '', field(label, 'name', '', 'required maxlength="100"'), async values => {
+      const name = trimmed(values.name);
+      if (!name) throw new Error('请填写名称。');
+      await changeDemandOption(kind, 'add', name);
+    }, { submit: '添加' });
+  },
+  'demand-option-remove': id => {
+    const [kind, name] = JSON.parse(id);
+    confirmDelete('删除' + demandOptionLabels[kind], '确定删除「' + name + '」？历史需求会保留原值。',
+      () => changeDemandOption(kind, 'remove', name));
   },
   'person-detail': personDetail, 'person-new': () => personForm(), 'person-edit': id => personForm(getRow('profiles', id)),
   'person-delete': id => {

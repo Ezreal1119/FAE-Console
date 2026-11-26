@@ -168,6 +168,43 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .import-results { max-height: 50dvh; overflow: auto; }
 .import-results code { white-space: nowrap; user-select: all; }
 .config-strip { display: flex; gap: 7px; flex-wrap: wrap; }
+.catalog-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.catalog-tabs [aria-pressed="true"] { background: #edf2ff; border-color: #9bb0ef; color: var(--brand-dark); }
+.choice-field { min-width: 0; }
+.choice-field > label { margin-bottom: 6px; }
+.choice-control { position: relative; }
+.choice-control input { padding-right: 34px; }
+.choice-arrow {
+  position: absolute;
+  top: calc(50% - 6px);
+  right: 15px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+.choice-list {
+  position: absolute;
+  z-index: 2;
+  inset-inline: 0;
+  top: calc(100% + 4px);
+  max-height: 176px;
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 22px #17244026;
+  list-style: none;
+  font-size: .9rem;
+}
+.choice-list li { padding: 8px 10px; border-radius: 5px; overflow-wrap: anywhere; }
+.choice-list li[data-index] { cursor: pointer; }
+.choice-list li[data-index]:hover, .choice-list li.active { background: #edf2ff; }
+.choice-list [aria-selected="true"] { color: var(--brand-dark); font-weight: 650; }
 dialog { width: min(calc(100% - 30px), 620px); max-height: min(90dvh, 820px); border: 1px solid var(--line); border-radius: 16px; padding: 22px; color: var(--ink); box-shadow: 0 20px 80px #17244038; }
 dialog::backdrop { background: #0f183677; }
 .dialog-heading { display: flex; gap: 10px; justify-content: space-between; align-items: start; margin-bottom: 13px; }
