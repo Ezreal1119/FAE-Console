@@ -8,7 +8,7 @@ const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
     title: 180, proj: 100, owner_name: 100, assignee_id: 0, collaborator_ids: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
-    start_time: 10, end_time: 10, hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
+    start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
   demands: { title: 180, proj: 100, descr: 10000, proposer: 100 }
 };
@@ -32,9 +32,9 @@ function cleanFields(table, payload) {
   for (const [key, maximum] of Object.entries(fields[table])) {
     if (!Object.hasOwn(payload, key)) continue;
     const value = payload[key];
-    if (key === 'hours') {
+    if (key === 'hours' || key === 'planned_hours') {
       if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
-        throw new RequestError(400, '投入工时须为非负数。');
+        throw new RequestError(400, key === 'hours' ? '投入工时须为非负数。' : '计划工时须为非负数。');
       }
       patch[key] = value;
     } else if (key === 'assignee_id') {

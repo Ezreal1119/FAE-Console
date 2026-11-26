@@ -713,7 +713,8 @@ function taskDetails(task) {
     ...(source ? [['来源需求', action(source.title, 'demand-detail', source.id, 'link'), true]] : []),
     ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null]] : []),
     ['状态', statusBadge(task.status), true], ['优先级', task.pri],
-    ['计划完成', task.dueDate], ['工时', withHours(task.hours)], ['开始日期', task.startDate], ['完成日期', task.endDate],
+    ['计划完成', task.dueDate], ['计划工时', withHours(task.planned_hours)], ['投入工时', withHours(task.hours)],
+    ['开始日期', task.startDate], ['完成日期', task.endDate],
     ['附件', fileAction(task), true], ['前置依赖', task.deps]]);
   const remarks = `<div class="details-list"><div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>
     <div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div></div>`;
@@ -743,13 +744,15 @@ function taskForm(task = {}, demand) {
   const progressOnly = Boolean(task.id && !canEditTask(task));
   const startDate = task.startDate || (progressOnly ? isoDate() : '');
   const canChooseOwner = !progressOnly && (task.demand_id == null || admin());
+  const canPlanHours = !progressOnly && (Boolean(demand) || Object.hasOwn(task, 'dispatched_at'));
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
   const initialPeople = task.collaborators || [];
   const setupFields = progressOnly ? '' : field('任务名称', 'title', task.title ?? demand?.title, 'required maxlength="180"') +
     `<div class="form-grid">${field('项目', 'proj', task.proj ?? demand?.proj, 'maxlength="100"')}${canChooseOwner
       ? choiceField('负责人', 'assignee_id') : field('负责人', 'owner_display', task.owner_name, 'readonly')}</div>` + collaboratorField() +
-    `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, task.pri || '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}</div>` +
+    `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, task.pri || '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
+      ${canPlanHours ? field('计划工时（小时）', 'planned_hours', task.planned_hours, 'type="number" min="0" step="0.01"') : ''}</div>` +
     area('任务描述', 'desc', task.desc ?? demand?.descr);
   const executionFields = demand ? '' : `<div class="form-grid">
     ${selectField('状态', 'status', STATUS, task.status || STATUS[0])}${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}
@@ -779,6 +782,7 @@ function taskForm(task = {}, demand) {
       if (!task.id && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
       const people = collaborators.ids();
       Object.assign(patch, { title, proj: optional(values.proj), pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
+      if (canPlanHours) patch.planned_hours = values.planned_hours === '' ? null : Number(values.planned_hours);
       if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
       if (people.length !== initialPeople.length || initialPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
     }
