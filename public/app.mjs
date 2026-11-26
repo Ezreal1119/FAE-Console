@@ -11,7 +11,7 @@ const STATUS = ['待规划', '开发中', '测试中', '已完成'];
 const PRIORITY = ['高', '中', '低'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
@@ -225,6 +225,9 @@ function showWorkspace() {
   $('#today').dateTime = isoDate();
   $('#today').textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'full' }).format(new Date());
 }
+function linkedTaskId() {
+  return new URLSearchParams(location.search).get('task');
+}
 async function enter(user, guidelinesPending) {
   state.user = user;
   state.filters.taskScope = admin() ? 'all' : 'mine';
@@ -239,6 +242,7 @@ async function enter(user, guidelinesPending) {
   await enterWorkspace();
 }
 async function enterWorkspace() {
+  if (linkedTaskId() !== null) state.page = 'taskLink';
   showWorkspace();
   content.innerHTML = '<p class="empty">正在读取工作数据…</p>';
   if (state.guidelinesPending) openGuidelinesNotice();
@@ -474,8 +478,13 @@ function peopleRows() {
   }).join('');
 }
 function accountsRows() {
-  return state.accounts.map(account => `<tr><td>${shown(account.account)}</td><td>${shown(personFor(account)?.display_name || account.name)}</td><td>${shown(account.role)}</td>
-    <td>${account.must_change_pwd ? '<span class="tag test">待首次改密</span>' : '已设置'}</td><td><div class="row-actions">${account.role !== '管理员' ? action('重置账号', 'account-reset', account.id, 'link') + action('删账号', 'account-delete', account.id, 'link danger') : '—'}</div></td></tr>`).join('');
+  return state.accounts.map(account => {
+    const wecom = action(account.wecom_userid ? '编辑企微 ID' : '绑定企微 ID', 'account-wecom', account.id, 'link');
+    const manage = account.role !== '管理员'
+      ? action('重置账号', 'account-reset', account.id, 'link') + action('删账号', 'account-delete', account.id, 'link danger') : '';
+    return `<tr><td>${shown(account.account)}</td><td>${shown(personFor(account)?.display_name || account.name)}</td><td>${shown(account.role)}</td>
+      <td>${account.must_change_pwd ? '<span class="tag test">待首次改密</span>' : '已设置'}</td><td><div class="row-actions">${wecom + manage}</div></td></tr>`;
+  }).join('');
 }
 function peoplePage() {
   const person = mineProfile();
@@ -594,12 +603,12 @@ function openGuidelinesNotice() {
   void loadGuidelines();
 }
 
-const pages = { home: workspacePage, tasks: tasksPage, demands: demandsPage, demandCatalog: demandCatalogPage,
+const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, demandCatalog: demandCatalogPage,
   people: peoplePage, board: boardPage, account: accountPage, guidelines: guidelinesPage };
 function render() {
   if (!state.user) return;
   document.querySelectorAll('[data-page]').forEach(button => {
-    const active = button.dataset.page === state.page;
+    const active = button.dataset.page === (state.page === 'taskLink' ? 'tasks' : state.page);
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
@@ -611,6 +620,11 @@ function render() {
 }
 function navigate(page) {
   if (!Object.hasOwn(pages, page) || (page === 'demandCatalog' && !admin())) return;
+  if (state.page === 'taskLink' && page !== 'taskLink') {
+    const url = new URL(location.href);
+    url.searchParams.delete('task');
+    history.replaceState(null, '', url);
+  }
   state.page = page;
   if (page === 'demandCatalog') void loadDemandCatalog();
   else {
@@ -692,8 +706,7 @@ async function removeRow(tableName, row, success) {
   toast(success);
 }
 
-function taskDetail(id) {
-  const task = getRow('tasks', id);
+function taskDetails(task) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
   const dispatchedAt = task.dispatched_at ? Date.parse(task.dispatched_at) : NaN;
   const info = details([['项目', task.proj], ['负责人', task.owner_name], ['合作者', collaboratorNames(task)],
@@ -704,9 +717,26 @@ function taskDetail(id) {
     ['附件', fileAction(task), true], ['前置依赖', task.deps]]);
   const remarks = `<div class="details-list"><div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>
     <div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div></div>`;
+  return info + remarks;
+}
+function taskDetailActions(task) {
+  if (!canUpdateTaskProgress(task)) return '';
   const quick = task.status === '已完成' ? '' : action('推进到下一状态', 'task-next', task.id, 'button primary');
-  modal(task.title || '任务详情', '#' + task.id, info + remarks + `<div class="dialog-actions">${action('关闭', 'close')}
-    ${canUpdateTaskProgress(task) ? action(canEditTask(task) ? '编辑' : '更新进度', 'task-edit', task.id) + quick : ''}</div>`);
+  return action(canEditTask(task) ? '编辑' : '更新进度', 'task-edit', task.id) + quick;
+}
+function taskDetail(id) {
+  const task = getRow('tasks', id);
+  modal(task.title || '任务详情', '#' + task.id, taskDetails(task) + `<div class="dialog-actions">
+    <a class="button" href="/?task=${text(task.id)}">打开任务页面</a>${action('关闭', 'close')}${taskDetailActions(task)}</div>`);
+}
+function taskLinkPage() {
+  const task = state.tasks.find(row => same(row.id, linkedTaskId()));
+  const back = action('返回任务中心', 'task-list');
+  if (!task) {
+    const message = state.loadWarnings.includes('任务') ? '任务加载失败，请重新加载。' : '找不到该任务，或你没有权限查看。';
+    return heading('任务详情', '', back) + '<p class="panel">' + message + '</p>';
+  }
+  return heading(task.title || '任务详情', '#' + task.id, back + taskDetailActions(task)) + panel('任务详情', taskDetails(task));
 }
 function taskForm(task = {}, demand) {
   if (task.id && !canUpdateTaskProgress(task)) return;
@@ -799,7 +829,7 @@ async function nextTask(id) {
   updateRow('tasks', normalizeTask(await saveRow('tasks', patch, id)));
   if (task.demand_id != null) await refresh();
   if (!state.user) return;
-  taskDetail(id);
+  if (state.page !== 'taskLink' || dialog.open) taskDetail(id);
   toast('任务状态已更新。');
 }
 
@@ -1257,6 +1287,15 @@ function accountReset(id) {
     toast('账号已重置。');
   });
 }
+function accountWecom(id) {
+  const account = getRow('accounts', id);
+  modalForm('绑定企业微信', '为「' + account.account + '」填写企业微信通讯录中的成员 UserID。留空保存可解除绑定。',
+    field('企业微信 UserID', 'wecomUserId', account.wecom_userid, 'maxlength="64" autocomplete="off"'), async values => {
+      const result = await post('/api/admin/member-wecom', { userId: account.id, wecomUserId: values.wecomUserId });
+      updateRow('accounts', { ...account, wecom_userid: result.wecomUserId });
+      toast('企微通知绑定已更新。');
+    });
+}
 function showTemporaryPassword(result, title) {
   modal(title, '请将临时密码交给该成员。关闭后可通过重置账号生成新密码。',
     field('登录账号', 'account', result.user.account, 'readonly') +
@@ -1337,7 +1376,7 @@ const actions = {
     section.scrollIntoView({ block: 'start' });
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
-  'task-new': () => taskForm(), 'task-detail': taskDetail,
+  'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
   'task-edit': id => taskForm(getRow('tasks', id)), 'task-next': nextTask,
   'task-delete': id => {
     const row = getRow('tasks', id);
@@ -1397,7 +1436,7 @@ const actions = {
     updateRow('profiles', await saveRow('profiles', { status }, id));
     toast('成员档案状态已更新。');
   },
-  'account-add': accountAdd, 'account-import': accountImport, 'account-reset': accountReset,
+  'account-add': accountAdd, 'account-import': accountImport, 'account-reset': accountReset, 'account-wecom': accountWecom,
   'account-delete': id => {
     const row = getRow('accounts', id);
     confirmDelete('删除成员账号', '确定删除「' + row.account + '」的账号和档案？已登记的任务会保留。', async () => {

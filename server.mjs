@@ -8,6 +8,7 @@ import { isAdmin, openAccounts, sessionSeconds } from './backend/accounts.mjs';
 import { MEMBER_IMPORT_LIMIT_BYTES, readMemberWorkbook } from './backend/member-import.mjs';
 import { openRecords } from './backend/records.mjs';
 import { openStore, RequestError } from './backend/store.mjs';
+import { openWecomNotifications } from './backend/wecom-notifications.mjs';
 
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '127.0.0.1';
@@ -32,7 +33,7 @@ const guidelines = await readFile(guidelinesFile, 'utf8').then(source => {
   return null;
 });
 const accounts = openAccounts(store, process.env, { guidelinesEnabled: guidelines !== null });
-const records = openRecords(store);
+const records = openRecords(store, openWecomNotifications(store, process.env.WECOM_GROUP_WEBHOOK_URL));
 
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -47,6 +48,7 @@ const apiRoutes = new Map([
   ['/api/admin/accounts', 'GET'], ['/api/admin/add-member', 'POST'],
   ['/api/admin/member-import-template', 'GET'], ['/api/admin/import-members', 'POST'],
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
+  ['/api/admin/member-wecom', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/demands/task-people', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
@@ -184,6 +186,7 @@ function privateApi(path, session, body) {
       accounts.changePassword(session, body, path === '/api/first-password');
       return {};
     case '/api/admin/accounts': return accounts.list();
+    case '/api/admin/member-wecom': return accounts.setWecomUserId(body);
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);

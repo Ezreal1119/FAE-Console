@@ -203,19 +203,19 @@ function publicRecord(db, user, table, row) {
   return row;
 }
 
-function insertRecord(db, user, table, patch, extra = {}) {
+function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
   if (table === 'profiles' && db.profiles.some(row => row.owner_id === user.id)) {
     throw new RequestError(409, '你的个人档案已经存在。');
   }
   const row = { id: db.seq[sequence[table]]++, owner_id: user.id, owner_name: displayName(db, user), created_at: now(), ...extra };
   if (table !== 'profiles') row.creator_id = user.id;
   if (table === 'tasks') Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], collaborators: [] });
-  const result = applyPatch(db, user, table, row, patch);
+  const result = applyPatch(db, user, table, row, patch, recordTaskChange, true);
   db[table].unshift(row);
   return result;
 }
 
-export function openRecords(store) {
+export function openRecords(store, { recordTaskChange } = {}) {
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
   if (store.read().tasks.some(needsReceiver)) {
     store.update(db => {
@@ -286,9 +286,9 @@ export function openRecords(store) {
               (Object.hasOwn(patch, 'assignee_id') || Object.hasOwn(patch, 'owner_name'))) {
             throw new RequestError(403, '只有管理员可以更换派发任务的负责人。');
           }
-          return applyPatch(db, user, table, list[index], patch);
+          return applyPatch(db, user, table, list[index], patch, recordTaskChange);
         }
-        return insertRecord(db, user, table, patch);
+        return insertRecord(db, user, table, patch, recordTaskChange);
       });
       removed.forEach(id => removeFile(store.attachments, id));
       return { data: [publicRecord(store.read(), user, table, row)] };
@@ -310,7 +310,7 @@ export function openRecords(store) {
           throw new RequestError(409, '这条需求已经派发，可在需求列表增加合作者。');
         }
         const details = { title: source.title, proj: source.proj ?? null, desc: source.descr ?? null, ...patch };
-        const row = insertRecord(db, user, 'tasks', details, { demand_id: id, dispatch_key: dispatchKey }).row;
+        const row = insertRecord(db, user, 'tasks', details, recordTaskChange, { demand_id: id, dispatch_key: dispatchKey }).row;
         row.initial_receiver_id = row.assignee_id;
         row.initial_receiver_name = row.owner_name;
         return { created: row, demand: source };
@@ -340,7 +340,7 @@ export function openRecords(store) {
           const existing = (task.collaborators || []).map(person => person.id);
           patch.collaborator_ids = [...new Set([...existing, ...patch.collaborator_ids])].filter(personId => personId !== task.assignee_id);
         }
-        applyPatch(db, user, 'tasks', task, patch);
+        applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
         return source;
       });
       return { demand: publicRecord(store.read(), user, 'demands', demand) };
@@ -413,7 +413,10 @@ export function openRecords(store) {
   };
 }
 
-function applyPatch(db, user, table, row, patch) {
+function applyPatch(db, user, table, row, patch, recordTaskChange, creating = false) {
+  const before = table === 'tasks' && recordTaskChange ? {
+    creating, owner: row.assignee_id, collaborators: new Set(row.collaborators?.map(person => person.id))
+  } : null;
   let removed = [];
   if (table === 'tasks') {
     applyTaskPeople(db, row, patch);
@@ -430,5 +433,6 @@ function applyPatch(db, user, table, row, patch) {
     throw new RequestError(400, '请填写名称。');
   }
   if (table === 'tasks' && !statuses.includes(row.status)) throw new RequestError(400, '任务状态无效。');
+  if (before) recordTaskChange(db, row, before);
   return { row, removed };
 }

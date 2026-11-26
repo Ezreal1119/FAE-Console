@@ -227,7 +227,29 @@ export function openAccounts(store, settings, { guidelinesEnabled = false } = {}
     },
 
     list() {
-      return { accounts: store.read().users.map(publicAccount) };
+      return { accounts: store.read().users.map(user => ({
+        ...publicAccount(user), wecom_userid: user.wecom_userid ?? null
+      })) };
+    },
+
+    setWecomUserId({ userId, wecomUserId }) {
+      if (!Number.isSafeInteger(userId) || typeof wecomUserId !== 'string') {
+        throw new RequestError(400, '成员编号或企业微信 UserID 无效。');
+      }
+      const value = optionalText(wecomUserId, 64);
+      if (value && !/^[A-Za-z0-9][A-Za-z0-9_.@-]*$/.test(value)) {
+        throw new RequestError(400, '请填写有效的企业微信 UserID。');
+      }
+      return store.update(db => {
+        const user = db.users.find(item => item.id === userId);
+        if (!user) throw new RequestError(404, '未找到成员账号。');
+        if (value && db.users.some(item => item.id !== user.id && item.wecom_userid?.toLowerCase() === value.toLowerCase())) {
+          throw new RequestError(409, '此企业微信 UserID 已绑定其他账号。');
+        }
+        if (value) user.wecom_userid = value;
+        else delete user.wecom_userid;
+        return { wecomUserId: value };
+      });
     },
 
     addMember(fields) {

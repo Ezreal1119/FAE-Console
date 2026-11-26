@@ -45,6 +45,16 @@ WECOM_BOT_SECRET=你的机器人Secret
 
 首次安装 Bridge 需要在项目根目录运行 `npm ci --omit=dev`，安装 `deploy/fae-wecom-bridge.service` 并执行 `systemctl daemon-reload`。配置或更换凭据后执行 `systemctl restart fae-wecom-bridge`。运行日志可用 `journalctl -u fae-wecom-bridge -n 30 --no-pager` 查看。本地测试用 `npm run wecom:bridge`。
 
+### 任务群通知
+
+在目标企业微信群的「消息推送 → 自定义消息推送」里添加机器人，复制生成的 Webhook 地址。把完整地址写入 VPS 项目根目录的 `/opt/fae-console/.env`，然后执行 `systemctl restart fae-console`。
+
+```dotenv
+WECOM_GROUP_WEBHOOK_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=替换为实值"
+```
+
+管理员在「人员管理 → 登录账号」为需要接收提醒的成员绑定企业微信通讯录里的 UserID。需求首次派发时提醒负责人及初始合作者，更换负责人时提醒新负责人，增加合作者时提醒新加入的人。群消息只包含事件、任务编号和任务链接，链接要求登录并按现有任务权限显示详情。没有已绑定接收人时跳过该消息。发送失败可用 `journalctl -u fae-console -n 50 --no-pager` 查看。
+
 ## 行为规范
 
 规范正文放在项目根目录的 `private/guidelines.json`，整个 `private/` 目录由 Git 忽略。阿里云部署时将文件单独复制到 `/opt/fae-console/private/guidelines.json`。目录和文件使用 `root:root`，权限分别设为 `0700` 和 `0600`。服务启动时由 systemd 将正文只读提供给服务进程，网页通过登录接口读取。部署内部规范前请在项目 `.env` 中设置 `ALLOW_REGISTRATION=0`。
