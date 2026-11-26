@@ -2,10 +2,17 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const defaultTaskCategories = [
-  '样机组装与改制', '调试改料与返工', '试产与量产导入', '测试与验证',
-  '工装治具', '技术资料与 SOP', '质量异常与客诉', '技术支持'
-];
+const demandOptionKinds = ['proj', 'proposer'];
+const defaultTaskOptions = {
+  category: [
+    '样机组装与改制', '调试改料与返工', '试产与量产导入', '测试与验证',
+    '工装治具', '技术资料与 SOP', '质量异常与客诉', '技术支持'
+  ],
+  device_type: ['POS', 'PDA', '手柄', '扫描头', '座充与底座', '扫描枪', '穿戴设备'],
+  project_stage: ['立项', 'EVT', 'DVT', 'PVT', 'MP']
+};
+const taskOptionKinds = Object.keys(defaultTaskOptions);
+const validOptionList = list => Array.isArray(list) && list.every(value => typeof value === 'string');
 
 export class RequestError extends Error {
   constructor(status, message) {
@@ -27,19 +34,16 @@ export function openStore(directory) {
         ['user', 'profile', 'task', 'demand'].some(key => !Number.isSafeInteger(data.seq?.[key]) || data.seq[key] < 1)) {
       throw new Error('数据库结构无效：' + file);
     }
-    if (Object.hasOwn(data, 'demandOptions') && ['proj', 'proposer'].some(key =>
-      !Array.isArray(data.demandOptions?.[key]) || data.demandOptions[key].some(value => typeof value !== 'string'))) {
-      throw new Error('需求选项结构无效：' + file);
-    }
-    if (Object.hasOwn(data.demandOptions ?? {}, 'category') &&
-        (!Array.isArray(data.demandOptions.category) || data.demandOptions.category.some(value => typeof value !== 'string'))) {
-      throw new Error('工单分类选项结构无效：' + file);
+    if (Object.hasOwn(data, 'demandOptions') &&
+        (demandOptionKinds.some(key => !validOptionList(data.demandOptions?.[key])) ||
+         taskOptionKinds.some(key => Object.hasOwn(data.demandOptions, key) && !validOptionList(data.demandOptions[key])))) {
+      throw new Error('基础配置选项结构无效：' + file);
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     data = {
       version: 1, users: [], profiles: [], tasks: [], demands: [], sessions: [], attachments: [],
-      demandOptions: { proj: [], proposer: [], category: [...defaultTaskCategories] },
+      demandOptions: { proj: [], proposer: [], ...structuredClone(defaultTaskOptions) },
       seq: { user: 1, profile: 1, task: 1, demand: 1 }
     };
   }
@@ -65,13 +69,14 @@ export function openStore(directory) {
     return result;
   }
 
-  if (!Object.hasOwn(data.demandOptions ?? {}, 'category')) {
+  const missingOptions = taskOptionKinds.filter(key => !Object.hasOwn(data.demandOptions ?? {}, key));
+  if (missingOptions.length) {
     update(db => {
-      db.demandOptions ??= Object.fromEntries(['proj', 'proposer'].map(key => {
+      db.demandOptions ??= Object.fromEntries(demandOptionKinds.map(key => {
         const names = db.demands.map(row => typeof row[key] === 'string' ? row[key].trim() : '').filter(Boolean);
         return [key, [...new Set(names)]];
       }));
-      db.demandOptions.category = [...defaultTaskCategories];
+      for (const key of missingOptions) db.demandOptions[key] = [...defaultTaskOptions[key]];
     });
   }
 

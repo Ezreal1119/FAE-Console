@@ -8,7 +8,7 @@ const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
     title: 180, proj: 100, owner_name: 100, assignee_id: 0, collaborator_ids: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
-    add_collaborator_ids: 0, keep_as_collaborator: 0, category: 100,
+    add_collaborator_ids: 0, keep_as_collaborator: 0, category: 100, device_type: 100, project_stage: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
   demands: { title: 180, proj: 100, descr: 10000, proposer: 100 }
@@ -17,9 +17,9 @@ const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', '开发中', '测试中', '已完成'];
 const priorities = ['低', '中', '高', '极高'];
 const defaultPriority = '中';
-const catalogKinds = new Set(['proj', 'proposer', 'category']);
+const catalogKinds = new Set(['proj', 'proposer', 'category', 'device_type', 'project_stage']);
 const taskProgressFields = new Set(['status', 'start', 'end', 'start_time', 'end_time', 'hours', 'result', 'attachment_name', 'attachment_path']);
-const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'category']);
+const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'category', 'device_type', 'project_stage']);
 const taskHandoverFields = ['assignee_id', 'keep_as_collaborator'];
 const expiry = 24 * 60 * 60 * 1000;
 
