@@ -11,7 +11,7 @@ const PAGE_TITLES = { home: '工作台', tasks: '任务中心', demands: '需求
 const dictionaries = { teams: '团队', roles: '岗位' };
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
-const defaultFilters = { taskQuery: '', taskStatus: '', taskOwner: '', taskScope: 'all', demandQuery: '', peopleQuery: '', peopleTeam: '' };
+const defaultFilters = { taskQuery: '', taskStatus: '', taskScope: 'mine', demandQuery: '', peopleQuery: '', peopleTeam: '' };
 const state = {
   user: null, tasks: [], demands: [], profiles: [], accounts: [], page: 'home', mode: 'login',
   filters: { ...defaultFilters },
@@ -122,10 +122,11 @@ function weekRange() {
 }
 function inWeek(value, [from, to]) { return value >= from && value <= to; }
 function overdue(task) { return task.status !== '已完成' && task.dueDate && task.dueDate < isoDate(); }
+function assignedToMe(task) { return same(task.assignee_id, state.user.id); }
+function collaboratingOn(task) { return (task.collaborators || []).some(person => same(person.id, state.user.id)); }
 function ownTask(task) {
-  return taskOwned(task) || task.collaborators?.some(person => same(person.id, state.user.id));
+  return assignedToMe(task) || collaboratingOn(task);
 }
-function taskOwned(task) { return same(task.creator_id ?? task.owner_id, state.user.id) || same(task.assignee_id, state.user.id); }
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
 function canUpdateTaskProgress(task) { return canEditTask(task) || same(task.assignee_id, state.user.id); }
 function canManageDemand(demand) { return admin() || same(demand.creator_id ?? demand.owner_id, state.user.id); }
@@ -199,6 +200,7 @@ function showWorkspace() {
 }
 async function enter(user, guidelinesPending) {
   state.user = user;
+  state.filters.taskScope = admin() ? 'all' : 'mine';
   state.guidelinesPending = guidelinesPending === true;
   state.catalog = loadCatalog();
   if (user.must_change_pwd) {
@@ -288,7 +290,7 @@ function distribution(rows) {
 function workspacePage() {
   const tasks = state.tasks.filter(ownTask);
   const active = tasks.filter(task => task.status !== '已完成');
-  const weekly = tasks.filter(task => taskOwned(task) && inWeek(task.endDate, weekRange()));
+  const weekly = tasks.filter(task => assignedToMe(task) && inWeek(task.endDate, weekRange()));
   const queue = [...active].sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999')).slice(0, 8);
   const rows = queue.map(task => `<tr><td>${action(task.title, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueDate)}</td></tr>`).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
@@ -297,11 +299,19 @@ function workspacePage() {
 }
 
 const taskHeaders = ['任务', '项目', '状态', '负责人', '合作者', '计划完成', '开始 / 完成', '工时', '附件', '操作'];
+const personalTaskScopes = [['mine', '我的全部任务'], ['assigned', '我是责任人'], ['collaborating', '我是合作者']];
+
+function matchesTaskScope(task, scope) {
+  if (scope === 'all' && admin()) return true;
+  if (scope === 'assigned') return assignedToMe(task);
+  if (scope === 'collaborating') return collaboratingOn(task);
+  return ownTask(task);
+}
+
 function filteredTasks() {
-  const { taskQuery, taskStatus, taskOwner, taskScope } = state.filters;
-  return state.tasks.filter(task => (taskScope !== 'mine' || ownTask(task)) &&
-    (!taskStatus || task.status === taskStatus) && (!taskOwner || task.owner_name === taskOwner) &&
-    hasText(taskQuery, task.title, task.id, task.proj, task.desc, task.result, collaboratorNames(task)));
+  const { taskQuery, taskStatus, taskScope } = state.filters;
+  return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
+    hasText(taskQuery, task.title, task.id, task.proj, task.owner_name, task.desc, task.result, collaboratorNames(task)));
 }
 function fileAction(task) {
   if (!task.fileName) return '—';
@@ -319,9 +329,9 @@ function taskRows() {
       : canUpdateTaskProgress(task) ? action('更新进度', 'task-edit', task.id, 'link') : '—'}</div></td></tr>`).join('');
 }
 function tasksPage() {
-  const owners = unique(state.tasks.map(task => task.owner_name));
-  const scope = `<select aria-label="任务范围" data-filter="taskScope">${option('all', state.filters.taskScope, admin() ? '全部任务' : '可见任务')}${option('mine', state.filters.taskScope, '我的任务')}</select>`;
-  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号或项目')}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${filterSelect('taskOwner', '按负责人过滤', owners, '全部负责人')}${scope}</div>`;
+  const scopes = admin() ? [['all', '所有任务'], ...personalTaskScopes] : personalTaskScopes;
+  const scope = `<select aria-label="任务范围" data-filter="taskScope">${scopes.map(([value, label]) => option(value, state.filters.taskScope, label)).join('')}</select>`;
+  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目或负责人')}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${scope}</div>`;
   return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     panel('任务列表', toolbar + table(taskHeaders, taskRows(), '没有匹配的任务。', 'task-rows'), '<span id="task-count" class="muted text-small">' + filteredTasks().length + ' 项</span>');
 }
@@ -857,7 +867,8 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
 }
 
 function peopleChoices(people) {
-  return people.map(({ id, name, emp_no }) => ({ id, name, label: `${name} · ${emp_no}` })).sort((a, b) => sortZh(a.label, b.label));
+  return people.map(({ id, name, emp_no, is_admin }) => ({ id, name, label: `${name} · ${emp_no}`, searchOnly: is_admin }))
+    .sort((a, b) => sortZh(a.label, b.label));
 }
 
 function collaboratorField(open = false) {
@@ -874,24 +885,30 @@ function bindCollaborators(field, initial, owner) {
   let people = [];
 
   function filterPeople() {
+    const query = search.value.trim();
+    const options = list.querySelectorAll('label');
     let matches = 0;
-    for (const option of list.querySelectorAll('label')) {
-      option.hidden = !hasText(search.value, option.textContent);
+    for (const option of options) {
+      option.hidden = query ? !hasText(query, option.textContent)
+        : option.hasAttribute('data-search-only') && !option.querySelector('input').checked;
       if (!option.hidden) matches++;
     }
-    list.querySelector('[data-collaborator-empty]').hidden = matches > 0;
+    const empty = list.querySelector('[data-collaborator-empty]');
+    empty.hidden = matches > 0;
+    empty.textContent = query ? '没有匹配的成员。' : options.length ? '输入姓名或工号搜索成员。' : '没有可选的成员。';
   }
   function showSelected() {
     label.textContent = [...selected.values()].join('、') || '未选择';
   }
   function renderPeople() {
-    const available = new Map(people.map(person => [person.id, person.label]));
+    const available = new Map(people.map(person => [person.id, person]));
     for (const [id, name] of selected) {
-      if (!available.has(id)) available.set(id, name + '（不可选）');
+      if (!available.has(id)) available.set(id, { label: name + '（不可选）' });
     }
     available.delete(owner);
-    list.innerHTML = [...available].map(([id, name]) => `<label class="collaborator-option"><input type="checkbox" value="${id}" ${selected.has(id) ? 'checked' : ''}>
-      <span>${text(name)}</span></label>`).join('') + '<p class="muted text-small" data-collaborator-empty>没有可选的成员。</p>';
+    list.innerHTML = [...available].map(([id, person]) => `<label class="collaborator-option"${person.searchOnly ? ' data-search-only' : ''}>
+      <input type="checkbox" value="${id}" ${selected.has(id) ? 'checked' : ''}>
+      <span>${text(person.label)}</span></label>`).join('') + '<p class="muted text-small" data-collaborator-empty></p>';
     filterPeople();
     showSelected();
   }
@@ -904,8 +921,9 @@ function bindCollaborators(field, initial, owner) {
       if (person) selected.set(id, person.name);
     } else {
       selected.delete(id);
-      if (!people.some(person => person.id === id)) renderPeople();
+      if (!people.some(person => person.id === id)) return renderPeople();
     }
+    filterPeople();
     showSelected();
   });
   renderPeople();
@@ -1246,7 +1264,7 @@ async function downloadTask(id) {
 async function exportTasks() {
   const [from, to] = weekRange();
   const selected = state.page === 'tasks' ? filteredTasks() : state.tasks.filter(ownTask);
-  const teamScope = state.page === 'tasks' && admin() && state.filters.taskScope !== 'mine';
+  const teamScope = state.page === 'tasks' && admin() && state.filters.taskScope === 'all';
   let rows = selected.filter(task => inWeek(task.startDate, [from, to]) || inWeek(task.endDate, [from, to]));
   if (!rows.length) rows = selected.filter(task => inWeek(task.dueDate, [from, to]) || ['开发中', '测试中'].includes(task.status));
   if (!rows.length) throw new Error('本周没有可导出的任务。');

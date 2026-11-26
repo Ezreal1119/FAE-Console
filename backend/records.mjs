@@ -339,9 +339,12 @@ export function openRecords(store) {
 
     demandChoices() {
       const db = store.read();
-      const users = new Map(db.users.map(user => [user.id, user.account]));
+      const users = new Map(db.users.map(user => [user.id, user]));
       const people = db.profiles.filter(profile => profile.status !== '已离职' && profile.display_name && users.has(profile.owner_id))
-        .map(profile => ({ id: profile.owner_id, name: profile.display_name, emp_no: profile.emp_no || users.get(profile.owner_id) }));
+        .map(profile => {
+          const user = users.get(profile.owner_id);
+          return { id: user.id, name: profile.display_name, emp_no: profile.emp_no || user.account, is_admin: isAdmin(user) };
+        });
       return { options: db.demandOptions, people };
     },
 
