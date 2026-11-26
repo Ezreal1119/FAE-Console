@@ -18,7 +18,10 @@ const catalogLabels = { proj: '项目', proposer: '需求提出方', category: '
 const taskContextFields = ['device_type', 'project_stage'];
 const otherTaskCategory = '其他';
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
-const defaultFilters = { taskQuery: '', taskCategory: '', taskStatus: '', taskScope: 'mine', demandQuery: '', peopleQuery: '', peopleTeam: '' };
+const defaultFilters = {
+  taskQuery: '', taskCategory: '', taskStatus: '', taskPriority: '', taskScope: 'mine',
+  demandQuery: '', peopleQuery: '', peopleTeam: ''
+};
 const listPageSize = 10;
 const firstListPages = { tasks: 1, demands: 1 };
 const state = {
@@ -26,6 +29,7 @@ const state = {
   registrationEnabled: false,
   filters: { ...defaultFilters },
   listPages: { ...firstListPages },
+  taskSort: null,
   catalog: { teams: [], roles: [] },
   taskCategories: new Set(),
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proj',
@@ -53,6 +57,7 @@ const sortZh = (a, b) => a.localeCompare(b, 'zh-CN');
 const unique = values => [...new Set(values.filter(Boolean))].sort(sortZh);
 const trimmed = value => String(value ?? '').trim();
 const optional = value => trimmed(value) || null;
+const taskPriority = priority => PRIORITY.includes(priority) ? priority : '中';
 const sumHours = rows => Math.round(rows.reduce((sum, row) => sum + (Number(row.hours) || 0), 0) * 100) / 100;
 const withHours = value => value == null || value === '' ? '—' : value + 'h';
 const hasText = (query, ...fields) => fields.join(' ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
@@ -180,6 +185,7 @@ function showAuth(error = '') {
   state.page = 'home';
   state.filters = { ...defaultFilters };
   state.listPages = { ...firstListPages };
+  state.taskSort = null;
   document.title = '工程小管家';
   if (taskHandoverDialog.open) taskHandoverDialog.close('cancel');
   dialog.close();
@@ -308,8 +314,15 @@ function panel(title, body, accessory = '') {
 function stats(items) {
   return `<div class="stats">${items.map(([label, value, detail]) => `<div class="stat"><div class="stat-label">${text(label)}</div><div class="stat-value">${text(value)}</div>${detail ? '<div class="stat-detail">' + text(detail) + '</div>' : ''}</div>`).join('')}</div>`;
 }
+function tableHeader(header) {
+  if (typeof header === 'string') return `<th scope="col">${text(header)}</th>`;
+  const { label, sortKey } = header;
+  const direction = state.taskSort?.key === sortKey ? state.taskSort.direction : null;
+  return `<th scope="col"${direction ? ' aria-sort="' + direction + '"' : ''}>
+    <button type="button" class="task-sort-button" data-task-sort="${sortKey}">${text(label)}<span class="sort-indicator" aria-hidden="true"></span></button></th>`;
+}
 function table(headers, rows, empty, bodyId = '') {
-  return `<div class="table-wrap"><table><thead><tr>${headers.map(label => '<th scope="col">' + text(label) + '</th>').join('')}</tr></thead><tbody${bodyId ? ' id="' + bodyId + '"' : ''}>${rows || emptyRow(headers.length, empty)}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr>${headers.map(tableHeader).join('')}</tr></thead><tbody${bodyId ? ' id="' + bodyId + '"' : ''}>${rows || emptyRow(headers.length, empty)}</tbody></table></div>`;
 }
 function emptyRow(columns, message) { return `<tr><td colspan="${columns}" class="empty">${text(message)}</td></tr>`; }
 function statusBadge(status) {
@@ -317,7 +330,7 @@ function statusBadge(status) {
   return `<span class="tag ${variant}">${shown(status)}</span>`;
 }
 function priorityBadge(priority) {
-  const label = PRIORITY.includes(priority) ? priority : '中';
+  const label = taskPriority(priority);
   const variant = { 低: 'done', 中: 'start', 高: 'test', 极高: 'danger' }[label];
   return `<span class="tag ${variant}">${text(label)}</span>`;
 }
@@ -359,7 +372,12 @@ function workspacePage() {
     `<div class="grid-two">${panel('我的待办', table(['任务', '项目', '状态', '计划完成'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>`;
 }
 
-const taskHeaders = ['任务', '项目', '工单分类', '状态', '优先级', '负责人', '计划完成', '开始 / 完成', '工时', '操作'];
+const taskHeaders = [
+  '任务', '项目', '工单分类', '状态', { label: '优先级', sortKey: 'pri' }, '负责人',
+  { label: '计划完成', sortKey: 'dueDate' }, { label: '开始日期', sortKey: 'startDate' },
+  { label: '完成日期', sortKey: 'endDate' }, '工时', '操作'
+];
+const taskSortDefaults = { pri: 'descending', dueDate: 'ascending', startDate: 'ascending', endDate: 'ascending' };
 const personalTaskScopes = [['mine', '我的全部任务'], ['assigned', '我是责任人'], ['collaborating', '我是合作者']];
 
 function matchesTaskScope(task, scope) {
@@ -374,10 +392,25 @@ function taskCategoryLabel(task) {
 }
 
 function filteredTasks() {
-  const { taskQuery, taskCategory, taskStatus, taskScope } = state.filters;
+  const { taskQuery, taskCategory, taskStatus, taskPriority: priority, taskScope } = state.filters;
   return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
-    (!taskCategory || taskCategoryLabel(task) === taskCategory) &&
+    (!taskCategory || taskCategoryLabel(task) === taskCategory) && (!priority || taskPriority(task.pri) === priority) &&
     hasText(taskQuery, task.title, task.id, task.proj, task.owner_name, task.desc, task.result, collaboratorNames(task)));
+}
+function sortedTaskList() {
+  const tasks = filteredTasks();
+  if (!state.taskSort) return tasks;
+  const { key, direction } = state.taskSort;
+  const multiplier = direction === 'ascending' ? 1 : -1;
+  if (key === 'pri') {
+    return tasks.sort((a, b) => multiplier * (PRIORITY.indexOf(taskPriority(a.pri)) - PRIORITY.indexOf(taskPriority(b.pri))));
+  }
+  return tasks.sort((a, b) => {
+    const left = a[key];
+    const right = b[key];
+    if (!left || !right) return Number(!left) - Number(!right);
+    return multiplier * left.localeCompare(right);
+  });
 }
 function fileAction(task) {
   if (!task.fileName) return '—';
@@ -398,8 +431,8 @@ function taskRows(tasks) {
     <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
     <td>${shown(task.proj)}</td><td>${text(taskCategoryLabel(task))}</td><td>${statusBadge(task.status)}</td>
     <td>${priorityBadge(task.pri)}</td><td>${shown(task.owner_name)}</td>
-    <td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueDate)}</td>
-    <td>${shown(task.startDate)}<small class="muted">${shown(task.endDate)}</small></td><td>${text(withHours(task.hours))}</td>
+    <td class="task-date${overdue(task) ? ' text-red' : ''}">${shown(task.dueDate)}</td>
+    <td class="task-date">${shown(task.startDate)}</td><td class="task-date">${shown(task.endDate)}</td><td>${text(withHours(task.hours))}</td>
     <td><div class="row-actions">${taskEditActions(task, 'link') + remove || '—'}${ownerBadge}</div></td></tr>`;
   }).join('');
 }
@@ -407,7 +440,8 @@ function tasksPage() {
   const scopes = admin() ? [['all', '所有任务'], ...personalTaskScopes] : personalTaskScopes;
   const scope = `<select aria-label="任务范围" data-filter="taskScope">${scopes.map(([value, label]) => option(value, state.filters.taskScope, label)).join('')}</select>`;
   const category = filterSelect('taskCategory', '按工单分类筛选', [...state.taskCategories, otherTaskCategory], '全部分类');
-  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${scope}</div>`;
+  const priority = filterSelect('taskPriority', '按优先级筛选', PRIORITY, '全部优先级');
+  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
   return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     pagedListPanel('tasks', toolbar);
 }
@@ -444,12 +478,12 @@ function demandsPage() {
 }
 
 const pagedLists = {
-  tasks: { id: 'task', title: '任务列表', headers: taskHeaders, filter: filteredTasks, rows: taskRows, empty: '没有匹配的任务。' },
-  demands: { id: 'demand', title: '需求列表', headers: demandHeaders, filter: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
+  tasks: { id: 'task', title: '任务列表', headers: taskHeaders, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
+  demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
 };
 function listPage(key) {
-  const { filter, rows } = pagedLists[key];
-  const matches = filter();
+  const { items, rows } = pagedLists[key];
+  const matches = items();
   const lastPage = Math.max(1, Math.ceil(matches.length / listPageSize));
   const page = Math.min(Math.max(state.listPages[key], 1), lastPage);
   state.listPages[key] = page;
@@ -482,6 +516,22 @@ function updatePagedList(key) {
   pager.querySelector('[data-list-step="-1"]').disabled = page.previousDisabled;
   pager.querySelector('[data-list-step="1"]').disabled = page.nextDisabled;
   return pager;
+}
+
+function toggleTaskSort(button) {
+  const key = button.dataset.taskSort;
+  const firstDirection = taskSortDefaults[key];
+  const current = state.taskSort;
+  let direction = firstDirection;
+  if (current?.key === key) {
+    const reverse = firstDirection === 'ascending' ? 'descending' : 'ascending';
+    direction = current.direction === firstDirection ? reverse : null;
+  }
+  state.taskSort = direction ? { key, direction } : null;
+  state.listPages.tasks = 1;
+  content.querySelector('th[aria-sort]')?.removeAttribute('aria-sort');
+  if (direction) button.closest('th').setAttribute('aria-sort', direction);
+  updatePagedList('tasks');
 }
 
 function demandCatalogPage() {
@@ -954,7 +1004,7 @@ function taskForm(task = {}, demand) {
       `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
     : ownerField;
   const setupFields = identityFields + collaboratorField() +
-    `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, PRIORITY.includes(task.pri) ? task.pri : '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
+    `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, taskPriority(task.pri))}${field('计划完成', 'due', task.dueDate, 'type="date"')}
       ${taskOptionField('category')}
       ${canPlanHours ? field('计划工时（小时）', 'planned_hours', task.planned_hours, 'type="number" min="0" step="0.01"') : ''}
       ${taskContextFields.map(taskOptionField).join('')}</div>` +
@@ -1730,6 +1780,7 @@ document.addEventListener('click', async event => {
   if (!button) return;
   if (button.dataset.auth) return setAuthMode(button.dataset.auth);
   if (button.dataset.page) return navigate(button.dataset.page);
+  if (state.user && state.page === 'tasks' && Object.hasOwn(taskSortDefaults, button.dataset.taskSort)) return toggleTaskSort(button);
   if (button.dataset.listStep && state.user && Object.hasOwn(pagedLists, state.page)) {
     const hadFocus = document.activeElement === button;
     state.listPages[state.page] += Number(button.dataset.listStep);

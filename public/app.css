@@ -138,8 +138,15 @@ select { appearance: none; padding-right: 30px; background-image: linear-gradien
 table { width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem; }
 th, td { padding: 11px 9px; border-bottom: 1px solid #e9eef4; vertical-align: top; }
 th { color: var(--muted); background: #f5f8fc; font-weight: 650; white-space: nowrap; }
+.task-sort-button { display: inline-flex; align-items: center; gap: 5px; border: 0; padding: 0; background: transparent; color: inherit; }
+.task-sort-button:hover, th[aria-sort] .task-sort-button { color: var(--brand-dark); }
+.sort-indicator { width: 1em; text-align: center; }
+.sort-indicator::before { content: '↕'; }
+th[aria-sort="ascending"] .sort-indicator::before { content: '↑'; }
+th[aria-sort="descending"] .sort-indicator::before { content: '↓'; }
 td { overflow-wrap: anywhere; }
 td:first-child { min-width: 105px; }
+.task-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: 0; }
 .row-actions { display: flex; gap: 11px; white-space: nowrap; }
 .number { color: var(--muted); font-size: .79rem; margin-left: 5px; }
