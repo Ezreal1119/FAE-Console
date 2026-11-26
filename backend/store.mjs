@@ -33,6 +33,21 @@ export class RequestError extends Error {
   }
 }
 
+export function readDatabase(file) {
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  const collections = ['users', 'profiles', 'tasks', 'demands', 'sessions', 'attachments'];
+  if (data?.version !== 1 || collections.some(key => !Array.isArray(data[key])) ||
+      ['user', 'profile', 'task', 'demand'].some(key => !Number.isSafeInteger(data.seq?.[key]) || data.seq[key] < 1)) {
+    throw new Error('数据库结构无效：' + file);
+  }
+  if (Object.hasOwn(data, 'demandOptions') &&
+      (demandOptionKinds.some(key => !validOptionList(data.demandOptions?.[key])) ||
+       taskOptionKinds.some(key => Object.hasOwn(data.demandOptions, key) && !validOptionList(data.demandOptions[key])))) {
+    throw new Error('基础配置选项结构无效：' + file);
+  }
+  return data;
+}
+
 export function openStore(directory) {
   const file = join(directory, 'db.json');
   const attachments = join(directory, 'attachments');
@@ -40,17 +55,7 @@ export function openStore(directory) {
 
   let data;
   try {
-    data = JSON.parse(readFileSync(file, 'utf8'));
-    const collections = ['users', 'profiles', 'tasks', 'demands', 'sessions', 'attachments'];
-    if (data?.version !== 1 || collections.some(key => !Array.isArray(data[key])) ||
-        ['user', 'profile', 'task', 'demand'].some(key => !Number.isSafeInteger(data.seq?.[key]) || data.seq[key] < 1)) {
-      throw new Error('数据库结构无效：' + file);
-    }
-    if (Object.hasOwn(data, 'demandOptions') &&
-        (demandOptionKinds.some(key => !validOptionList(data.demandOptions?.[key])) ||
-         taskOptionKinds.some(key => Object.hasOwn(data.demandOptions, key) && !validOptionList(data.demandOptions[key])))) {
-      throw new Error('基础配置选项结构无效：' + file);
-    }
+    data = readDatabase(file);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     data = {

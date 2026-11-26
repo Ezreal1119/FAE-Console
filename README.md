@@ -31,6 +31,47 @@ npm start
 - systemd 配置要求通过 HTTPS 使用登录会话。用本地端口检查服务时，首页仍可访问。
 - 附件单文件最多 20 MB。周任务可导出 ZIP，内含 CSV 和有权限下载的附件。原桌面版的本地附件需从原电脑重新上传。
 
+## 一次性导入工程中心 WBS
+
+先部署本版代码并启动一次服务，以便读到最新的项目和分类配置。在服务器创建权限为 `0700` 的仓库外目录，例如 `$HOME/fae-wbs-import`。用 SFTP 上传原始 `工程中心WBS.xlsx` 到该目录，原表、数据库副本和预览报告都保存在这个目录。下面的 `admin` 请换成系统中已有的管理员登录账号。
+
+```bash
+cd /opt/fae-console
+umask 077
+wbs_work="$HOME/fae-wbs-import"
+wbs_db=/var/lib/fae-console/db.json
+wbs_admin=admin
+sudo cat "$wbs_db" > "$wbs_work/preview-db.json"
+node backend/import-wbs.mjs preview \
+  --file "$wbs_work/工程中心WBS.xlsx" --db "$wbs_work/preview-db.json" \
+  --admin "$wbs_admin" --report "$wbs_work/preview.json"
+```
+
+查看 `preview.json` 的 `totals` 和 `rows`，核对待导入任务、未匹配的负责人、重复行和日期提醒。报告的 `confirm` 是本次导入的校验码。确认后停服务并保存最终备份，再执行写入。以下命令会生成一个新的数据库副本，供确认后替换。
+
+```bash
+wbs_confirm='填写预览报告里的 confirm'
+sudo systemctl stop fae-console &&
+  wbs_backup=$(mktemp "$wbs_work/before-import-db.XXXXXX") &&
+  sudo cat "$wbs_db" > "$wbs_backup" &&
+  node backend/import-wbs.mjs apply \
+    --file "$wbs_work/工程中心WBS.xlsx" --db "$wbs_backup" \
+    --admin "$wbs_admin" --confirm "$wbs_confirm" --output "$wbs_work/imported-db.json"
+```
+
+导入成功且 `imported` 大于零时，把新副本以原数据库的所有者和权限放回原位置，再启动服务。校验码不一致时，使用 `$wbs_backup` 和新的报告文件重新预览。导入失败或没有需要导入的记录时，可直接启动服务。
+
+```bash
+wbs_next=$(sudo mktemp /var/lib/fae-console/.wbs-db.XXXXXX) &&
+  sudo cp "$wbs_work/imported-db.json" "$wbs_next" &&
+  sudo chown --reference="$wbs_db" "$wbs_next" &&
+  sudo chmod --reference="$wbs_db" "$wbs_next" &&
+  sudo mv -T "$wbs_next" "$wbs_db" &&
+  sudo systemctl start fae-console
+```
+
+重启后在任务中心抽查负责人、状态和日期。保留 `$wbs_backup` 指向的文件作为备份。需要回滚时，停服务后用同样的替换步骤恢复这个备份。
+
 ## 企业微信机器人
 
 `fae-wecom-bridge.service` 独立运行，通过企业微信智能机器人的 WebSocket 长连接收发消息。在机器人会话里发送 `/test`，机器人回复 `hello`。

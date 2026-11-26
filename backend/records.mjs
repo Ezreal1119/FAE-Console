@@ -253,6 +253,15 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
   return result;
 }
 
+export function insertHistoricalTask(db, admin, member, fields) {
+  const { row } = insertRecord(db, admin, 'tasks', cleanFields('tasks', fields));
+  // Match the existing account even when the member has since left the team.
+  row.assignee_id = member.id;
+  row.owner_name = member.name;
+  delete row.pri;
+  return row;
+}
+
 export function openRecords(store, { recordTaskChange } = {}) {
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
   if (store.read().tasks.some(needsReceiver)) {
