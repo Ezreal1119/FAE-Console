@@ -107,12 +107,13 @@ function sessionKey(token) {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function createSession(db, user) {
+function createSession(db, user, guidelinesPending) {
   const token = randomBytes(32).toString('base64url');
   const time = Date.now();
   db.sessions = db.sessions.filter(session => session.expires_at > time);
-  db.sessions.push({ id: sessionKey(token), user_id: user.id, expires_at: time + sessionSeconds * 1000 });
-  return { token, user: publicAccount(user) };
+  db.sessions.push({ id: sessionKey(token), user_id: user.id, expires_at: time + sessionSeconds * 1000,
+    guidelines_pending: guidelinesPending });
+  return { token, user: publicAccount(user), guidelinesPending };
 }
 
 function configureAdmin(store, settings) {
@@ -155,7 +156,7 @@ function configureAdmin(store, settings) {
   return adminCredentials;
 }
 
-export function openAccounts(store, settings) {
+export function openAccounts(store, settings, { guidelinesEnabled = false } = {}) {
   const adminCredentials = configureAdmin(store, settings);
   const dummy = credentials(randomBytes(24).toString('base64url'));
 
@@ -165,7 +166,7 @@ export function openAccounts(store, settings) {
       const user = store.read().users.find(item => item.account === accountName(account));
       const valid = verify(value, user && isAdmin(user) ? adminCredentials : user || dummy);
       if (!user || !valid) throw new RequestError(401, '账号或密码不正确。');
-      return store.update(db => createSession(db, user));
+      return store.update(db => createSession(db, user, guidelinesEnabled));
     },
 
     register({ account, name, password }) {
@@ -173,7 +174,7 @@ export function openAccounts(store, settings) {
       return store.update(db => {
         const user = addMemberAccount(db, accountName(account), requiredName(name), credentials(passwordValue(password)));
         addProfile(db, user);
-        return createSession(db, user);
+        return createSession(db, user, guidelinesEnabled);
       });
     },
 
@@ -183,11 +184,19 @@ export function openAccounts(store, settings) {
       const db = store.read();
       const session = db.sessions.find(item => item.id === id && item.expires_at > Date.now());
       const user = session && db.users.find(item => item.id === session.user_id);
-      return user ? { id, user } : null;
+      return user ? { id, user, guidelinesPending: guidelinesEnabled && session.guidelines_pending === true } : null;
     },
 
     me(session) {
-      return { user: publicAccount(session.user) };
+      return { user: publicAccount(session.user), guidelinesPending: session.guidelinesPending };
+    },
+
+    acknowledgeGuidelines(session) {
+      if (!session.guidelinesPending) return;
+      store.update(db => {
+        const current = db.sessions.find(item => item.id === session.id);
+        current.guidelines_pending = false;
+      });
     },
 
     signOut(session) {

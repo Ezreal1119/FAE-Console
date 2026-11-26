@@ -45,6 +45,12 @@ WECOM_BOT_SECRET=你的机器人Secret
 
 首次安装 Bridge 需要在项目根目录运行 `npm ci --omit=dev`，安装 `deploy/fae-wecom-bridge.service` 并执行 `systemctl daemon-reload`。配置或更换凭据后执行 `systemctl restart fae-wecom-bridge`。运行日志可用 `journalctl -u fae-wecom-bridge -n 30 --no-pager` 查看。本地测试用 `npm run wecom:bridge`。
 
+## 行为规范
+
+规范正文放在项目根目录的 `private/guidelines.json`，整个 `private/` 目录由 Git 忽略。阿里云部署时将文件单独复制到 `/opt/fae-console/private/guidelines.json`。目录和文件使用 `root:root`，权限分别设为 `0700` 和 `0600`。服务启动时由 systemd 将正文只读提供给服务进程，网页通过登录接口读取。部署内部规范前请在项目 `.env` 中设置 `ALLOW_REGISTRATION=0`。
+
+首次上线规范时，安装新版 `deploy/fae-console.service`，执行 `systemctl daemon-reload` 后重启 `fae-console`。以后更新规范只需替换正文文件并重启服务。
+
 ## Windows 免安装版
 
 桌面版在 Electron 窗口中打开线上工作台，并加载经典浅色侧栏样式。网页和桌面使用同一个前端、API 和线上账号。网页业务功能上线后，桌面用户重新打开即可加载更新。桌面外壳、桌面专用样式或 Electron 版本有改动时，需要重新打包。

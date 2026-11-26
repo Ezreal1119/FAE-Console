@@ -17,7 +17,21 @@ const sessionCookie = 'fae_console_session';
 const attachmentLimit = 20 * 1024 * 1024;
 const dataDirectory = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : fileURLToPath(new URL('./data/', import.meta.url));
 const store = openStore(dataDirectory);
-const accounts = openAccounts(store, process.env);
+const guidelinesFile = process.env.CREDENTIALS_DIRECTORY
+  ? resolve(process.env.CREDENTIALS_DIRECTORY, 'guidelines.json')
+  : new URL('./private/guidelines.json', import.meta.url);
+const guidelines = await readFile(guidelinesFile, 'utf8').then(source => {
+  const document = JSON.parse(source);
+  if (document === null) return null;
+  if (!document?.title || !Array.isArray(document.sections) || !document.sections.length) {
+    throw new Error('行为规范内容不完整');
+  }
+  return document;
+}).catch(error => {
+  if (error.code !== 'ENOENT') console.error('行为规范加载失败：', error.code || error.name);
+  return null;
+});
+const accounts = openAccounts(store, process.env, { guidelinesEnabled: guidelines !== null });
 const records = openRecords(store);
 
 const assets = new Map([
@@ -29,6 +43,7 @@ const assets = new Map([
 const apiRoutes = new Map([
   ['/api/login', 'POST'], ['/api/register', 'POST'], ['/api/logout', 'POST'],
   ['/api/me', 'GET'], ['/api/password', 'POST'], ['/api/first-password', 'POST'],
+  ['/api/guidelines', 'GET'], ['/api/guidelines/acknowledge', 'POST'],
   ['/api/admin/accounts', 'GET'], ['/api/admin/add-member', 'POST'],
   ['/api/admin/member-import-template', 'GET'], ['/api/admin/import-members', 'POST'],
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
@@ -159,6 +174,10 @@ async function download(res, user, id) {
 function privateApi(path, session, body) {
   switch (path) {
     case '/api/me': return accounts.me(session);
+    case '/api/guidelines': return { guidelines };
+    case '/api/guidelines/acknowledge':
+      accounts.acknowledgeGuidelines(session);
+      return {};
     case '/api/password':
     case '/api/first-password':
       accounts.changePassword(session, body, path === '/api/first-password');
@@ -182,9 +201,9 @@ async function handleApi(req, res, path, attachmentId) {
     const key = path + ':' + clientAddress(req);
     const signIn = path === '/api/login';
     authAttempts.attempt(key, signIn ? 30 : 10);
-    const { token, user } = signIn ? accounts.signIn(body) : accounts.register(body);
+    const { token, user, guidelinesPending } = signIn ? accounts.signIn(body) : accounts.register(body);
     if (signIn) authAttempts.clear(key);
-    return sendJson(res, 200, { ok: true, user }, { 'Set-Cookie': sessionHeader(token) });
+    return sendJson(res, 200, { ok: true, user, guidelinesPending }, { 'Set-Cookie': sessionHeader(token) });
   }
 
   const session = sessionFor(req, path);

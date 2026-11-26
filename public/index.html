@@ -56,6 +56,9 @@
         <button class="nav-item" data-page="board"><span class="nav-icon" aria-hidden="true">▥</span>数据看板</button>
         <button class="nav-item" data-page="account"><span class="nav-icon" aria-hidden="true">◉</span>我的账号</button>
       </nav>
+      <div class="sidebar-resources">
+        <button type="button" class="sidebar-reference" data-page="guidelines"><span class="sidebar-reference-icon" aria-hidden="true"></span>行为规范</button>
+      </div>
       <div class="sidebar-footer">
         <span id="avatar" class="avatar"></span>
         <span class="sidebar-user"><strong id="user-name"></strong><small id="user-role"></small></span>
@@ -69,6 +72,14 @@
   </div>
 
   <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <dialog id="guidelines-dialog" class="guidelines-dialog" aria-labelledby="guidelines-dialog-title" closedby="none">
+    <header class="guidelines-dialog-header"><h2 id="guidelines-dialog-title" tabindex="-1" autofocus>工程部员工作业流程及行为规范</h2></header>
+    <div id="guidelines-dialog-body" class="guidelines-dialog-body" tabindex="0" role="region" aria-label="行为规范正文"></div>
+    <footer class="guidelines-dialog-footer">
+      <p id="guidelines-confirm-error" class="form-error" role="alert" hidden></p>
+      <button id="confirm-guidelines" class="button primary" type="button" disabled>确认</button>
+    </footer>
+  </dialog>
   <div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

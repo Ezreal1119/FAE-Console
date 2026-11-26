@@ -7,6 +7,8 @@ Type=simple
 WorkingDirectory=/opt/fae-console
 Environment=HOST=127.0.0.1 PORT=4173 SECURE_COOKIE=1 TRUST_PROXY=1 DATA_DIR=/var/lib/fae-console
 EnvironmentFile=/opt/fae-console/.env
+LoadCredential=guidelines.json:/opt/fae-console/private/guidelines.json
+SetCredential=guidelines.json:null
 ExecStart=/usr/bin/env node /opt/fae-console/server.mjs
 DynamicUser=yes
 StateDirectory=fae-console

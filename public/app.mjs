@@ -3,10 +3,11 @@ import { exportWeek } from './export.mjs';
 const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const dialog = $('#dialog');
+const guidelinesDialog = $('#guidelines-dialog');
 const STATUS = ['待规划', '开发中', '测试中', '已完成'];
 const PRIORITY = ['高', '中', '低'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
@@ -16,10 +17,12 @@ const state = {
   filters: { ...defaultFilters },
   catalog: { teams: [], roles: [] },
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proj',
+  guidelines: undefined, guidelinesError: '', guidelinesPending: false,
   loadWarnings: []
 };
 let toastTimer;
 let demandCatalogLoad;
+let guidelinesLoad;
 
 function text(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -141,11 +144,17 @@ function showAuth(error = '') {
   state.demandCatalog = null;
   state.demandCatalogError = '';
   state.demandCatalogKind = 'proj';
+  state.guidelines = undefined;
+  state.guidelinesError = '';
+  state.guidelinesPending = false;
+  guidelinesLoad = undefined;
   state.loadWarnings = [];
   state.page = 'home';
   state.filters = { ...defaultFilters };
   document.title = '工程小管家';
   dialog.close();
+  guidelinesDialog.close();
+  content.replaceChildren();
   $('#loading-view').hidden = true;
   $('#workspace').hidden = true;
   $('#auth-view').hidden = false;
@@ -183,8 +192,9 @@ function showWorkspace() {
   $('#today').dateTime = isoDate();
   $('#today').textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'full' }).format(new Date());
 }
-async function enter(user) {
+async function enter(user, guidelinesPending) {
   state.user = user;
+  state.guidelinesPending = guidelinesPending === true;
   state.catalog = loadCatalog();
   if (user.must_change_pwd) {
     $('#loading-view').hidden = true;
@@ -192,8 +202,12 @@ async function enter(user) {
     forcePassword();
     return;
   }
+  await enterWorkspace();
+}
+async function enterWorkspace() {
   showWorkspace();
   content.innerHTML = '<p class="empty">正在读取工作数据…</p>';
+  if (state.guidelinesPending) openGuidelinesNotice();
   await refresh();
 }
 async function refresh() {
@@ -415,8 +429,95 @@ function accountPage() {
     panel('账号信息', details([['账号', state.user.account], ['姓名', myName()], ['系统权限', state.user.role]]));
 }
 
+function guidelinesTable({ caption, rows, form }, label) {
+  const cells = (row, heading) => row.map((cell, index) => {
+    const value = typeof cell === 'string' ? cell : cell.text;
+    const span = Number(cell.span) || 1;
+    const scope = heading ? 'col' : (form ? index % 2 === 0 : index === 0) ? 'row' : '';
+    const tag = scope ? 'th' : 'td';
+    return `<${tag}${scope ? ` scope="${scope}"` : ''}${span > 1 ? ` colspan="${span}"` : ''}>${text(value)}</${tag}>`;
+  }).join('');
+  const header = form ? '' : `<thead><tr>${cells(rows[0], true)}</tr></thead>`;
+  const contents = (form ? rows : rows.slice(1)).map(row => `<tr>${cells(row, false)}</tr>`).join('');
+  return `<div class="table-wrap guidelines-table" role="region" tabindex="0" aria-label="${text(caption || label)}">
+    <table${rows[0].length > 5 ? ' class="guidelines-wide-table"' : ''}>${caption ? `<caption>${text(caption)}</caption>` : ''}${header}<tbody>${contents}</tbody></table>
+  </div>`;
+}
+
+function guidelinesDocument(document, location) {
+  const inNotice = location === 'notice';
+  const headingTag = inNotice ? 'h3' : 'h2';
+  const sectionId = index => `guidelines-${location}-${index + 1}`;
+  const nav = `<nav class="guidelines-toc" aria-label="行为规范目录"><p>目录</p><ul>${document.sections.map((section, index) =>
+    `<li>${action(section.title, 'guidelines-jump', sectionId(index), 'guidelines-toc-link')}</li>`).join('')}</ul></nav>`;
+  const sections = document.sections.map((section, index) => `<section class="guidelines-section" aria-labelledby="${sectionId(index)}">
+    <${headingTag} id="${sectionId(index)}" tabindex="-1">${text(section.title)}</${headingTag}>
+    ${(section.articles || []).map(article => `<div class="guidelines-article">
+      <p><strong>${text(article.number)}</strong>　${text(article.text)}</p>
+      ${article.items?.length ? `<ul class="guidelines-clauses">${article.items.map(item => `<li>${text(item)}</li>`).join('')}</ul>` : ''}
+      ${article.table ? guidelinesTable(article.table) : ''}</div>`).join('')}
+    ${section.table ? guidelinesTable(section.table, section.title) : ''}
+    ${section.note ? `<p class="guidelines-note">${text(section.note)}</p>` : ''}</section>`).join('');
+  const highlights = inNotice && document.highlights?.length ? `<section class="guidelines-highlights" aria-label="阅读重点"><h3>阅读重点</h3>
+    <ul>${document.highlights.map(highlight => `<li><strong>${text(highlight.title)}</strong><p>${text(highlight.text)}</p>
+    <small>${text(highlight.source)}</small></li>`).join('')}</ul></section>` : '';
+  return `${highlights}<div class="guidelines-layout">${nav}<div class="guidelines-sections">${sections}</div></div>`;
+}
+
+function guidelinesStatus() {
+  if (state.guidelinesError) {
+    return `<p class="form-error" role="alert">${text(state.guidelinesError)}</p>` + action('重新加载', 'guidelines-load', '', 'link');
+  }
+  return `<p class="muted" role="status">${state.guidelines === null ? '行为规范尚未发布。' : '正在加载行为规范…'}</p>`;
+}
+
+function guidelinesPage() {
+  const source = state.guidelines;
+  return heading(source?.title || '行为规范') + (source ? guidelinesDocument(source, 'page') : `<div class="panel">${guidelinesStatus()}</div>`);
+}
+
+function renderGuidelinesNotice() {
+  const source = state.guidelines;
+  $('#guidelines-dialog-body').innerHTML = source ? guidelinesDocument(source, 'notice') : guidelinesStatus();
+  if (source) $('#guidelines-dialog-title').textContent = source.title;
+  $('#confirm-guidelines').disabled = !source;
+}
+
+function loadGuidelines() {
+  if (state.guidelines !== undefined || guidelinesLoad) return guidelinesLoad;
+  const session = state.user;
+  state.guidelinesError = '';
+  if (state.page === 'guidelines') render();
+  if (guidelinesDialog.open) renderGuidelinesNotice();
+  const pending = request('/api/guidelines').then(result => {
+    if (session !== state.user) return;
+    state.guidelines = result.guidelines;
+    if (state.guidelines === null && guidelinesDialog.open) {
+      state.guidelinesPending = false;
+      guidelinesDialog.close();
+    }
+  }, error => {
+    if (session === state.user) state.guidelinesError = error.message;
+  }).finally(() => {
+    if (guidelinesLoad !== pending) return;
+    guidelinesLoad = undefined;
+    if (state.page === 'guidelines') render();
+    if (guidelinesDialog.open) renderGuidelinesNotice();
+  });
+  guidelinesLoad = pending;
+  return pending;
+}
+
+function openGuidelinesNotice() {
+  formError($('#guidelines-confirm-error'), '');
+  $('#guidelines-dialog-body').scrollTop = 0;
+  renderGuidelinesNotice();
+  if (!guidelinesDialog.open) guidelinesDialog.showModal();
+  void loadGuidelines();
+}
+
 const pages = { home: workspacePage, tasks: tasksPage, demands: demandsPage, demandCatalog: demandCatalogPage,
-  people: peoplePage, board: boardPage, account: accountPage };
+  people: peoplePage, board: boardPage, account: accountPage, guidelines: guidelinesPage };
 function render() {
   if (!state.user) return;
   document.querySelectorAll('[data-page]').forEach(button => {
@@ -434,7 +535,10 @@ function navigate(page) {
   if (!Object.hasOwn(pages, page) || (page === 'demandCatalog' && !admin())) return;
   state.page = page;
   if (page === 'demandCatalog') void loadDemandCatalog();
-  else render();
+  else {
+    render();
+    if (page === 'guidelines') void loadGuidelines();
+  }
 }
 
 function details(entries) {
@@ -908,8 +1012,8 @@ function passwordForm(first = false) {
     await post(first ? '/api/first-password' : '/api/password', { oldPassword: values.oldPassword, newPassword: values.newPassword });
     if (first) {
       state.user.must_change_pwd = false;
-      showWorkspace();
-      await refresh();
+      dialog.close();
+      await enterWorkspace();
     }
     toast('密码已更新。');
   }, { locked: first });
@@ -946,6 +1050,13 @@ async function exportTasks() {
 
 const actions = {
   go: navigate, close: () => dialog.close(), refresh,
+  'guidelines-load': loadGuidelines,
+  'guidelines-jump': id => {
+    const section = document.getElementById(id);
+    if (!section) return;
+    section.focus({ preventScroll: true });
+    section.scrollIntoView({ block: 'start' });
+  },
   logout: async () => { await post('/api/logout'); showAuth(); },
   'task-new': () => taskForm(), 'task-detail': taskDetail,
   'task-edit': id => taskForm(getRow('tasks', id)), 'task-next': nextTask,
@@ -1041,6 +1152,28 @@ dialog.addEventListener('cancel', event => {
 dialog.addEventListener('close', () => {
   if (!dialog.open) dialog.replaceChildren();
 });
+guidelinesDialog.addEventListener('cancel', event => event.preventDefault());
+guidelinesDialog.addEventListener('close', () => {
+  if (!guidelinesDialog.open) $('#guidelines-dialog-body').replaceChildren();
+});
+$('#confirm-guidelines').addEventListener('click', async event => {
+  const button = event.currentTarget;
+  const message = $('#guidelines-confirm-error');
+  const session = state.user;
+  button.disabled = true;
+  formError(message, '');
+  try {
+    await post('/api/guidelines/acknowledge');
+    if (session !== state.user) return;
+    state.guidelinesPending = false;
+    guidelinesDialog.close();
+  } catch (error) {
+    if (session === state.user) {
+      formError(message, error.message);
+      button.disabled = false;
+    }
+  }
+});
 $('#auth-form').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -1053,7 +1186,7 @@ $('#auth-form').addEventListener('submit', async event => {
     const result = await post(mode === 'register' ? '/api/register' : '/api/login', { ...values, account: trimmed(values.account) });
     if (!result?.user) throw new Error('服务器没有返回账号信息。');
     form.reset();
-    await enter(result.user);
+    await enter(result.user, result.guidelinesPending);
   } catch (error) {
     showAuth(error.message);
     if (mode !== 'login') {
@@ -1069,7 +1202,7 @@ $('#auth-form').addEventListener('submit', async event => {
 
 try {
   const result = await request('/api/me', { silentSession: true });
-  if (result?.user) await enter(result.user);
+  if (result?.user) await enter(result.user, result.guidelinesPending);
   else showAuth();
 } catch (error) {
   showAuth(error.message);
