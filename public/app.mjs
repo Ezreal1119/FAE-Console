@@ -129,6 +129,7 @@ function taskOwned(task) { return same(task.creator_id ?? task.owner_id, state.u
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
 function canUpdateTaskProgress(task) { return canEditTask(task) || same(task.assignee_id, state.user.id); }
 function canManageDemand(demand) { return admin() || same(demand.creator_id ?? demand.owner_id, state.user.id); }
+function canDeleteDemand(demand) { return admin() || (canManageDemand(demand) && !demand.linked_tasks?.length); }
 const collaboratorNames = task => (task.collaborators || []).map(person => person.name).join('、');
 
 function loadCatalog() {
@@ -325,21 +326,26 @@ function tasksPage() {
     panel('任务列表', toolbar + table(taskHeaders, taskRows(), '没有匹配的任务。', 'task-rows'), '<span id="task-count" class="muted text-small">' + filteredTasks().length + ' 项</span>');
 }
 
-const demandHeaders = ['需求', '项目', '需求说明', '任务进度', '提出方', '创建人', '操作'];
-function demandProgress(demand) {
-  const tasks = demand.linked_tasks || [];
-  if (!tasks.length) return '<span class="tag">待派发</span>';
-  const done = tasks.filter(task => task.status === '已完成').length;
-  return `<span class="tag ${done === tasks.length ? 'done' : 'start'}">${done === tasks.length ? '已完成' : '已派发'}</span>
-    <small class="muted">${done} / ${tasks.length} 项完成</small>`;
+const demandHeaders = ['需求', '项目', '需求说明', '任务进度', '初始接收人', '当前负责人', '提出方', '创建人', '操作'];
+function demandOwner(demand, task) {
+  return task?.task_id && admin() ? action(task.owner_name || '设置负责人', 'demand-owner', demand.id, 'link') : shown(task?.owner_name);
+}
+function demandAssignmentAction(demand, className) {
+  if (!canManageDemand(demand)) return '';
+  return demand.linked_tasks?.length ? action('增加合作者', 'demand-collaborators', demand.id, className)
+    : action('派发任务', 'demand-dispatch', demand.id, className);
 }
 function demandRows() {
   return state.demands.filter(row => hasText(state.filters.demandQuery, row.title, row.proj, row.descr, row.proposer,
-    ...(row.linked_tasks || []).map(task => task.owner_name))).map(demand => `<tr>
+    ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name]))).map(demand => {
+    const task = demand.linked_tasks?.[0];
+    return `<tr>
     <td>${action(demand.title || '未命名需求', 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td><td>${shown(demand.descr)}</td>
-    <td>${demandProgress(demand)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
-    <td><div class="row-actions">${action('编辑', 'demand-edit', demand.id, 'link')}${canManageDemand(demand)
-      ? action('派发任务', 'demand-dispatch', demand.id, 'link') + ((demand.linked_tasks || []).length ? '' : action('删除', 'demand-delete', demand.id, 'link danger')) : ''}</div></td></tr>`).join('');
+    <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td><td>${shown(task?.initial_receiver_name)}</td>
+    <td>${demandOwner(demand, task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
+    <td><div class="row-actions">${action('编辑', 'demand-edit', demand.id, 'link')}${demandAssignmentAction(demand, 'link')}${
+      canDeleteDemand(demand) ? action('删除', 'demand-delete', demand.id, 'link danger') : ''}</div></td></tr>`;
+  }).join('');
 }
 function demandsPage() {
   return heading('需求管理', '登记需求、派发任务并跟踪进度。', action('刷新', 'refresh') + action('＋ 新建需求', 'demand-new', '', 'button primary')) +
@@ -648,14 +654,13 @@ function taskDetail(id) {
 function taskForm(task = {}, demand) {
   if (task.id && !canUpdateTaskProgress(task)) return;
   const progressOnly = Boolean(task.id && !canEditTask(task));
+  const canChooseOwner = !progressOnly && (task.demand_id == null || admin());
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
   const initialPeople = task.collaborators || [];
   const setupFields = progressOnly ? '' : field('任务名称', 'title', task.title ?? demand?.title, 'required maxlength="180"') +
-    `<div class="form-grid">${field('项目', 'proj', task.proj ?? demand?.proj, 'maxlength="100"')}${choiceField('负责人', 'assignee_id')}</div>` +
-    `<details class="collaborators" data-collaborators><summary>合作者 <span data-collaborator-names class="muted">未选择</span></summary>
-      <input type="search" placeholder="搜索姓名或工号" aria-label="搜索合作者">
-      <div class="collaborator-options" role="group" aria-label="合作者选项"></div></details>` +
+    `<div class="form-grid">${field('项目', 'proj', task.proj ?? demand?.proj, 'maxlength="100"')}${canChooseOwner
+      ? choiceField('负责人', 'assignee_id') : field('负责人', 'owner_display', task.owner_name, 'readonly')}</div>` + collaboratorField() +
     `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, task.pri || '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}</div>` +
     area('任务描述', 'desc', task.desc ?? demand?.descr);
   const executionFields = demand ? '' : `<div class="form-grid">
@@ -682,11 +687,11 @@ function taskForm(task = {}, demand) {
     if (!progressOnly) {
       const title = trimmed(values.title);
       if (!title) throw new Error('请填写任务名称。');
-      const assignee = owner.value();
+      const assignee = owner?.value() ?? currentAssignee;
       if (!task.id && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
       const people = collaborators.ids();
       Object.assign(patch, { title, proj: optional(values.proj), pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
-      if (!task.id || assignee !== currentAssignee) patch.assignee_id = assignee;
+      if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
       if (people.length !== initialPeople.length || initialPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
     }
     if (values.file?.name) {
@@ -706,18 +711,21 @@ function taskForm(task = {}, demand) {
       }
     } catch (error) {
       if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
+      if (demand && error.status === 409 && state.user) await refresh();
       throw error;
     }
     toast(demand ? '任务已派发。' : task.id ? '任务已更新。' : '任务已创建。');
   }, demand ? { submit: '派发任务' } : {});
   if (progressOnly) return;
   collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), initialPeople, currentAssignee);
-  owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), {
-    value: currentAssignee, label: task.owner_name || (!demand && !task.id ? myName() : '')
-  }, { clearable: false, onChange: collaborators.setOwner });
+  if (canChooseOwner) {
+    owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), {
+      value: currentAssignee, label: task.owner_name || (!demand && !task.id ? myName() : '')
+    }, { clearable: false, onChange: collaborators.setOwner });
+  }
   loadChoices = prepareFormChoices(form, ({ people }) => {
-    const entries = people.map(({ id, name, emp_no }) => ({ id, name, label: `${name} · ${emp_no}` })).sort((a, b) => sortZh(a.label, b.label));
-    owner.setOptions(entries.map(({ id, label }) => ({ value: id, label })));
+    const entries = peopleChoices(people);
+    owner?.setOptions(entries.map(({ id, label }) => ({ value: id, label })));
     collaborators.setPeople(entries);
   });
 }
@@ -848,6 +856,16 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
   };
 }
 
+function peopleChoices(people) {
+  return people.map(({ id, name, emp_no }) => ({ id, name, label: `${name} · ${emp_no}` })).sort((a, b) => sortZh(a.label, b.label));
+}
+
+function collaboratorField(open = false) {
+  return `<details class="collaborators" data-collaborators${open ? ' open' : ''}><summary>合作者 <span data-collaborator-names class="muted">未选择</span></summary>
+    <input type="search" placeholder="搜索姓名或工号" aria-label="搜索合作者">
+    <div class="collaborator-options" role="group" aria-label="合作者选项"></div></details>`;
+}
+
 function bindCollaborators(field, initial, owner) {
   const selected = new Map(initial.map(person => [person.id, person.name]));
   const label = field.querySelector('[data-collaborator-names]');
@@ -940,14 +958,67 @@ function prepareFormChoices(form, applyChoices) {
 function demandDetail(id) {
   const demand = getRow('demands', id);
   const tasks = demand.linked_tasks || [];
+  const task = tasks[0];
   const items = tasks.map(task => `<div class="detail-item demand-task-item">
     <div>${task.id ? action(task.title || '打开任务', 'demand-task', task.id, 'link') : '<strong>任务</strong>'}
     <p class="muted text-small">${shown(task.owner_name)}</p></div>${statusBadge(task.status)}</div>`).join('');
   modal(demand.title, '需求 #' + demand.id, details([['项目', demand.proj], ['需求提出方', demand.proposer], ['创建人', demand.owner_name],
+    ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
+    ['初始接收人', task?.initial_receiver_name], ['当前负责人', demandOwner(demand, task), true],
     ...(demand.responsible ? [['历史责任人', demand.responsible]] : [])]) +
     `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div>
       <div class="detail-item"><strong>关联任务</strong>${items || '<p class="muted">待派发</p>'}</div></div>
-    <div class="dialog-actions">${action('关闭', 'close')}${canManageDemand(demand) ? action('派发任务', 'demand-dispatch', demand.id, 'button primary') : ''}</div>`);
+    <div class="dialog-actions">${action('关闭', 'close')}${demandAssignmentAction(demand, 'button primary')}</div>`);
+}
+
+async function saveDemandTaskPeople(demand, task, change) {
+  const result = await post('/api/demands/task-people', { demandId: demand.id, taskId: task.task_id, ...change });
+  updateRow('demands', result.demand);
+  await refresh();
+}
+
+function demandOwnerForm(id) {
+  if (!admin()) return;
+  const demand = getRow('demands', id);
+  const task = demand.linked_tasks?.[0];
+  if (!task?.task_id) throw new Error('未找到关联任务，请刷新后重试。');
+  let owner, loadChoices;
+  const form = modalForm('更换负责人', demand.title, choiceField('当前负责人', 'assignee_id') + choiceStatus, async () => {
+    const assignee = owner.value();
+    if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
+    if (assignee === task.assignee_id) return;
+    try {
+      await saveDemandTaskPeople(demand, task, { assignee_id: assignee });
+    } catch (error) {
+      if (error.status === 409) await loadChoices().catch(() => {});
+      throw error;
+    }
+    toast('负责人已更新。');
+  });
+  owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: task.assignee_id ?? null, label: task.owner_name }, { clearable: false });
+  loadChoices = prepareFormChoices(form, ({ people }) => owner.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label }))));
+}
+
+function demandCollaboratorsForm(id) {
+  const demand = getRow('demands', id);
+  if (!canManageDemand(demand)) return;
+  const task = demand.linked_tasks?.[0];
+  if (!task?.task_id) throw new Error('未找到关联任务，请刷新后重试。');
+  let collaborators, loadChoices;
+  const form = modalForm('增加合作者', demand.title, collaboratorField(true) + choiceStatus, async () => {
+    const people = collaborators.ids();
+    if (!people.length) throw new Error('请至少选择一位合作者。');
+    try {
+      await saveDemandTaskPeople(demand, task, { collaborator_ids: people });
+    } catch (error) {
+      if (error.status === 409) await loadChoices().catch(() => {});
+      throw error;
+    }
+    toast('合作者已加入任务。');
+  }, { submit: '添加' });
+  collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), [], task.assignee_id);
+  const existing = new Set(task.collaborator_ids || []);
+  loadChoices = prepareFormChoices(form, ({ people }) => collaborators.setPeople(peopleChoices(people).filter(person => !existing.has(person.id))));
 }
 
 function demandForm(row = {}) {
@@ -1209,15 +1280,22 @@ const actions = {
   'demand-new': () => demandForm(), 'demand-edit': id => demandForm(getRow('demands', id)), 'demand-detail': demandDetail,
   'demand-dispatch': id => {
     const demand = getRow('demands', id);
-    if (canManageDemand(demand)) taskForm({}, demand);
+    if (canManageDemand(demand) && !demand.linked_tasks?.length) taskForm({}, demand);
   },
+  'demand-owner': demandOwnerForm,
+  'demand-collaborators': demandCollaboratorsForm,
   'demand-task': async id => {
     await refresh();
     if (state.user) taskDetail(id);
   },
   'demand-delete': id => {
     const row = getRow('demands', id);
-    confirmDelete('删除需求', '确定删除「' + row.title + '」？', () => removeRow('demands', row, '需求已删除。'));
+    if (!canDeleteDemand(row)) return;
+    const description = '确定删除「' + row.title + '」？' + (row.linked_tasks?.length ? ' 关联任务及其进度和附件会保留。' : '');
+    confirmDelete('删除需求', description, async () => {
+      await removeRow('demands', row, '需求已删除。');
+      if (state.user) await refresh();
+    });
   },
   'demand-catalog-load': loadDemandCatalog,
   'demand-catalog-tab': kind => {
