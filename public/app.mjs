@@ -16,10 +16,13 @@ const dictionaries = { teams: '团队', roles: '岗位' };
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = { taskQuery: '', taskStatus: '', taskScope: 'mine', demandQuery: '', peopleQuery: '', peopleTeam: '' };
+const listPageSize = 10;
+const firstListPages = { tasks: 1, demands: 1 };
 const state = {
   user: null, tasks: [], demands: [], profiles: [], accounts: [], page: 'home', mode: 'login',
   registrationEnabled: false,
   filters: { ...defaultFilters },
+  listPages: { ...firstListPages },
   catalog: { teams: [], roles: [] },
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proj',
   guidelines: undefined, guidelinesError: '', guidelinesPending: false,
@@ -166,6 +169,7 @@ function showAuth(error = '') {
   state.loadWarnings = [];
   state.page = 'home';
   state.filters = { ...defaultFilters };
+  state.listPages = { ...firstListPages };
   document.title = '工程小管家';
   dialog.close();
   guidelinesDialog.close();
@@ -350,8 +354,8 @@ function fileAction(task) {
     ? action(task.fileName, 'download', task.id, 'link')
     : `<span title="原附件保存在桌面客户端电脑上">${text(task.fileName)}<small class="muted">桌面本地附件</small></span>`;
 }
-function taskRows() {
-  return filteredTasks().map(task => `<tr>
+function taskRows(tasks) {
+  return tasks.map(task => `<tr>
     <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
     <td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td><td>${shown(collaboratorNames(task))}</td>
     <td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueDate)}</td>
@@ -364,7 +368,7 @@ function tasksPage() {
   const scope = `<select aria-label="任务范围" data-filter="taskScope">${scopes.map(([value, label]) => option(value, state.filters.taskScope, label)).join('')}</select>`;
   const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目或负责人')}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${scope}</div>`;
   return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
-    panel('任务列表', toolbar + table(taskHeaders, taskRows(), '没有匹配的任务。', 'task-rows'), '<span id="task-count" class="muted text-small">' + filteredTasks().length + ' 项</span>');
+    pagedListPanel('tasks', toolbar);
 }
 
 const demandHeaders = ['需求', '项目', '需求说明', '任务进度', '初始接收人', '当前负责人', '提出方', '创建人', '操作'];
@@ -376,9 +380,12 @@ function demandAssignmentAction(demand, className) {
   return demand.linked_tasks?.length ? action('增加合作者', 'demand-collaborators', demand.id, className)
     : action('派发任务', 'demand-dispatch', demand.id, className);
 }
-function demandRows() {
+function filteredDemands() {
   return state.demands.filter(row => hasText(state.filters.demandQuery, row.title, row.proj, row.descr, row.proposer,
-    ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name]))).map(demand => {
+    ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name])));
+}
+function demandRows(demands) {
+  return demands.map(demand => {
     const task = demand.linked_tasks?.[0];
     return `<tr>
     <td>${action(demand.title || '未命名需求', 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td><td>${shown(demand.descr)}</td>
@@ -389,8 +396,50 @@ function demandRows() {
   }).join('');
 }
 function demandsPage() {
+  const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求、项目或任务负责人')}</div>`;
   return heading('需求管理', '登记需求、派发任务并跟踪进度。', action('刷新', 'refresh') + action('＋ 新建需求', 'demand-new', '', 'button primary')) +
-    panel('需求列表', `<div class="toolbar">${search('demandQuery', '搜索需求、项目或任务负责人')}</div>` + table(demandHeaders, demandRows(), '没有匹配的需求。', 'demand-rows'));
+    pagedListPanel('demands', toolbar);
+}
+
+const pagedLists = {
+  tasks: { id: 'task', title: '任务列表', headers: taskHeaders, filter: filteredTasks, rows: taskRows, empty: '没有匹配的任务。' },
+  demands: { id: 'demand', title: '需求列表', headers: demandHeaders, filter: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
+};
+function listPage(key) {
+  const { filter, rows } = pagedLists[key];
+  const matches = filter();
+  const lastPage = Math.max(1, Math.ceil(matches.length / listPageSize));
+  const page = Math.min(Math.max(state.listPages[key], 1), lastPage);
+  state.listPages[key] = page;
+  const start = (page - 1) * listPageSize;
+  return {
+    countLabel: matches.length + ' 项', pageLabel: `第 ${page} / ${lastPage} 页`,
+    previousDisabled: page === 1, nextDisabled: page === lastPage, paginationHidden: lastPage === 1,
+    rows: rows(matches.slice(start, start + listPageSize))
+  };
+}
+function pagedListPanel(key, toolbar) {
+  const { id, title, headers, empty } = pagedLists[key];
+  const page = listPage(key);
+  const pagination = `<nav id="${id}-pagination" class="pagination" aria-label="${title}分页"${page.paginationHidden ? ' hidden' : ''}>
+    <button type="button" class="button" data-list-step="-1"${page.previousDisabled ? ' disabled' : ''}>上一页</button>
+    <span class="muted text-small" data-page-label>${page.pageLabel}</span>
+    <button type="button" class="button" data-list-step="1"${page.nextDisabled ? ' disabled' : ''}>下一页</button>
+  </nav>`;
+  return panel(title, toolbar + table(headers, page.rows, empty, id + '-rows') + pagination,
+    `<span id="${id}-count" class="muted text-small">${page.countLabel}</span>`);
+}
+function updatePagedList(key) {
+  const { id, headers, empty } = pagedLists[key];
+  const page = listPage(key);
+  const pager = $('#' + id + '-pagination');
+  $('#' + id + '-rows').innerHTML = page.rows || emptyRow(headers.length, empty);
+  $('#' + id + '-count').textContent = page.countLabel;
+  pager.hidden = page.paginationHidden;
+  pager.querySelector('[data-page-label]').textContent = page.pageLabel;
+  pager.querySelector('[data-list-step="-1"]').disabled = page.previousDisabled;
+  pager.querySelector('[data-list-step="1"]').disabled = page.nextDisabled;
+  return pager;
 }
 
 function demandCatalogPage() {
@@ -1475,6 +1524,13 @@ document.addEventListener('click', async event => {
   if (!button) return;
   if (button.dataset.auth) return setAuthMode(button.dataset.auth);
   if (button.dataset.page) return navigate(button.dataset.page);
+  if (button.dataset.listStep && state.user && Object.hasOwn(pagedLists, state.page)) {
+    const hadFocus = document.activeElement === button;
+    state.listPages[state.page] += Number(button.dataset.listStep);
+    const pager = updatePagedList(state.page);
+    if (hadFocus && button.disabled) pager.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
+    return;
+  }
   const handle = actions[button.dataset.action];
   if (!handle || !state.user) return;
   button.disabled = true;
@@ -1486,11 +1542,9 @@ function updateFilter(event) {
   const key = event.target.dataset.filter;
   if (!Object.hasOwn(state.filters, key)) return;
   state.filters[key] = event.target.value;
-  if (key.startsWith('task')) {
-    $('#task-rows').innerHTML = taskRows() || emptyRow(taskHeaders.length, '没有匹配的任务。');
-    $('#task-count').textContent = filteredTasks().length + ' 项';
-  } else if (key.startsWith('demand')) {
-    $('#demand-rows').innerHTML = demandRows() || emptyRow(demandHeaders.length, '没有匹配的需求。');
+  if (Object.hasOwn(pagedLists, state.page)) {
+    state.listPages[state.page] = 1;
+    updatePagedList(state.page);
   } else {
     $('#people-rows').innerHTML = peopleRows() || emptyRow(peopleHeaders.length, '没有匹配的人员档案。');
   }
