@@ -8,6 +8,7 @@ const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
     title: 180, proj: 100, owner_name: 100, assignee_id: 0, collaborator_ids: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
+    add_collaborator_ids: 0, keep_as_collaborator: 0,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
   demands: { title: 180, proj: 100, descr: 10000, proposer: 100 }
@@ -18,6 +19,7 @@ const priorities = ['低', '中', '高', '极高'];
 const defaultPriority = '中';
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const taskProgressFields = new Set(['status', 'start', 'end', 'start_time', 'end_time', 'hours', 'result', 'attachment_name', 'attachment_path']);
+const taskHandoverFields = ['assignee_id', 'keep_as_collaborator'];
 const expiry = 24 * 60 * 60 * 1000;
 
 function recordId(value) {
@@ -42,9 +44,12 @@ function cleanFields(table, payload) {
     } else if (key === 'assignee_id') {
       if (value !== null && !validId(value)) throw new RequestError(400, '负责人编号无效。');
       patch[key] = value;
-    } else if (key === 'collaborator_ids') {
+    } else if (key === 'collaborator_ids' || key === 'add_collaborator_ids') {
       if (!Array.isArray(value) || !value.every(validId)) throw new RequestError(400, '合作者名单无效。');
       patch[key] = [...new Set(value)];
+    } else if (key === 'keep_as_collaborator') {
+      if (typeof value !== 'boolean') throw new RequestError(400, '请选择转交方式。');
+      patch[key] = value;
     } else if (key === 'pri') {
       const priority = optionalText(value, maximum) || defaultPriority;
       if (!priorities.includes(priority)) throw new RequestError(400, '任务优先级无效。');
@@ -152,6 +157,32 @@ function applyTaskPeople(db, task, patch) {
   delete patch.collaborator_ids;
 }
 
+function prepareTaskPeopleUpdate(user, task, patch) {
+  const handover = Object.hasOwn(patch, 'keep_as_collaborator');
+  if (handover) {
+    if (task.assignee_id !== user.id) throw new RequestError(409, '当前负责人已变化，请刷新后重试。');
+    if (patch.assignee_id == null || patch.assignee_id === user.id) throw new RequestError(400, '请选择其他成员接手任务。');
+  } else if (task.demand_id != null && !isAdmin(user) &&
+      (Object.hasOwn(patch, 'assignee_id') || Object.hasOwn(patch, 'owner_name'))) {
+    throw new RequestError(403, '只有管理员或当前负责人可以更换派发任务的负责人。');
+  }
+
+  const additions = patch.add_collaborator_ids;
+  if (handover || additions) {
+    const owner = Object.hasOwn(patch, 'assignee_id') ? patch.assignee_id : task.assignee_id;
+    const previous = patch.collaborator_ids ?? (task.collaborators || []).map(person => person.id);
+    const people = new Set([...previous, ...(additions || [])]);
+    people.delete(owner);
+    if (handover) {
+      people.delete(task.assignee_id);
+      if (patch.keep_as_collaborator) people.add(task.assignee_id);
+    }
+    patch.collaborator_ids = [...people];
+  }
+  delete patch.keep_as_collaborator;
+  delete patch.add_collaborator_ids;
+}
+
 function managesRecord(user, row) {
   return isAdmin(user) || (row.creator_id ?? row.owner_id) === user.id;
 }
@@ -168,7 +199,8 @@ function changeable(db, user, table, row, op, patch) {
   if (managesRecord(user, row)) return true;
   if (table === 'demands' && op === 'update') return true;
   return table === 'tasks' && op === 'update' && row.assignee_id === user.id &&
-    Object.keys(patch).every(field => taskProgressFields.has(field));
+    Object.keys(patch).every(field => taskProgressFields.has(field) || field === 'add_collaborator_ids' ||
+      (Object.hasOwn(patch, 'keep_as_collaborator') && taskHandoverFields.includes(field)));
 }
 
 function changeAttachment(db, user, task, patch) {
@@ -292,10 +324,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
             if (removed.length) db.attachments = db.attachments.filter(file => file.task_id !== row.id);
             return { row, removed };
           }
-          if (table === 'tasks' && list[index].demand_id != null && !isAdmin(user) &&
-              (Object.hasOwn(patch, 'assignee_id') || Object.hasOwn(patch, 'owner_name'))) {
-            throw new RequestError(403, '只有管理员可以更换派发任务的负责人。');
-          }
+          if (table === 'tasks') prepareTaskPeopleUpdate(user, list[index], patch);
           return applyPatch(db, user, table, list[index], patch, recordTaskChange);
         }
         return insertRecord(db, user, table, patch, recordTaskChange);
@@ -429,6 +458,9 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
   } : null;
   let removed = [];
   if (table === 'tasks') {
+    if (creating && (Object.hasOwn(patch, 'keep_as_collaborator') || Object.hasOwn(patch, 'add_collaborator_ids'))) {
+      throw new RequestError(400, '请在任务创建后转交或添加合作者。');
+    }
     applyTaskPeople(db, row, patch);
     removed = changeAttachment(db, user, row, patch);
     delete patch.attachment_path;

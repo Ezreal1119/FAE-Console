@@ -72,6 +72,18 @@
   </div>
 
   <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <dialog id="task-handover-dialog" aria-labelledby="task-handover-title">
+    <div class="dialog-heading"><div>
+      <h2 id="task-handover-title">转交任务</h2>
+      <p id="task-handover-recipient" class="muted text-small"></p>
+    </div></div>
+    <p>完全转交后，任务会从「我的全部任务」移除。</p>
+    <form method="dialog" class="dialog-actions">
+      <button class="button" value="cancel" autofocus>取消</button>
+      <button class="button" value="leave">完全转交</button>
+      <button class="button primary" value="keep">转交并保留为合作者</button>
+    </form>
+  </dialog>
   <dialog id="guidelines-dialog" class="guidelines-dialog" aria-labelledby="guidelines-dialog-title" closedby="none">
     <header class="guidelines-dialog-header"><h2 id="guidelines-dialog-title" tabindex="-1" autofocus>工程部员工作业流程及行为规范</h2></header>
     <div id="guidelines-dialog-body" class="guidelines-dialog-body" tabindex="0" role="region" aria-label="行为规范正文"></div>

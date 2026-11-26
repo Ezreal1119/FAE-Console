@@ -3,6 +3,7 @@ import { exportWeek } from './export.mjs';
 const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const dialog = $('#dialog');
+const taskHandoverDialog = $('#task-handover-dialog');
 const guidelinesDialog = $('#guidelines-dialog');
 const guidelinesBody = $('#guidelines-dialog-body');
 const guidelinesConfirm = $('#confirm-guidelines');
@@ -176,6 +177,7 @@ function showAuth(error = '') {
   state.filters = { ...defaultFilters };
   state.listPages = { ...firstListPages };
   document.title = '工程小管家';
+  if (taskHandoverDialog.open) taskHandoverDialog.close('cancel');
   dialog.close();
   guidelinesDialog.close();
   content.replaceChildren();
@@ -361,7 +363,7 @@ function fileAction(task) {
 }
 function taskEditActions(task, className) {
   const progress = canUpdateTaskProgress(task) ? action('更新进度', 'task-progress', task.id, className) : '';
-  const edit = canEditTask(task) ? action('编辑任务', 'task-edit', task.id, className) : '';
+  const edit = canUpdateTaskProgress(task) ? action('编辑任务', 'task-edit', task.id, className) : '';
   return progress + edit;
 }
 function taskRows(tasks) {
@@ -745,8 +747,8 @@ function modalForm(title, description, fields, onSave, options = {}) {
     formError(message, '');
     const values = Object.fromEntries(new FormData(form));
     try {
-      await onSave(values);
-      if (dialog.contains(form)) dialog.close();
+      const result = await onSave(values);
+      if (result !== false && dialog.contains(form)) dialog.close();
     } catch (error) {
       formError(message, error.message);
     } finally {
@@ -835,9 +837,62 @@ async function taskAttachmentPatch(file) {
   return { attachment_path: uploaded.path, attachment_name: file.name };
 }
 async function saveTask(patch, id) {
-  const saved = await saveRow('tasks', patch, id);
-  updateRow('tasks', normalizeTask(saved));
+  const saved = normalizeTask(await saveRow('tasks', patch, id));
+  if (canEditTask(saved) || ownTask(saved)) {
+    updateRow('tasks', saved);
+  } else {
+    state.tasks = state.tasks.filter(task => !same(task.id, saved.id));
+    render();
+  }
   if (saved.demand_id != null) await refresh();
+}
+function confirmTaskHandover(form) {
+  $('#task-handover-recipient').textContent = '接手人：' + form.querySelector('#choice-assignee_id').value;
+  taskHandoverDialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    taskHandoverDialog.addEventListener('close', () => {
+      const choice = taskHandoverDialog.returnValue;
+      resolve(choice === 'keep' ? true : choice === 'leave' ? false : null);
+    }, { once: true });
+    taskHandoverDialog.showModal();
+  });
+}
+function taskAssignmentForm(task) {
+  if (!assignedToMe(task)) return;
+  const existing = new Set((task.collaborators || []).map(person => person.id));
+  const fields = choiceField('负责人', 'assignee_id') +
+    `<p class="muted text-small">当前合作者：${shown(collaboratorNames(task))}</p>` +
+    collaboratorField(false, '添加合作者') + choiceStatus;
+  let owner, collaborators, loadChoices;
+  const form = modalForm('编辑任务', '#' + task.id + ' ' + task.title, fields, async () => {
+    const assignee = owner.value();
+    const transferring = assignee !== task.assignee_id;
+    const added = collaborators.ids().filter(id => id !== assignee);
+    if (!transferring && !added.length) throw new Error('请选择接手人或至少一位合作者。');
+    const patch = {};
+    if (added.length) patch.add_collaborator_ids = added;
+    if (transferring) {
+      const keep = await confirmTaskHandover(form);
+      if (keep === null) return false;
+      patch.assignee_id = assignee;
+      patch.keep_as_collaborator = keep;
+    }
+    try {
+      await saveTask(patch, task.id);
+    } catch (error) {
+      if (error.status === 409) await loadChoices().catch(() => {});
+      throw error;
+    }
+    toast(transferring ? '任务已转交。' : '合作者已加入任务。');
+  });
+  collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), [], task.assignee_id);
+  owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: task.assignee_id, label: task.owner_name },
+    { clearable: false, onChange: collaborators.setOwner });
+  loadChoices = prepareFormChoices(form, ({ people }) => {
+    const entries = peopleChoices(people);
+    owner.setOptions(entries.map(({ id, label }) => ({ value: id, label })));
+    collaborators.setPeople(entries.filter(person => person.id !== task.assignee_id && !existing.has(person.id)));
+  });
 }
 function taskProgressForm(task) {
   if (!canUpdateTaskProgress(task)) return;
@@ -852,7 +907,8 @@ function taskProgressForm(task) {
 function taskForm(task = {}, demand) {
   if (task.id && !canEditTask(task)) return;
   const newStandaloneTask = !task.id && !demand;
-  const canChooseOwner = task.demand_id == null || admin();
+  const currentOwner = Boolean(task.id) && assignedToMe(task);
+  const canChooseOwner = task.demand_id == null || admin() || currentOwner;
   const canPlanHours = Boolean(demand) || Object.hasOwn(task, 'dispatched_at');
   const canEditNameAndProject = !demand && task.demand_id == null;
   const dispatchKey = demand && crypto.randomUUID();
@@ -882,11 +938,18 @@ function taskForm(task = {}, demand) {
     }
     const assignee = owner?.value() ?? currentAssignee;
     if (!task.id && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
+    const transferring = currentOwner && assignee !== currentAssignee;
+    if (transferring) {
+      const keep = await confirmTaskHandover(form);
+      if (keep === null) return false;
+      patch.keep_as_collaborator = keep;
+    }
     const people = collaborators.ids();
+    const previousPeople = transferring ? initialPeople.filter(person => person.id !== assignee) : initialPeople;
     Object.assign(patch, { pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
     if (canPlanHours) patch.planned_hours = values.planned_hours === '' ? null : Number(values.planned_hours);
     if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
-    if (people.length !== initialPeople.length || initialPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
+    if (people.length !== previousPeople.length || previousPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
     if (!task.id) Object.assign(patch, await taskAttachmentPatch(values.file));
     try {
       if (demand) {
@@ -901,7 +964,7 @@ function taskForm(task = {}, demand) {
       if (demand && error.status === 409 && state.user) await refresh();
       throw error;
     }
-    toast(demand ? '任务已派发。' : task.id ? '任务已更新。' : '任务已创建。');
+    toast(demand ? '任务已派发。' : transferring ? '任务已转交。' : task.id ? '任务已更新。' : '任务已创建。');
   }, demand ? { submit: '派发任务' } : {});
   if (canEditNameAndProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
@@ -1065,8 +1128,8 @@ function peopleChoices(people) {
     .sort((a, b) => sortZh(a.label, b.label));
 }
 
-function collaboratorField(open = false) {
-  return `<details class="collaborators" data-collaborators${open ? ' open' : ''}><summary>合作者 <span data-collaborator-names class="muted">未选择</span></summary>
+function collaboratorField(open = false, label = '合作者') {
+  return `<details class="collaborators" data-collaborators${open ? ' open' : ''}><summary>${label} <span data-collaborator-names class="muted">未选择</span></summary>
     <input type="search" placeholder="搜索姓名或工号" aria-label="搜索合作者">
     <div class="collaborator-options" role="group" aria-label="合作者选项"></div></details>`;
 }
@@ -1092,7 +1155,7 @@ function bindCollaborators(field, initial, owner) {
     empty.textContent = query ? '没有匹配的成员。' : options.length ? '输入姓名或工号搜索成员。' : '没有可选的成员。';
   }
   function showSelected() {
-    label.textContent = [...selected.values()].join('、') || '未选择';
+    label.textContent = [...selected].filter(([id]) => id !== owner).map(([, name]) => name).join('、') || '未选择';
   }
   function renderPeople() {
     const available = new Map(people.map(person => [person.id, person]));
@@ -1122,10 +1185,9 @@ function bindCollaborators(field, initial, owner) {
   });
   renderPeople();
   return {
-    ids: () => [...selected.keys()],
+    ids: () => [...selected.keys()].filter(id => id !== owner),
     setOwner(id) {
       owner = id;
-      selected.delete(id);
       renderPeople();
     },
     setPeople(entries) {
@@ -1509,7 +1571,12 @@ const actions = {
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
   'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
-  'task-edit': id => taskForm(getRow('tasks', id)), 'task-progress': id => taskProgressForm(getRow('tasks', id)), 'task-next': nextTask,
+  'task-edit': id => {
+    const task = getRow('tasks', id);
+    if (canEditTask(task)) taskForm(task);
+    else taskAssignmentForm(task);
+  },
+  'task-progress': id => taskProgressForm(getRow('tasks', id)), 'task-next': nextTask,
   'task-delete': id => {
     const row = getRow('tasks', id);
     confirmDelete('删除任务', '确定删除「' + row.title + '」？', async () => {
