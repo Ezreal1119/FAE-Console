@@ -375,9 +375,9 @@ function workspacePage() {
 const taskHeaders = [
   '任务', '项目', '工单分类', '状态', { label: '优先级', sortKey: 'pri' }, '负责人',
   { label: '计划完成', sortKey: 'dueDate' }, { label: '开始日期', sortKey: 'startDate' },
-  { label: '完成日期', sortKey: 'endDate' }, '工时', '操作'
+  { label: '完成日期', sortKey: 'endDate' }, { label: '工时', sortKey: 'hours' }, '操作'
 ];
-const taskSortDefaults = { pri: 'descending', dueDate: 'ascending', startDate: 'ascending', endDate: 'ascending' };
+const taskSortDefaults = { pri: 'descending', dueDate: 'ascending', startDate: 'ascending', endDate: 'ascending', hours: 'descending' };
 const personalTaskScopes = [['mine', '我的全部任务'], ['assigned', '我是责任人'], ['collaborating', '我是合作者']];
 
 function matchesTaskScope(task, scope) {
@@ -395,21 +395,27 @@ function filteredTasks() {
   const { taskQuery, taskCategory, taskStatus, taskPriority: priority, taskScope } = state.filters;
   return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
     (!taskCategory || taskCategoryLabel(task) === taskCategory) && (!priority || taskPriority(task.pri) === priority) &&
-    hasText(taskQuery, task.title, task.id, task.proj, task.owner_name, task.desc, task.result, collaboratorNames(task)));
+    hasText(taskQuery, task.title, task.id, task.proj, task.category, task.device_type, task.project_stage,
+      task.owner_name, task.desc, task.result, collaboratorNames(task)));
+}
+function taskSortValue(task, key) {
+  if (key === 'pri') return PRIORITY.indexOf(taskPriority(task.pri));
+  const value = task[key];
+  if (key !== 'hours') return value || null;
+  if (optional(value) === null) return null;
+  const hours = Number(value);
+  return Number.isFinite(hours) ? hours : null;
 }
 function sortedTaskList() {
   const tasks = filteredTasks();
   if (!state.taskSort) return tasks;
   const { key, direction } = state.taskSort;
   const multiplier = direction === 'ascending' ? 1 : -1;
-  if (key === 'pri') {
-    return tasks.sort((a, b) => multiplier * (PRIORITY.indexOf(taskPriority(a.pri)) - PRIORITY.indexOf(taskPriority(b.pri))));
-  }
   return tasks.sort((a, b) => {
-    const left = a[key];
-    const right = b[key];
-    if (!left || !right) return Number(!left) - Number(!right);
-    return multiplier * left.localeCompare(right);
+    const left = taskSortValue(a, key);
+    const right = taskSortValue(b, key);
+    if (left === null || right === null) return Number(left === null) - Number(right === null);
+    return multiplier * (typeof left === 'number' ? left - right : left.localeCompare(right));
   });
 }
 function fileAction(task) {
@@ -441,7 +447,7 @@ function tasksPage() {
   const scope = `<select aria-label="任务范围" data-filter="taskScope">${scopes.map(([value, label]) => option(value, state.filters.taskScope, label)).join('')}</select>`;
   const category = filterSelect('taskCategory', '按工单分类筛选', [...state.taskCategories, otherTaskCategory], '全部分类');
   const priority = filterSelect('taskPriority', '按优先级筛选', PRIORITY, '全部优先级');
-  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
+  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目、分类、设备类型、项目阶段或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
   return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     pagedListPanel('tasks', toolbar);
 }
@@ -856,15 +862,18 @@ async function removeRow(tableName, row, success) {
   toast(success);
 }
 
+function taskDispatchTime(task) {
+  const dispatchedAt = Date.parse(task.dispatched_at ?? '');
+  return Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null;
+}
 function taskDetails(task) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
-  const dispatchedAt = task.dispatched_at ? Date.parse(task.dispatched_at) : NaN;
   const info = details([['项目', task.proj], ['工单分类', task.category],
     ['设备类型', task.device_type], ['项目阶段', task.project_stage],
     ['负责人', task.owner_name], ['合作者', collaboratorNames(task)],
     ...(source ? [['来源需求', action(source.title, 'demand-detail', source.id, 'link'), true]] : []),
-    ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null]] : []),
-    ['状态', statusBadge(task.status), true], ['优先级', task.pri],
+    ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', taskDispatchTime(task)]] : []),
+    ['状态', statusBadge(task.status), true], ['优先级', priorityBadge(task.pri), true],
     ['计划完成', task.dueDate], ['计划工时', withHours(task.planned_hours)], ['投入工时', withHours(task.hours)],
     ['开始日期', task.startDate], ['完成日期', task.endDate],
     ['附件', fileAction(task), true], ['前置依赖', task.deps]]);
@@ -1670,8 +1679,16 @@ async function exportTasks() {
   let rows = selected.filter(task => inWeek(task.startDate, [from, to]) || inWeek(task.endDate, [from, to]));
   if (!rows.length) rows = selected.filter(task => inWeek(task.dueDate, [from, to]) || ['开发中', '测试中'].includes(task.status));
   if (!rows.length) throw new Error('本周没有可导出的任务。');
+  const demandTitles = new Map(state.demands.map(row => [row.id, row.title]));
+  const exportRows = rows.map(task => ({
+    ...task,
+    pri: taskPriority(task.pri),
+    collaboratorNames: collaboratorNames(task),
+    sourceDemandTitle: demandTitles.get(task.demand_id),
+    dispatchTime: taskDispatchTime(task)
+  }));
   toast('正在整理 ' + rows.length + ' 项任务和附件…');
-  const skipped = await exportWeek(rows, (teamScope ? '团队' : '本周') + '工作任务_' + from + '_' + to, task => {
+  const skipped = await exportWeek(exportRows, (teamScope ? '团队' : '本周') + '工作任务_' + from + '_' + to, task => {
     if (!task.sharedFile) throw new Error('附件只保存在桌面客户端。');
     return request('/api/attachments/' + encodeURIComponent(task.id), { download: true });
   });
