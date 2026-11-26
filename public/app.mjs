@@ -393,7 +393,7 @@ function taskEditActions(task, className) {
 function taskRows(tasks) {
   return tasks.map(task => {
     const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
-    const ownerBadge = assignedToMe(task) ? '<span class="tag task-owner-badge">责任人</span>' : '';
+    const ownerBadge = assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
     return `<tr>
     <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
     <td>${shown(task.proj)}</td><td>${text(taskCategoryLabel(task))}</td><td>${statusBadge(task.status)}</td>
