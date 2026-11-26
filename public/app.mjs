@@ -316,6 +316,11 @@ function statusBadge(status) {
   const variant = { 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
   return `<span class="tag ${variant}">${shown(status)}</span>`;
 }
+function priorityBadge(priority) {
+  const label = PRIORITY.includes(priority) ? priority : '中';
+  const variant = { 低: 'done', 中: 'start', 高: 'test', 极高: 'danger' }[label];
+  return `<span class="tag ${variant}">${text(label)}</span>`;
+}
 function option(value, selected, label = value) {
   return `<option value="${text(value)}"${value === selected ? ' selected' : ''}>${text(label)}</option>`;
 }
@@ -354,7 +359,7 @@ function workspacePage() {
     `<div class="grid-two">${panel('我的待办', table(['任务', '项目', '状态', '计划完成'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>`;
 }
 
-const taskHeaders = ['任务', '项目', '工单分类', '状态', '负责人', '合作者', '计划完成', '开始 / 完成', '工时', '附件', '操作'];
+const taskHeaders = ['任务', '项目', '工单分类', '状态', '优先级', '负责人', '计划完成', '开始 / 完成', '工时', '操作'];
 const personalTaskScopes = [['mine', '我的全部任务'], ['assigned', '我是责任人'], ['collaborating', '我是合作者']];
 
 function matchesTaskScope(task, scope) {
@@ -388,12 +393,14 @@ function taskEditActions(task, className) {
 function taskRows(tasks) {
   return tasks.map(task => {
     const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
+    const ownerBadge = assignedToMe(task) ? '<span class="tag task-owner-badge">责任人</span>' : '';
     return `<tr>
     <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
-    <td>${shown(task.proj)}</td><td>${text(taskCategoryLabel(task))}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td><td>${shown(collaboratorNames(task))}</td>
+    <td>${shown(task.proj)}</td><td>${text(taskCategoryLabel(task))}</td><td>${statusBadge(task.status)}</td>
+    <td>${priorityBadge(task.pri)}</td><td>${shown(task.owner_name)}</td>
     <td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueDate)}</td>
-    <td>${shown(task.startDate)}<small class="muted">${shown(task.endDate)}</small></td><td>${text(withHours(task.hours))}</td><td>${fileAction(task)}</td>
-    <td><div class="row-actions">${taskEditActions(task, 'link') + remove || '—'}</div></td></tr>`;
+    <td>${shown(task.startDate)}<small class="muted">${shown(task.endDate)}</small></td><td>${text(withHours(task.hours))}</td>
+    <td><div class="row-actions">${taskEditActions(task, 'link') + remove || '—'}${ownerBadge}</div></td></tr>`;
   }).join('');
 }
 function tasksPage() {
