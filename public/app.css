@@ -223,6 +223,14 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .choice-list li[data-index] { cursor: pointer; }
 .choice-list li[data-index]:hover, .choice-list li.active { background: #edf2ff; }
 .choice-list [aria-selected="true"] { color: var(--brand-dark); font-weight: 650; }
+.collaborators { padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; }
+.collaborators summary { color: var(--ink); font-size: .9rem; font-weight: 650; cursor: pointer; }
+.collaborators summary span { margin-inline-start: 6px; overflow-wrap: anywhere; font-size: .82rem; font-weight: 400; }
+.collaborators > input { margin-top: 9px; }
+.collaborator-options { display: grid; gap: 2px; max-height: 148px; margin-top: 6px; overflow: auto; }
+.collaborator-option { display: flex; align-items: center; gap: 8px; padding: 5px 3px; cursor: pointer; }
+.collaborator-option input { flex: 0 0 16px; width: 16px; min-height: 16px; margin: 0; accent-color: var(--brand); }
+.demand-task-item { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
 dialog { width: min(calc(100% - 30px), 620px); max-height: min(90dvh, 820px); border: 1px solid var(--line); border-radius: 16px; padding: 22px; color: var(--ink); box-shadow: 0 20px 80px #17244038; }
 dialog::backdrop { background: #0f183677; }
 .dialog-heading { display: flex; gap: 10px; justify-content: space-between; align-items: start; margin-bottom: 13px; }

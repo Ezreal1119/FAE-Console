@@ -47,7 +47,7 @@ const apiRoutes = new Map([
   ['/api/admin/accounts', 'GET'], ['/api/admin/add-member', 'POST'],
   ['/api/admin/member-import-template', 'GET'], ['/api/admin/import-members', 'POST'],
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
-  ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'],
+  ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
 ]);
 let importingMembers = false;
@@ -185,6 +185,7 @@ function privateApi(path, session, body) {
     case '/api/admin/accounts': return accounts.list();
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
+    case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
     case '/api/admin/add-member': return accounts.addMember(body);
     case '/api/admin/reset-account': return accounts.resetMember(body);
     case '/api/admin/delete-account':
