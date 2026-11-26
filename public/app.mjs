@@ -11,7 +11,7 @@ const STATUS = ['待规划', '开发中', '测试中', '已完成'];
 const PRIORITY = ['低', '中', '高', '极高'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
@@ -454,13 +454,13 @@ function demandCatalogPage() {
   const label = demandOptionLabels[kind];
   const tabs = Object.entries(demandOptionLabels).map(([key, title]) =>
     `<button type="button" class="button" data-action="demand-catalog-tab" data-id="${key}" aria-pressed="${key === kind}">${title}</button>`).join('');
-  const header = heading('基础资料', '维护需求表单中的项目和需求提出方。') +
-    `<div class="catalog-tabs" role="group" aria-label="资料类别">${tabs}</div>`;
+  const header = heading(PAGE_TITLES.demandCatalog, '维护项目和需求提出方的下拉选项。') +
+    `<div class="catalog-tabs" role="group" aria-label="配置类别">${tabs}</div>`;
   if (!state.demandCatalog) {
     const error = state.demandCatalogError;
     return header + panel(label, error
       ? `<p class="form-error" role="alert">${text(error)}</p>` + action('重新加载', 'demand-catalog-load', '', 'link')
-      : '<p class="empty" role="status">正在加载基础资料…</p>');
+      : '<p class="empty" role="status">正在加载基础配置…</p>');
   }
   const rows = unique(state.demandCatalog[kind]).map(name => `<tr><td>${text(name)}</td><td>${
     action('删除', 'demand-option-remove', JSON.stringify([kind, name]), 'link danger')}</td></tr>`).join('');
