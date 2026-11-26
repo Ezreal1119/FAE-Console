@@ -2,6 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+const defaultTaskCategories = [
+  '样机组装与改制', '调试改料与返工', '试产与量产导入', '测试与验证',
+  '工装治具', '技术资料与 SOP', '质量异常与客诉', '技术支持'
+];
+
 export class RequestError extends Error {
   constructor(status, message) {
     super(message);
@@ -26,11 +31,15 @@ export function openStore(directory) {
       !Array.isArray(data.demandOptions?.[key]) || data.demandOptions[key].some(value => typeof value !== 'string'))) {
       throw new Error('需求选项结构无效：' + file);
     }
+    if (Object.hasOwn(data.demandOptions ?? {}, 'category') &&
+        (!Array.isArray(data.demandOptions.category) || data.demandOptions.category.some(value => typeof value !== 'string'))) {
+      throw new Error('工单分类选项结构无效：' + file);
+    }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     data = {
       version: 1, users: [], profiles: [], tasks: [], demands: [], sessions: [], attachments: [],
-      demandOptions: { proj: [], proposer: [] },
+      demandOptions: { proj: [], proposer: [], category: [...defaultTaskCategories] },
       seq: { user: 1, profile: 1, task: 1, demand: 1 }
     };
   }
@@ -56,12 +65,13 @@ export function openStore(directory) {
     return result;
   }
 
-  if (!Object.hasOwn(data, 'demandOptions')) {
+  if (!Object.hasOwn(data.demandOptions ?? {}, 'category')) {
     update(db => {
-      db.demandOptions = Object.fromEntries(['proj', 'proposer'].map(key => {
+      db.demandOptions ??= Object.fromEntries(['proj', 'proposer'].map(key => {
         const names = db.demands.map(row => typeof row[key] === 'string' ? row[key].trim() : '').filter(Boolean);
         return [key, [...new Set(names)]];
       }));
+      db.demandOptions.category = [...defaultTaskCategories];
     });
   }
 

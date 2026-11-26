@@ -8,7 +8,7 @@ const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
     title: 180, proj: 100, owner_name: 100, assignee_id: 0, collaborator_ids: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
-    add_collaborator_ids: 0, keep_as_collaborator: 0,
+    add_collaborator_ids: 0, keep_as_collaborator: 0, category: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
   demands: { title: 180, proj: 100, descr: 10000, proposer: 100 }
@@ -17,8 +17,9 @@ const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', '开发中', '测试中', '已完成'];
 const priorities = ['低', '中', '高', '极高'];
 const defaultPriority = '中';
-const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
+const catalogKinds = new Set(['proj', 'proposer', 'category']);
 const taskProgressFields = new Set(['status', 'start', 'end', 'start_time', 'end_time', 'hours', 'result', 'attachment_name', 'attachment_path']);
+const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'category']);
 const taskHandoverFields = ['assignee_id', 'keep_as_collaborator'];
 const expiry = 24 * 60 * 60 * 1000;
 
@@ -199,7 +200,7 @@ function changeable(db, user, table, row, op, patch) {
   if (managesRecord(user, row)) return true;
   if (table === 'demands' && op === 'update') return true;
   return table === 'tasks' && op === 'update' && row.assignee_id === user.id &&
-    Object.keys(patch).every(field => taskProgressFields.has(field) || field === 'add_collaborator_ids' ||
+    Object.keys(patch).every(field => taskProgressFields.has(field) || taskAssigneeEditFields.has(field) ||
       (Object.hasOwn(patch, 'keep_as_collaborator') && taskHandoverFields.includes(field)));
 }
 
@@ -397,8 +398,8 @@ export function openRecords(store, { recordTaskChange } = {}) {
     },
 
     changeDemandOptions({ kind, action, name }) {
-      if (typeof kind !== 'string' || !Object.hasOwn(demandOptionLabels, kind) || !['add', 'remove'].includes(action)) {
-        throw new RequestError(400, '需求选项操作无效。');
+      if (!catalogKinds.has(kind) || !['add', 'remove'].includes(action)) {
+        throw new RequestError(400, '基础配置选项操作无效。');
       }
       name = optionalText(name);
       if (!name) throw new RequestError(400, '请填写名称。');

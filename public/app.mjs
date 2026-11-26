@@ -14,7 +14,7 @@ const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
-const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
+const catalogLabels = { proj: '项目', proposer: '需求提出方', category: '工单分类' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = { taskQuery: '', taskStatus: '', taskScope: 'mine', demandQuery: '', peopleQuery: '', peopleTeam: '' };
 const listPageSize = 10;
@@ -458,10 +458,10 @@ function updatePagedList(key) {
 
 function demandCatalogPage() {
   const kind = state.demandCatalogKind;
-  const label = demandOptionLabels[kind];
-  const tabs = Object.entries(demandOptionLabels).map(([key, title]) =>
+  const label = catalogLabels[kind];
+  const tabs = Object.entries(catalogLabels).map(([key, title]) =>
     `<button type="button" class="button" data-action="demand-catalog-tab" data-id="${key}" aria-pressed="${key === kind}">${title}</button>`).join('');
-  const header = heading(PAGE_TITLES.demandCatalog, '维护项目和需求提出方的下拉选项。') +
+  const header = heading(PAGE_TITLES.demandCatalog, '维护项目、需求提出方和工单分类的下拉选项。') +
     `<div class="catalog-tabs" role="group" aria-label="配置类别">${tabs}</div>`;
   if (!state.demandCatalog) {
     const error = state.demandCatalogError;
@@ -495,7 +495,7 @@ async function changeDemandOption(kind, operation, name) {
   const result = await post('/api/admin/demand-options', { kind, action: operation, name });
   state.demandCatalog = result.options;
   if (state.page === 'demandCatalog') render();
-  toast(demandOptionLabels[kind] + (operation === 'add' ? '已添加。' : '已删除。'));
+  toast(catalogLabels[kind] + (operation === 'add' ? '已添加。' : '已删除。'));
 }
 
 function boardPage() {
@@ -781,7 +781,7 @@ async function removeRow(tableName, row, success) {
 function taskDetails(task) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
   const dispatchedAt = task.dispatched_at ? Date.parse(task.dispatched_at) : NaN;
-  const info = details([['项目', task.proj], ['负责人', task.owner_name], ['合作者', collaboratorNames(task)],
+  const info = details([['项目', task.proj], ['工单分类', task.category], ['负责人', task.owner_name], ['合作者', collaboratorNames(task)],
     ...(source ? [['来源需求', action(source.title, 'demand-detail', source.id, 'link'), true]] : []),
     ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null]] : []),
     ['状态', statusBadge(task.status), true], ['优先级', task.pri],
@@ -860,7 +860,8 @@ function confirmTaskHandover(form) {
 function taskAssignmentForm(task) {
   if (!assignedToMe(task)) return;
   const existing = new Set((task.collaborators || []).map(person => person.id));
-  const fields = choiceField('负责人', 'assignee_id') +
+  const initialCategory = task.category ?? null;
+  const fields = choiceField('负责人', 'assignee_id') + choiceField(catalogLabels.category, 'category', { allowCustom: true }) +
     `<p class="muted text-small">当前合作者：${shown(collaboratorNames(task))}</p>` +
     collaboratorField(false, '添加合作者') + choiceStatus;
   let owner, collaborators, loadChoices;
@@ -868,8 +869,11 @@ function taskAssignmentForm(task) {
     const assignee = owner.value();
     const transferring = assignee !== task.assignee_id;
     const added = collaborators.ids().filter(id => id !== assignee);
-    if (!transferring && !added.length) throw new Error('请选择接手人或至少一位合作者。');
+    const selectedCategory = category.value();
+    const categoryChanged = selectedCategory !== initialCategory;
+    if (!transferring && !added.length && !categoryChanged) throw new Error('请修改工单分类、选择接手人或添加合作者。');
     const patch = {};
+    if (categoryChanged) patch.category = selectedCategory;
     if (added.length) patch.add_collaborator_ids = added;
     if (transferring) {
       const keep = await confirmTaskHandover(form);
@@ -883,12 +887,14 @@ function taskAssignmentForm(task) {
       if (error.status === 409) await loadChoices().catch(() => {});
       throw error;
     }
-    toast(transferring ? '任务已转交。' : '合作者已加入任务。');
+    toast(transferring ? '任务已转交。' : added.length ? '合作者已加入任务。' : '工单分类已更新。');
   });
+  const category = bindTaskCategory(form, initialCategory);
   collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), [], task.assignee_id);
   owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: task.assignee_id, label: task.owner_name },
     { clearable: false, onChange: collaborators.setOwner });
-  loadChoices = prepareFormChoices(form, ({ people }) => {
+  loadChoices = prepareFormChoices(form, ({ people, options }) => {
+    category.setOptions(catalogChoiceEntries(options.category));
     const entries = peopleChoices(people);
     owner.setOptions(entries.map(({ id, label }) => ({ value: id, label })));
     collaborators.setPeople(entries.filter(person => person.id !== task.assignee_id && !existing.has(person.id)));
@@ -911,6 +917,7 @@ function taskForm(task = {}, demand) {
   const canChooseOwner = task.demand_id == null || admin() || currentOwner;
   const canPlanHours = Boolean(demand) || Object.hasOwn(task, 'dispatched_at');
   const canEditNameAndProject = !demand && task.demand_id == null;
+  const initialCategory = task.category ?? null;
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
   const initialPeople = task.collaborators || [];
@@ -922,6 +929,7 @@ function taskForm(task = {}, demand) {
     : ownerField;
   const setupFields = identityFields + collaboratorField() +
     `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, PRIORITY.includes(task.pri) ? task.pri : '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
+      ${newStandaloneTask ? '' : choiceField(catalogLabels.category, 'category', { allowCustom: true })}
       ${canPlanHours ? field('计划工时（小时）', 'planned_hours', task.planned_hours, 'type="number" min="0" step="0.01"') : ''}</div>` +
     area('任务描述', 'desc', task.desc ?? demand?.descr);
   const fields = setupFields + (newStandaloneTask ? taskProgressFields(task) : '') +
@@ -947,6 +955,8 @@ function taskForm(task = {}, demand) {
     const people = collaborators.ids();
     const previousPeople = transferring ? initialPeople.filter(person => person.id !== assignee) : initialPeople;
     Object.assign(patch, { pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
+    const selectedCategory = category?.value();
+    if (category && selectedCategory !== initialCategory) patch.category = selectedCategory;
     if (canPlanHours) patch.planned_hours = values.planned_hours === '' ? null : Number(values.planned_hours);
     if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
     if (people.length !== previousPeople.length || previousPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
@@ -966,6 +976,7 @@ function taskForm(task = {}, demand) {
     }
     toast(demand ? '任务已派发。' : transferring ? '任务已转交。' : task.id ? '任务已更新。' : '任务已创建。');
   }, demand ? { submit: '派发任务' } : {});
+  const category = newStandaloneTask ? null : bindTaskCategory(form, initialCategory);
   if (canEditNameAndProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
   }
@@ -977,6 +988,7 @@ function taskForm(task = {}, demand) {
   }
   loadChoices = prepareFormChoices(form, ({ people, options }) => {
     project?.setOptions(catalogChoiceEntries(options.proj));
+    category?.setOptions(catalogChoiceEntries(options.category));
     const entries = peopleChoices(people);
     owner?.setOptions(entries.map(({ id, label }) => ({ value: id, label })));
     collaborators.setPeople(entries);
@@ -1002,7 +1014,7 @@ function choiceField(label, key, { allowCustom = false } = {}) {
     <label for="choice-${key}">${label}</label>
     <div class="choice-control">
       <input id="choice-${key}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="choices-${key}"
-        autocomplete="off" ${allowCustom ? 'maxlength="100" placeholder="请选择或直接输入项目"' : 'placeholder="请选择或输入关键词"'} disabled>
+        autocomplete="off" ${allowCustom ? `maxlength="100" placeholder="请选择或直接输入${label}"` : 'placeholder="请选择或输入关键词"'} disabled>
       <span aria-hidden="true" class="choice-arrow"></span>
       <ul id="choices-${key}" class="choice-list" role="listbox" aria-label="${label}" hidden></ul>
     </div>
@@ -1121,6 +1133,10 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false, onC
 
 function catalogChoiceEntries(values) {
   return unique(values).map(value => ({ value, label: value }));
+}
+
+function bindTaskCategory(form, value) {
+  return bindChoice(form.querySelector('[data-choice=category]'), { value, label: value }, { allowCustom: true });
 }
 
 function peopleChoices(people) {
@@ -1322,8 +1338,8 @@ function demandForm(row = {}) {
   const pickers = Object.fromEntries(Object.entries(initial).map(([key, entry]) =>
     [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: key === 'proj' })]));
   const loadChoices = prepareFormChoices(form, ({ options }) => {
-    for (const key of Object.keys(demandOptionLabels)) {
-      pickers[key].setOptions(catalogChoiceEntries(options[key]));
+    for (const [key, picker] of Object.entries(pickers)) {
+      picker.setOptions(catalogChoiceEntries(options[key]));
     }
   });
 }
@@ -1606,13 +1622,13 @@ const actions = {
   },
   'demand-catalog-load': loadDemandCatalog,
   'demand-catalog-tab': kind => {
-    if (!Object.hasOwn(demandOptionLabels, kind)) return;
+    if (!Object.hasOwn(catalogLabels, kind)) return;
     state.demandCatalogKind = kind;
     render();
     content.querySelector('.catalog-tabs [aria-pressed="true"]').focus();
   },
   'demand-option-add': kind => {
-    const label = demandOptionLabels[kind];
+    const label = catalogLabels[kind];
     modalForm('新增' + label, '', field(label, 'name', '', 'required maxlength="100"'), async values => {
       const name = trimmed(values.name);
       if (!name) throw new Error('请填写名称。');
@@ -1621,7 +1637,8 @@ const actions = {
   },
   'demand-option-remove': id => {
     const [kind, name] = JSON.parse(id);
-    confirmDelete('删除' + demandOptionLabels[kind], '确定删除「' + name + '」？历史需求会保留原值。',
+    const records = kind === 'category' ? '任务' : '需求';
+    confirmDelete('删除' + catalogLabels[kind], '确定删除「' + name + '」？已有' + records + '会保留原值。',
       () => changeDemandOption(kind, 'remove', name));
   },
   'person-detail': personDetail, 'person-new': () => personForm(), 'person-edit': id => personForm(getRow('profiles', id)),
