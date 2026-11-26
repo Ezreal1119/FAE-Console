@@ -421,12 +421,13 @@ function filteredDemands() {
 function demandRows(demands) {
   return demands.map(demand => {
     const task = demand.linked_tasks?.[0];
+    const edit = canManageDemand(demand) ? action('编辑', 'demand-edit', demand.id, 'link') : '';
+    const remove = canDeleteDemand(demand) ? action('删除', 'demand-delete', demand.id, 'link danger') : '';
     return `<tr>
     <td>${action(demand.title || '未命名需求', 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td><td>${shown(demand.descr)}</td>
     <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td><td>${shown(task?.initial_receiver_name)}</td>
     <td>${demandOwner(demand, task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
-    <td><div class="row-actions">${action('编辑', 'demand-edit', demand.id, 'link')}${demandAssignmentAction(demand, 'link')}${
-      canDeleteDemand(demand) ? action('删除', 'demand-delete', demand.id, 'link danger') : ''}</div></td></tr>`;
+    <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td></tr>`;
   }).join('');
 }
 function demandsPage() {
@@ -1355,6 +1356,7 @@ function demandCollaboratorsForm(id) {
 }
 
 function demandForm(row = {}) {
+  if (row.id && !canManageDemand(row)) return;
   const initial = {
     proj: { value: row.proj || null, label: row.proj },
     proposer: { value: row.proposer || null, label: row.proposer }

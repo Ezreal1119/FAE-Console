@@ -198,7 +198,6 @@ function changeable(db, user, table, row, op, patch) {
     return isAdmin(user) && !db.users.some(account => account.id === row.owner_id && isPrimaryAdmin(account));
   }
   if (managesRecord(user, row)) return true;
-  if (table === 'demands' && op === 'update') return true;
   return table === 'tasks' && op === 'update' && row.assignee_id === user.id &&
     Object.keys(patch).every(field => taskProgressFields.has(field) || taskAssigneeEditFields.has(field) ||
       (Object.hasOwn(patch, 'keep_as_collaborator') && taskHandoverFields.includes(field)));
