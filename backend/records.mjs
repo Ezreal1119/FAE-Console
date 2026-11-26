@@ -75,11 +75,18 @@ function taskOwnerName(db, task) {
 
 function publicTask(db, task) {
   const { dispatch_key, ...row } = task;
+  if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
+    row.dispatched_at = row.created_at ?? null;
+  }
   return { ...row, owner_name: taskOwnerName(db, task),
     collaborators: (task.collaborators || []).map(person => {
       const user = db.users.find(item => item.id === person.id);
       return user ? { id: person.id, name: displayName(db, user) } : person;
     }) };
+}
+
+function directoryProfile({ id, display_name, emp_no, team, role, status }) {
+  return { id, display_name, emp_no, team, role, status };
 }
 
 function publicDemand(db, user, row, linkedTasks) {
@@ -241,7 +248,9 @@ export function openRecords(store) {
       }
       if (op === 'select') {
         const db = store.read();
-        if (table === 'profiles' && !isAdmin(user)) return { data: db.profiles.filter(row => row.owner_id === user.id) };
+        if (table === 'profiles' && !isAdmin(user)) {
+          return { data: db.profiles.map(row => row.owner_id === user.id ? row : directoryProfile(row)) };
+        }
         if (table === 'tasks') return { data: db.tasks.filter(task => visibleTask(user, task)).map(task => publicTask(db, task)) };
         if (table === 'demands') {
           const links = new Map();

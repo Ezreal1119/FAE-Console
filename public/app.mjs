@@ -7,6 +7,7 @@ const guidelinesDialog = $('#guidelines-dialog');
 const STATUS = ['待规划', '开发中', '测试中', '已完成'];
 const PRIORITY = ['高', '中', '低'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
+const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', demands: '需求管理', demandCatalog: '基础资料', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const demandOptionLabels = { proj: '项目', proposer: '需求提出方' };
@@ -14,6 +15,7 @@ const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = { taskQuery: '', taskStatus: '', taskScope: 'mine', demandQuery: '', peopleQuery: '', peopleTeam: '' };
 const state = {
   user: null, tasks: [], demands: [], profiles: [], accounts: [], page: 'home', mode: 'login',
+  registrationEnabled: false,
   filters: { ...defaultFilters },
   catalog: { teams: [], roles: [] },
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proj',
@@ -24,6 +26,7 @@ let toastTimer;
 let demandCatalogLoad;
 let guidelinesLoad;
 let refreshVersion = 0;
+let authOptionsVersion = 0;
 
 function text(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -129,6 +132,7 @@ function ownTask(task) {
 }
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
 function canUpdateTaskProgress(task) { return canEditTask(task) || same(task.assignee_id, state.user.id); }
+function canEditProfile(person) { return admin() || same(person.owner_id, state.user.id); }
 function canManageDemand(demand) { return admin() || same(demand.creator_id ?? demand.owner_id, state.user.id); }
 function canDeleteDemand(demand) { return admin() || (canManageDemand(demand) && !demand.linked_tasks?.length); }
 const collaboratorNames = task => (task.collaborators || []).map(person => person.name).join('、');
@@ -142,6 +146,7 @@ function loadCatalog() {
 function storeCatalog() { localStorage.setItem('yxt-web-catalog-' + state.user.id, JSON.stringify(state.catalog)); }
 
 function showAuth(error = '') {
+  const entering = $('#auth-view').hidden;
   state.user = null;
   state.tasks = [];
   state.demands = [];
@@ -168,10 +173,27 @@ function showAuth(error = '') {
   form.reset();
   setAuthMode('login');
   formError($('#auth-error'), error);
+  if (entering) {
+    state.registrationEnabled = false;
+    $('#auth-tabs').hidden = true;
+    void loadAuthOptions();
+  }
+}
+async function loadAuthOptions() {
+  const version = ++authOptionsVersion;
+  const result = await request('/api/auth-options').catch(() => null);
+  if (state.user || version !== authOptionsVersion) return;
+  state.registrationEnabled = result?.registrationEnabled === true;
+  $('#auth-tabs').hidden = !state.registrationEnabled;
+  if (!state.registrationEnabled && state.mode === 'register') {
+    const message = $('#auth-error').textContent;
+    setAuthMode('login');
+    formError($('#auth-error'), message);
+  }
 }
 function setAuthMode(mode) {
-  state.mode = mode;
-  const register = mode === 'register';
+  const register = mode === 'register' && state.registrationEnabled;
+  state.mode = register ? 'register' : 'login';
   const form = $('#auth-form');
   $('#auth-name').hidden = !register;
   form.elements.name.disabled = !register;
@@ -181,8 +203,9 @@ function setAuthMode(mode) {
   $('#auth-title').textContent = register ? '注册工作台账号' : '登录工作台';
   $('#auth-submit').textContent = register ? '注册并登录' : '登录';
   document.querySelectorAll('[data-auth]').forEach(button => {
-    button.classList.toggle('active', button.dataset.auth === mode);
-    button.setAttribute('aria-pressed', String(button.dataset.auth === mode));
+    const active = button.dataset.auth === state.mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
   });
   formError($('#auth-error'), '');
 }
@@ -432,12 +455,17 @@ function peopleRows() {
   return state.profiles.filter(person => (!peopleTeam || person.team === peopleTeam) &&
     hasText(peopleQuery, person.display_name, person.emp_no, person.team, person.role, person.duty)).map(person => {
     const self = same(person.owner_id, state.user.id);
-    const active = state.tasks.filter(task => task.owner_name === person.display_name && task.status !== '已完成');
+    const editable = canEditProfile(person);
+    const active = editable ? state.tasks.filter(task => task.status !== '已完成' &&
+      (task.assignee_id == null ? task.owner_name === person.display_name : same(task.assignee_id, person.owner_id))) : null;
+    const edit = editable ? action('编辑', 'person-edit', person.id, 'link') : '';
+    const management = admin() && !self ? action(person.status === '已离职' ? '恢复在职' : '标记离职', 'person-status', person.id, 'link') +
+      action('删档案', 'person-delete', person.id, 'link danger') : '';
     return `<tr>
       <td>${action(person.display_name || '未填写姓名', 'person-detail', person.id, 'link')}<small class="muted">${shown(person.emp_no)}</small></td>
       <td>${shown(person.team)}</td><td>${shown(person.role)}</td><td>${statusBadge(person.status)}</td>
-      <td>${active.length} 项 <small class="muted">${sumHours(active)}h</small></td>
-      <td><div class="row-actions">${action('编辑', 'person-edit', person.id, 'link')}${admin() && !self ? action(person.status === '已离职' ? '恢复在职' : '标记离职', 'person-status', person.id, 'link') + action('删档案', 'person-delete', person.id, 'link danger') : ''}</div></td>
+      <td>${active ? `${active.length} 项 <small class="muted">${sumHours(active)}h</small>` : '—'}</td>
+      <td><div class="row-actions">${edit + management || '—'}</div></td>
     </tr>`;
   }).join('');
 }
@@ -449,9 +477,9 @@ function peoplePage() {
   const person = mineProfile();
   const buttons = action(person ? '编辑我的档案' : '建立我的档案', person ? 'person-edit' : 'person-new', person?.id) +
     (admin() ? action('Excel 导入', 'account-import') + action('＋ 添加成员', 'account-add', '', 'button primary') : '');
-  const toolbar = `<div class="toolbar">${search('peopleQuery', '搜索姓名、工号或技能')}${filterSelect('peopleTeam', '按团队过滤', catalogOptions('teams'), '全部团队')}</div>`;
-  return heading('人员管理', admin() ? '维护成员档案、在岗状态和登录账号。' : '管理你的个人档案。', buttons) +
-    panel(admin() ? '成员档案' : '我的档案', toolbar + table(peopleHeaders, peopleRows(), '暂无人员档案。', 'people-rows'),
+  const toolbar = `<div class="toolbar">${search('peopleQuery', admin() ? '搜索姓名、工号、团队、岗位或技能' : '搜索姓名、工号、团队或岗位')}${filterSelect('peopleTeam', '按团队过滤', catalogOptions('teams'), '全部团队')}</div>`;
+  return heading('人员管理', admin() ? '维护成员档案、在岗状态和登录账号。' : '查阅团队成员信息，维护个人档案。', buttons) +
+    panel(admin() ? '成员档案' : '团队通讯录', toolbar + table(peopleHeaders, peopleRows(), '暂无人员档案。', 'people-rows'),
       admin() ? '<div class="actions">' + action('团队选项', 'catalog', 'teams', 'link') + action('岗位选项', 'catalog', 'roles', 'link') + '</div>' : '') +
     (admin() ? panel('登录账号', table(accountHeaders, accountsRows(), '暂无账号。')) : '');
 }
@@ -571,7 +599,7 @@ function navigate(page) {
   else {
     render();
     if (page === 'guidelines') void loadGuidelines();
-    if (page === 'tasks' || page === 'demands') void refresh();
+    if (page === 'tasks' || page === 'demands' || page === 'people') void refresh();
   }
 }
 
@@ -650,8 +678,10 @@ async function removeRow(tableName, row, success) {
 function taskDetail(id) {
   const task = getRow('tasks', id);
   const source = state.demands.find(row => same(row.id, task.demand_id));
+  const dispatchedAt = task.dispatched_at ? Date.parse(task.dispatched_at) : NaN;
   const info = details([['项目', task.proj], ['负责人', task.owner_name], ['合作者', collaboratorNames(task)],
     ...(source ? [['来源需求', action(source.title, 'demand-detail', source.id, 'link'), true]] : []),
+    ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null]] : []),
     ['状态', statusBadge(task.status), true], ['优先级', task.pri],
     ['计划完成', task.dueDate], ['工时', withHours(task.hours)], ['开始日期', task.startDate], ['完成日期', task.endDate],
     ['附件', fileAction(task), true], ['前置依赖', task.deps]]);
@@ -664,6 +694,7 @@ function taskDetail(id) {
 function taskForm(task = {}, demand) {
   if (task.id && !canUpdateTaskProgress(task)) return;
   const progressOnly = Boolean(task.id && !canEditTask(task));
+  const startDate = task.startDate || (progressOnly ? isoDate() : '');
   const canChooseOwner = !progressOnly && (task.demand_id == null || admin());
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
@@ -675,7 +706,7 @@ function taskForm(task = {}, demand) {
     area('任务描述', 'desc', task.desc ?? demand?.descr);
   const executionFields = demand ? '' : `<div class="form-grid">
     ${selectField('状态', 'status', STATUS, task.status || STATUS[0])}${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}
-    ${field('开始日期', 'start', task.startDate, 'type="date"')}${field('完成日期', 'end', task.endDate, 'type="date"')}</div>` +
+    ${field('开始日期', 'start', startDate, 'type="date"')}${field('完成日期', 'end', task.endDate, 'type="date"')}</div>` +
     area('完成结果', 'result', task.result);
   const fields = setupFields + executionFields +
     field('附件（单个文件最多 20MB）', 'file', '', 'type="file"') +
@@ -982,8 +1013,7 @@ function demandDetail(id) {
     <p class="muted text-small">${shown(task.owner_name)}</p></div>${statusBadge(task.status)}</div>`).join('');
   modal(demand.title, '需求 #' + demand.id, details([['项目', demand.proj], ['需求提出方', demand.proposer], ['创建人', demand.owner_name],
     ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
-    ['初始接收人', task?.initial_receiver_name], ['当前负责人', demandOwner(demand, task), true],
-    ...(demand.responsible ? [['历史责任人', demand.responsible]] : [])]) +
+    ['初始接收人', task?.initial_receiver_name], ['当前负责人', demandOwner(demand, task), true]]) +
     `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div>
       <div class="detail-item"><strong>关联任务</strong>${items || '<p class="muted">待派发</p>'}</div></div>
     <div class="dialog-actions">${action('关闭', 'close')}${demandAssignmentAction(demand, 'button primary')}</div>`);
@@ -1073,8 +1103,11 @@ function demandForm(row = {}) {
 
 function personDetail(id) {
   const row = getRow('profiles', id);
-  modal(row.display_name || '成员档案', row.emp_no || '', details([['团队', row.team], ['岗位', row.role], ['状态', row.status], ['联系方式', row.contact],
-    ['工作职责与技能', row.duty], ['备注', row.remark]]) + '<div class="dialog-actions">' + action('编辑', 'person-edit', id, 'button primary') + '</div>');
+  const editable = canEditProfile(row);
+  const info = [['团队', row.team], ['岗位', row.role], ['状态', row.status]];
+  if (editable) info.push(['联系方式', row.contact], ['工作职责与技能', row.duty], ['备注', row.remark]);
+  modal(row.display_name || '成员档案', row.emp_no || '', details(info) + '<div class="dialog-actions">' +
+    (editable ? action('编辑', 'person-edit', id, 'button primary') : action('关闭', 'close')) + '</div>');
 }
 function profileFields(row, newAccount = false) {
   return `<div class="form-grid">
@@ -1085,6 +1118,7 @@ function profileFields(row, newAccount = false) {
     area('工作职责与技能', 'duty', row.duty) + area('备注', 'remark', row.remark);
 }
 function personForm(row = { display_name: state.user.name, emp_no: state.user.account }) {
+  if (row.id && !canEditProfile(row)) return;
   modalForm(row.id ? '编辑成员档案' : '建立个人档案', '', profileFields(row), async values => {
     const patch = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, optional(value)]));
     if (!patch.display_name) throw new Error('请填写姓名。');
@@ -1438,6 +1472,7 @@ $('#auth-form').addEventListener('submit', async event => {
     if (mode !== 'login') {
       setAuthMode(mode);
       formError($('#auth-error'), error.message);
+      if (error.status === 403) void loadAuthOptions();
     }
     form.elements.account.value = values.account;
     if (values.name) form.elements.name.value = values.name;

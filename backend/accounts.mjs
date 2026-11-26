@@ -159,8 +159,11 @@ function configureAdmin(store, settings) {
 export function openAccounts(store, settings, { guidelinesEnabled = false } = {}) {
   const adminCredentials = configureAdmin(store, settings);
   const dummy = credentials(randomBytes(24).toString('base64url'));
+  const registrationEnabled = settings.ALLOW_REGISTRATION !== '0';
 
   return {
+    registrationEnabled,
+
     signIn({ account, password }) {
       const value = passwordValue(password, 1);
       const user = store.read().users.find(item => item.account === accountName(account));
@@ -170,7 +173,7 @@ export function openAccounts(store, settings, { guidelinesEnabled = false } = {}
     },
 
     register({ account, name, password }) {
-      if (settings.ALLOW_REGISTRATION === '0') throw new RequestError(403, '当前关闭自助注册，请联系管理员。');
+      if (!registrationEnabled) throw new RequestError(403, '当前关闭自助注册，请联系管理员。');
       return store.update(db => {
         const user = addMemberAccount(db, accountName(account), requiredName(name), credentials(passwordValue(password)));
         addProfile(db, user);

@@ -41,7 +41,7 @@ const assets = new Map([
   ['/export.mjs', ['export.mjs', 'text/javascript; charset=utf-8']]
 ]);
 const apiRoutes = new Map([
-  ['/api/login', 'POST'], ['/api/register', 'POST'], ['/api/logout', 'POST'],
+  ['/api/auth-options', 'GET'], ['/api/login', 'POST'], ['/api/register', 'POST'], ['/api/logout', 'POST'],
   ['/api/me', 'GET'], ['/api/password', 'POST'], ['/api/first-password', 'POST'],
   ['/api/guidelines', 'GET'], ['/api/guidelines/acknowledge', 'POST'],
   ['/api/admin/accounts', 'GET'], ['/api/admin/add-member', 'POST'],
@@ -199,6 +199,9 @@ function privateApi(path, session, body) {
 }
 
 async function handleApi(req, res, path, attachmentId) {
+  if (path === '/api/auth-options') {
+    return sendJson(res, 200, { ok: true, registrationEnabled: accounts.registrationEnabled });
+  }
   if (path === '/api/login' || path === '/api/register') {
     const body = await readJson(req);
     const key = path + ':' + clientAddress(req);
