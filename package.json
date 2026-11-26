@@ -8,9 +8,11 @@
   "scripts": {
     "start": "node --env-file=.env server.mjs",
     "wecom:bridge": "node --env-file-if-exists=.env integrations/fae-wecom-bridge/index.mjs",
-    "check": "node --check server.mjs && node --check backend/store.mjs && node --check backend/accounts.mjs && node --check backend/records.mjs && node --check public/app.mjs && node --check public/export.mjs && node --check integrations/fae-wecom-bridge/bridge.mjs && node --check integrations/fae-wecom-bridge/index.mjs"
+    "check": "node --check server.mjs && node --check backend/store.mjs && node --check backend/accounts.mjs && node --check backend/member-import.mjs && node --check backend/records.mjs && node --check public/app.mjs && node --check public/export.mjs && node --check integrations/fae-wecom-bridge/bridge.mjs && node --check integrations/fae-wecom-bridge/index.mjs"
   },
   "dependencies": {
-    "@wecom/aibot-node-sdk": "1.0.7"
+    "@wecom/aibot-node-sdk": "1.0.7",
+    "exceljs": "4.4.0",
+    "yauzl": "3.4.0"
   }
 }

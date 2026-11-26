@@ -1,10 +1,14 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import { RequestError } from './store.mjs';
+import { memberImportErrors } from './member-import.mjs';
 
 export const sessionSeconds = 30 * 86400;
 export const isAdmin = user => user.role === '管理员';
 export const now = () => new Date().toISOString();
 const cryptoOptions = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+const derivePassword = promisify(scrypt);
+const memberStatuses = new Set(['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职']);
 
 export function optionalText(value, maximum = 100) {
   if (value == null) return null;
@@ -48,25 +52,55 @@ function publicAccount(user) {
   return { id, account, name, role, must_change_pwd, created_at };
 }
 
-function addMemberAccount(db, account, name, password, mustChangePassword = false) {
+function addMemberAccount(db, account, name, passwordHash, mustChangePassword = false) {
   if (db.users.some(user => user.account === account)) throw new RequestError(409, '此登录账号已存在。');
   const user = {
-    id: db.seq.user++, account, name, role: '成员', ...credentials(password),
+    id: db.seq.user++, account, name, role: '成员', ...passwordHash,
     must_change_pwd: mustChangePassword, created_at: now()
   };
   db.users.push(user);
   return user;
 }
 
-function addProfile(db, user, fields = {}) {
+function profileDetails(fields = {}) {
+  return {
+    role: optionalText(fields.role), team: optionalText(fields.team),
+    status: optionalText(fields.status, 20) || '在职', contact: optionalText(fields.contact, 200),
+    duty: optionalText(fields.duty, 10000), remark: optionalText(fields.remark, 10000)
+  };
+}
+
+function addProfile(db, user, fields = profileDetails()) {
   const profile = {
     id: db.seq.profile++, owner_id: user.id, owner_name: user.name, display_name: user.name,
-    emp_no: user.account, role: optionalText(fields.role), team: optionalText(fields.team),
-    status: optionalText(fields.status, 20) || '在职', contact: optionalText(fields.contact, 200),
-    duty: optionalText(fields.duty, 10000), remark: optionalText(fields.remark, 10000), updated_at: now()
+    emp_no: user.account, ...fields, updated_at: now()
   };
   db.profiles.push(profile);
   return profile;
+}
+
+function memberDetails(fields) {
+  const name = requiredName(fields.name);
+  if (!fields.emp_no) throw new RequestError(400, '请填写工号。');
+  return { name, account: accountName(fields.emp_no), details: profileDetails(fields) };
+}
+
+function createMember(db, { account, name, details, temporaryPassword, passwordHash }) {
+  const user = addMemberAccount(db, account, name, passwordHash, true);
+  const profile = addProfile(db, user, details);
+  return { user: publicAccount(user), profile, temporaryPassword };
+}
+
+function checkImportedAccounts(members, users, errors = []) {
+  const existing = new Set(users.map(user => user.account));
+  const seen = new Map();
+  for (const { account, rowNumber } of members) {
+    if (existing.has(account)) errors.push('第 ' + rowNumber + ' 行：工号「' + account + '」已存在。');
+    const firstRow = seen.get(account);
+    if (firstRow) errors.push('第 ' + rowNumber + ' 行：工号「' + account + '」与第 ' + firstRow + ' 行重复。');
+    else seen.set(account, rowNumber);
+  }
+  if (errors.length) throw memberImportErrors(errors);
 }
 
 function sessionKey(token) {
@@ -137,7 +171,7 @@ export function openAccounts(store, settings) {
     register({ account, name, password }) {
       if (settings.ALLOW_REGISTRATION === '0') throw new RequestError(403, '当前关闭自助注册，请联系管理员。');
       return store.update(db => {
-        const user = addMemberAccount(db, accountName(account), requiredName(name), passwordValue(password));
+        const user = addMemberAccount(db, accountName(account), requiredName(name), credentials(passwordValue(password)));
         addProfile(db, user);
         return createSession(db, user);
       });
@@ -186,10 +220,39 @@ export function openAccounts(store, settings) {
 
     addMember(fields) {
       const temporaryPassword = randomBytes(12).toString('base64url');
+      const member = memberDetails(fields);
+      return store.update(db => createMember(db, {
+        ...member, temporaryPassword, passwordHash: credentials(temporaryPassword)
+      }));
+    },
+
+    async prepareMemberImport(rows) {
+      const members = [];
+      const errors = [];
+      for (const { rowNumber, fields } of rows) {
+        try {
+          const member = memberDetails(fields);
+          if (!memberStatuses.has(member.details.status)) throw new RequestError(400, '状态无效，请使用模板里的值。');
+          members.push({ rowNumber, ...member });
+        } catch (error) {
+          if (!(error instanceof RequestError)) throw error;
+          errors.push('第 ' + rowNumber + ' 行：' + error.message);
+        }
+      }
+      checkImportedAccounts(members, store.read().users, errors);
+      for (const member of members) {
+        member.temporaryPassword = randomBytes(12).toString('base64url');
+        const salt = randomBytes(16).toString('hex');
+        const hash = await derivePassword(member.temporaryPassword, salt, 32, cryptoOptions);
+        member.passwordHash = { salt, hash: hash.toString('hex') };
+      }
+      return members;
+    },
+
+    importMembers(members) {
       return store.update(db => {
-        const user = addMemberAccount(db, accountName(fields.emp_no), requiredName(fields.name), temporaryPassword, true);
-        const profile = addProfile(db, user, fields);
-        return { user: publicAccount(user), profile, temporaryPassword };
+        checkImportedAccounts(members, db.users);
+        return members.map(member => createMember(db, member));
       });
     },
 

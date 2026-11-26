@@ -350,7 +350,7 @@ function accountsRows() {
 function peoplePage() {
   const person = mineProfile();
   const buttons = action(person ? '编辑我的档案' : '建立我的档案', person ? 'person-edit' : 'person-new', person?.id) +
-    (admin() ? action('＋ 添加成员', 'account-add', '', 'button primary') : '');
+    (admin() ? action('Excel 导入', 'account-import') + action('＋ 添加成员', 'account-add', '', 'button primary') : '');
   const toolbar = `<div class="toolbar">${search('peopleQuery', '搜索姓名、工号或技能')}${filterSelect('peopleTeam', '按团队过滤', catalogOptions('teams'), '全部团队')}</div>`;
   return heading('人员管理', admin() ? '维护成员档案、在岗状态和登录账号。' : '管理你的个人档案。', buttons) +
     panel(admin() ? '成员档案' : '我的档案', toolbar + table(peopleHeaders, peopleRows(), '暂无人员档案。', 'people-rows'),
@@ -559,6 +559,97 @@ function accountAdd() {
     toast('成员账号和档案已创建。');
   }, { submit: '创建成员' });
 }
+function accountImport() {
+  let file;
+  modalForm('Excel 导入人员', '每行创建一个成员档案和登录账号。姓名、工号必填。工号用作登录账号，状态留空为在职。',
+    `<div class="import-template">
+      <a class="button" href="/api/admin/member-import-template" download="人员导入模板.xlsx">下载 Excel 模板</a>
+      <span class="muted text-small">填写模板后上传，单次最多 200 人。</span>
+    </div>
+    <input name="workbook" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+    <button type="button" class="import-drop" aria-describedby="import-file-state">
+      <strong>点击选文件，或拖到这里</strong>
+      <span>支持 .xlsx，最大 2 MB</span>
+    </button>
+    <p id="import-file-state" class="import-file-state muted text-small" role="status">尚未选择文件</p>`,
+    async () => {
+      const closeButtons = [...dialog.querySelectorAll('[data-action="close"]')];
+      const submitText = submit.textContent;
+      dialog.dataset.locked = 'true';
+      drop.disabled = true;
+      submit.textContent = '正在导入…';
+      closeButtons.forEach(button => { button.disabled = true; });
+      try {
+        const result = await request('/api/admin/import-members', { method: 'POST', file });
+        if (state.user) {
+          showImportedMembers(result.members);
+          await refresh();
+        }
+      } finally {
+        if (dialog.contains(form)) {
+          dialog.dataset.locked = 'false';
+          drop.disabled = false;
+          submit.textContent = submitText;
+          closeButtons.forEach(button => { button.disabled = false; });
+        }
+      }
+    }, { submit: '导入人员' });
+
+  const form = dialog.querySelector('form');
+  form.classList.add('member-import-form');
+  const input = form.elements.workbook;
+  const submit = form.querySelector('[type=submit]');
+  const drop = form.querySelector('.import-drop');
+  const message = form.querySelector('.form-error');
+  const status = form.querySelector('#import-file-state');
+  submit.disabled = true;
+
+  function choose(files) {
+    if (!files.length || drop.disabled) return;
+    const [chosen] = files;
+    let error = '';
+    if (files.length !== 1) error = '一次请选择一个 Excel 文件。';
+    else if (!/\.xlsx$/i.test(chosen.name)) error = '请选择 .xlsx 文件。';
+    else if (!chosen.size || chosen.size > 2 * 1024 * 1024) error = '请选择不超过 2 MB 的非空文件。';
+    file = error ? undefined : chosen;
+    status.textContent = file ? '已选择 ' + file.name : '尚未选择文件';
+    formError(message, error);
+    submit.disabled = !file;
+  }
+
+  drop.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    choose(input.files);
+    input.value = '';
+  });
+  drop.addEventListener('dragover', event => {
+    event.preventDefault();
+    if (!drop.disabled) drop.classList.add('dragging');
+  });
+  drop.addEventListener('dragleave', event => {
+    if (!drop.contains(event.relatedTarget)) drop.classList.remove('dragging');
+  });
+  drop.addEventListener('drop', event => {
+    event.preventDefault();
+    drop.classList.remove('dragging');
+    choose(event.dataTransfer.files);
+  });
+  form.addEventListener('dragover', event => event.preventDefault());
+  form.addEventListener('drop', event => event.preventDefault());
+}
+function showImportedMembers(members) {
+  const rows = members.map(({ user, temporaryPassword }) =>
+    `<tr><td>${text(user.name)}</td><td>${text(user.account)}</td><td><code>${text(temporaryPassword)}</code></td></tr>`).join('');
+  modal('已导入 ' + members.length + ' 名成员', '临时密码仅在此处显示。请分别交给成员，首次登录时需修改。',
+    `<div class="import-results">${table(['姓名', '登录账号', '临时密码'], rows, '')}</div>
+      <div class="dialog-actions"><button type="button" id="download-import-passwords" class="button">下载临时密码（TXT）</button>
+      ${action('完成', 'close', '', 'button primary')}</div>`);
+  dialog.querySelector('#download-import-passwords').addEventListener('click', () => {
+    const records = members.map(({ user, temporaryPassword }) =>
+      [user.name.replace(/[\t\r\n]+/g, ' '), user.account, temporaryPassword].join('\t'));
+    saveDownload(new Blob(['姓名\t登录账号\t临时密码\r\n' + records.join('\r\n')], { type: 'text/plain;charset=utf-8' }), '新成员临时密码.txt');
+  });
+}
 function accountReset(id) {
   const account = getRow('accounts', id);
   modalForm('重置账号', '密码留空时会生成新的临时密码，成员首次登录后须修改。', '<div class="form-grid">' +
@@ -612,15 +703,18 @@ function passwordForm(first = false) {
 }
 function forcePassword() { passwordForm(true); }
 
-async function downloadTask(id) {
-  const task = getRow('tasks', id);
-  const blob = await request('/api/attachments/' + encodeURIComponent(task.id), { download: true });
+function saveDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = task.fileName || '附件';
+  anchor.download = filename;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 15000);
+}
+async function downloadTask(id) {
+  const task = getRow('tasks', id);
+  const blob = await request('/api/attachments/' + encodeURIComponent(task.id), { download: true });
+  saveDownload(blob, task.fileName || '附件');
 }
 async function exportTasks() {
   const [from, to] = weekRange();
@@ -662,7 +756,7 @@ const actions = {
     updateRow('profiles', await saveRow('profiles', { status }, id));
     toast('成员档案状态已更新。');
   },
-  'account-add': accountAdd, 'account-reset': accountReset,
+  'account-add': accountAdd, 'account-import': accountImport, 'account-reset': accountReset,
   'account-delete': id => {
     const row = getRow('accounts', id);
     confirmDelete('删除成员账号', '确定删除「' + row.account + '」的账号和档案？已登记的任务会保留。', async () => {

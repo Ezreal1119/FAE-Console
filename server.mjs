@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { isAdmin, openAccounts, sessionSeconds } from './backend/accounts.mjs';
+import { MEMBER_IMPORT_LIMIT_BYTES, readMemberWorkbook } from './backend/member-import.mjs';
 import { openRecords } from './backend/records.mjs';
 import { openStore, RequestError } from './backend/store.mjs';
 
@@ -29,9 +30,11 @@ const apiRoutes = new Map([
   ['/api/login', 'POST'], ['/api/register', 'POST'], ['/api/logout', 'POST'],
   ['/api/me', 'GET'], ['/api/password', 'POST'], ['/api/first-password', 'POST'],
   ['/api/admin/accounts', 'GET'], ['/api/admin/add-member', 'POST'],
+  ['/api/admin/member-import-template', 'GET'], ['/api/admin/import-members', 'POST'],
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
 ]);
+let importingMembers = false;
 
 class RateLimit {
   constructor() {
@@ -187,6 +190,30 @@ async function handleApi(req, res, path, attachmentId) {
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionHeader() });
   }
   if (attachmentId) return await download(res, session.user, attachmentId);
+  if (path === '/api/admin/member-import-template') {
+    const template = await readFile(new URL('./backend/templates/member-import.xlsx', import.meta.url));
+    res.writeHead(200, {
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Length': template.length,
+      'Content-Disposition': disposition('人员导入模板.xlsx'),
+      'Cache-Control': 'private, no-store'
+    });
+    return res.end(template);
+  }
+  if (path === '/api/admin/import-members') {
+    const file = await readBody(req, MEMBER_IMPORT_LIMIT_BYTES);
+    sessionFor(req, path);
+    if (importingMembers) throw new RequestError(409, '已有人员导入正在处理，请稍后再试。');
+    importingMembers = true;
+    try {
+      const prepared = await accounts.prepareMemberImport(await readMemberWorkbook(file));
+      if (res.destroyed) return;
+      sessionFor(req, path);
+      return sendJson(res, 200, { ok: true, members: accounts.importMembers(prepared) });
+    } finally {
+      importingMembers = false;
+    }
+  }
   if (path === '/api/upload') {
     const body = await readBody(req, attachmentLimit);
     const current = sessionFor(req, path);
