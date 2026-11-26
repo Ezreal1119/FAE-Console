@@ -1,0 +1,36 @@
+{
+  "name": "fae-console-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "工程小管家 Windows 桌面客户端",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.cjs",
+    "build:win": "electron-builder --win --x64 --publish never"
+  },
+  "build": {
+    "appId": "cn.patrick.fae-console.desktop",
+    "productName": "工程小管家",
+    "artifactName": "FAE-Console-Windows-x64-Portable-${version}.${ext}",
+    "files": [
+      "main.cjs",
+      "classic.css",
+      "package.json"
+    ],
+    "toolsets": {
+      "nsis": "1.2.1"
+    },
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "requestExecutionLevel": "user"
+    }
+  },
+  "devDependencies": {
+    "electron": "45.5.0",
+    "electron-builder": "26.18.1"
+  }
+}

@@ -45,6 +45,17 @@ WECOM_BOT_SECRET=你的机器人Secret
 
 首次安装 Bridge 需要在项目根目录运行 `npm ci --omit=dev`，安装 `deploy/fae-wecom-bridge.service` 并执行 `systemctl daemon-reload`。配置或更换凭据后执行 `systemctl restart fae-wecom-bridge`。运行日志可用 `journalctl -u fae-wecom-bridge -n 30 --no-pager` 查看。本地测试用 `npm run wecom:bridge`。
 
+## Windows 免安装版
+
+桌面版在 Electron 窗口中打开线上工作台，并加载经典浅色侧栏样式。网页和桌面使用同一个前端、API 和线上账号。网页业务功能上线后，桌面用户重新打开即可加载更新。桌面外壳、桌面专用样式或 Electron 版本有改动时，需要重新打包。
+
+```bash
+npm --prefix desktop ci
+npm --prefix desktop run build:win
+```
+
+在 `desktop/dist/` 取 `FAE-Console-Windows-x64-Portable-<版本>.exe`。在 Windows x64 上双击运行，登录时需联网。桌面源码和锁文件随 Git 维护，生成的二进制单独交付。
+
 ```bash
 npm run check
 ```
