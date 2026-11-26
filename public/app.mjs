@@ -936,7 +936,7 @@ function taskForm(task = {}, demand) {
   const canChooseOwner = task.demand_id == null || admin() || currentOwner;
   const canPlanHours = Boolean(demand) || Object.hasOwn(task, 'dispatched_at');
   const canEditNameAndProject = !demand && task.demand_id == null;
-  const dispatchOptions = demand ? taskContextFields : [];
+  const contextOptions = newStandaloneTask ? [] : taskContextFields;
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
   const initialPeople = task.collaborators || [];
@@ -950,7 +950,7 @@ function taskForm(task = {}, demand) {
     `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, PRIORITY.includes(task.pri) ? task.pri : '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
       ${newStandaloneTask ? '' : taskOptionField('category')}
       ${canPlanHours ? field('计划工时（小时）', 'planned_hours', task.planned_hours, 'type="number" min="0" step="0.01"') : ''}
-      ${dispatchOptions.map(taskOptionField).join('')}</div>` +
+      ${contextOptions.map(taskOptionField).join('')}</div>` +
     area('任务描述', 'desc', task.desc ?? demand?.descr);
   const fields = setupFields + (newStandaloneTask ? taskProgressFields(task) : '') +
     (task.id ? '' : taskAttachmentFields(task)) + choiceStatus;
@@ -994,7 +994,7 @@ function taskForm(task = {}, demand) {
     }
     toast(demand ? '任务已派发。' : transferring ? '任务已转交。' : task.id ? '任务已更新。' : '任务已创建。');
   }, demand ? { submit: '派发任务' } : {});
-  const taskOptions = bindTaskOptions(form, task, newStandaloneTask ? [] : ['category', ...dispatchOptions]);
+  const taskOptions = bindTaskOptions(form, task, newStandaloneTask ? [] : ['category', ...contextOptions]);
   if (canEditNameAndProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
   }
