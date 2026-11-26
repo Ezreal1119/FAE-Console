@@ -354,14 +354,21 @@ function fileAction(task) {
     ? action(task.fileName, 'download', task.id, 'link')
     : `<span title="原附件保存在桌面客户端电脑上">${text(task.fileName)}<small class="muted">桌面本地附件</small></span>`;
 }
+function taskEditActions(task, className) {
+  const progress = canUpdateTaskProgress(task) ? action('更新进度', 'task-progress', task.id, className) : '';
+  const edit = canEditTask(task) ? action('编辑任务', 'task-edit', task.id, className) : '';
+  return progress + edit;
+}
 function taskRows(tasks) {
-  return tasks.map(task => `<tr>
+  return tasks.map(task => {
+    const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
+    return `<tr>
     <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
     <td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td><td>${shown(collaboratorNames(task))}</td>
     <td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueDate)}</td>
     <td>${shown(task.startDate)}<small class="muted">${shown(task.endDate)}</small></td><td>${text(withHours(task.hours))}</td><td>${fileAction(task)}</td>
-    <td><div class="row-actions">${canEditTask(task) ? action('编辑', 'task-edit', task.id, 'link') + action('删除', 'task-delete', task.id, 'link danger')
-      : canUpdateTaskProgress(task) ? action('更新进度', 'task-edit', task.id, 'link') : '—'}</div></td></tr>`).join('');
+    <td><div class="row-actions">${taskEditActions(task, 'link') + remove || '—'}</div></td></tr>`;
+  }).join('');
 }
 function tasksPage() {
   const scopes = admin() ? [['all', '所有任务'], ...personalTaskScopes] : personalTaskScopes;
@@ -770,9 +777,9 @@ function taskDetails(task) {
   return info + remarks;
 }
 function taskDetailActions(task) {
-  if (!canUpdateTaskProgress(task)) return '';
-  const quick = task.status === '已完成' ? '' : action('推进到下一状态', 'task-next', task.id, 'button primary');
-  return action(canEditTask(task) ? '编辑' : '更新进度', 'task-edit', task.id) + quick;
+  const quick = canUpdateTaskProgress(task) && task.status !== '已完成'
+    ? action('推进到下一状态', 'task-next', task.id, 'button primary') : '';
+  return taskEditActions(task) + quick;
 }
 function taskDetail(id) {
   const task = getRow('tasks', id);
@@ -788,12 +795,51 @@ function taskLinkPage() {
   }
   return heading(task.title || '任务详情', '#' + task.id, back + taskDetailActions(task)) + panel('任务详情', taskDetails(task));
 }
+function taskProgressFields(task, startDate = task.startDate) {
+  return `<div class="form-grid">
+    ${selectField('状态', 'status', STATUS, task.status || STATUS[0])}${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}
+    ${field('开始日期', 'start', startDate, 'type="date"')}${field('完成日期', 'end', task.endDate, 'type="date"')}</div>` +
+    area('完成结果', 'result', task.result);
+}
+function taskProgressPatch(values) {
+  const end = values.end || (values.status === '已完成' ? isoDate() : '');
+  if (values.start && end && end < values.start) throw new Error('完成日期应在开始日期之后。');
+  return {
+    status: values.status, start: optional(values.start.slice(5)), start_time: optional(values.start),
+    end: optional(end.slice(5)), end_time: optional(end),
+    hours: values.hours === '' ? null : Number(values.hours), result: optional(values.result)
+  };
+}
+function taskAttachmentFields(task) {
+  return field('附件（单个文件最多 20MB）', 'file', '', 'type="file"') +
+    (task.fileName ? '<p class="muted text-small">当前附件：' + text(task.fileName) + '</p>' : '');
+}
+async function taskAttachmentPatch(file) {
+  if (!file?.name) return {};
+  if (!file.size || file.size > 20 * 1024 * 1024) throw new Error('请选择不超过 20MB 的非空附件。');
+  const uploaded = await request('/api/upload', { method: 'POST', file });
+  return { attachment_path: uploaded.path, attachment_name: file.name };
+}
+async function saveTask(patch, id) {
+  const saved = await saveRow('tasks', patch, id);
+  updateRow('tasks', normalizeTask(saved));
+  if (saved.demand_id != null) await refresh();
+}
+function taskProgressForm(task) {
+  if (!canUpdateTaskProgress(task)) return;
+  modalForm('更新任务进度', '#' + task.id + ' ' + task.title,
+    taskProgressFields(task, task.startDate || isoDate()) + taskAttachmentFields(task), async values => {
+      const patch = taskProgressPatch(values);
+      Object.assign(patch, await taskAttachmentPatch(values.file));
+      await saveTask(patch, task.id);
+      toast('任务进度已更新。');
+    });
+}
 function taskForm(task = {}, demand) {
-  if (task.id && !canUpdateTaskProgress(task)) return;
-  const progressOnly = Boolean(task.id && !canEditTask(task));
-  const startDate = task.startDate || (progressOnly ? isoDate() : '');
-  const canChooseOwner = !progressOnly && (task.demand_id == null || admin());
-  const canPlanHours = !progressOnly && (Boolean(demand) || Object.hasOwn(task, 'dispatched_at'));
+  if (task.id && !canEditTask(task)) return;
+  const newStandaloneTask = !task.id && !demand;
+  const canChooseOwner = task.demand_id == null || admin();
+  const canPlanHours = Boolean(demand) || Object.hasOwn(task, 'dispatched_at');
   const canEditNameAndProject = !demand && task.demand_id == null;
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
@@ -804,59 +850,37 @@ function taskForm(task = {}, demand) {
     ? field('任务名称', 'title', task.title, 'required maxlength="180"') +
       `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
     : ownerField;
-  const setupFields = progressOnly ? '' : identityFields + collaboratorField() +
+  const setupFields = identityFields + collaboratorField() +
     `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, PRIORITY.includes(task.pri) ? task.pri : '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
       ${canPlanHours ? field('计划工时（小时）', 'planned_hours', task.planned_hours, 'type="number" min="0" step="0.01"') : ''}</div>` +
     area('任务描述', 'desc', task.desc ?? demand?.descr);
-  const executionFields = demand ? '' : `<div class="form-grid">
-    ${selectField('状态', 'status', STATUS, task.status || STATUS[0])}${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}
-    ${field('开始日期', 'start', startDate, 'type="date"')}${field('完成日期', 'end', task.endDate, 'type="date"')}</div>` +
-    area('完成结果', 'result', task.result);
-  const fields = setupFields + executionFields +
-    field('附件（单个文件最多 20MB）', 'file', '', 'type="file"') +
-    (task.fileName ? '<p class="muted text-small">当前附件：' + text(task.fileName) + '</p>' : '') + (progressOnly ? '' : choiceStatus);
-  const formTitle = demand ? '派发任务' : progressOnly ? '更新任务进度' : task.id ? '编辑任务' : '新建任务';
+  const fields = setupFields + (newStandaloneTask ? taskProgressFields(task) : '') +
+    (task.id ? '' : taskAttachmentFields(task)) + choiceStatus;
+  const formTitle = demand ? '派发任务' : task.id ? '编辑任务' : '新建任务';
   const context = demand?.title || (task.id ? '#' + task.id + ' ' + task.title : '');
   let project, owner, collaborators, loadChoices;
   const form = modalForm(formTitle, context, fields, async values => {
-    const patch = {};
-    if (!demand) {
-      const end = values.end || (values.status === '已完成' ? isoDate() : '');
-      if (values.start && end && end < values.start) throw new Error('完成日期应在开始日期之后。');
-      Object.assign(patch, {
-        status: values.status, start: optional(values.start.slice(5)), start_time: optional(values.start),
-        end: optional(end.slice(5)), end_time: optional(end),
-        hours: values.hours === '' ? null : Number(values.hours), result: optional(values.result)
-      });
+    const patch = newStandaloneTask ? taskProgressPatch(values) : {};
+    if (canEditNameAndProject) {
+      const title = trimmed(values.title);
+      if (!title) throw new Error('请填写任务名称。');
+      Object.assign(patch, { title, proj: project.value() });
     }
-    if (!progressOnly) {
-      if (canEditNameAndProject) {
-        const title = trimmed(values.title);
-        if (!title) throw new Error('请填写任务名称。');
-        Object.assign(patch, { title, proj: project.value() });
-      }
-      const assignee = owner?.value() ?? currentAssignee;
-      if (!task.id && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
-      const people = collaborators.ids();
-      Object.assign(patch, { pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
-      if (canPlanHours) patch.planned_hours = values.planned_hours === '' ? null : Number(values.planned_hours);
-      if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
-      if (people.length !== initialPeople.length || initialPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
-    }
-    if (values.file?.name) {
-      if (!values.file.size || values.file.size > 20 * 1024 * 1024) throw new Error('请选择不超过 20MB 的非空附件。');
-      const uploaded = await request('/api/upload', { method: 'POST', file: values.file });
-      Object.assign(patch, { attachment_path: uploaded.path, attachment_name: values.file.name });
-    }
+    const assignee = owner?.value() ?? currentAssignee;
+    if (!task.id && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
+    const people = collaborators.ids();
+    Object.assign(patch, { pri: values.pri, due: optional(values.due), desc: optional(values.desc) });
+    if (canPlanHours) patch.planned_hours = values.planned_hours === '' ? null : Number(values.planned_hours);
+    if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
+    if (people.length !== initialPeople.length || initialPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
+    if (!task.id) Object.assign(patch, await taskAttachmentPatch(values.file));
     try {
       if (demand) {
         const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, task: patch });
         updateRow('tasks', normalizeTask(result.task));
         updateRow('demands', result.demand);
       } else {
-        const saved = await saveRow('tasks', patch, task.id);
-        updateRow('tasks', normalizeTask(saved));
-        if (saved.demand_id != null) await refresh();
+        await saveTask(patch, task.id);
       }
     } catch (error) {
       if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
@@ -865,7 +889,6 @@ function taskForm(task = {}, demand) {
     }
     toast(demand ? '任务已派发。' : task.id ? '任务已更新。' : '任务已创建。');
   }, demand ? { submit: '派发任务' } : {});
-  if (progressOnly) return;
   if (canEditNameAndProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
   }
@@ -891,8 +914,7 @@ async function nextTask(id) {
     patch.end_time = isoDate();
     patch.end = patch.end_time.slice(5);
   }
-  updateRow('tasks', normalizeTask(await saveRow('tasks', patch, id)));
-  if (task.demand_id != null) await refresh();
+  await saveTask(patch, id);
   if (!state.user) return;
   if (state.page !== 'taskLink' || dialog.open) taskDetail(id);
   toast('任务状态已更新。');
@@ -1459,7 +1481,7 @@ const actions = {
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
   'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
-  'task-edit': id => taskForm(getRow('tasks', id)), 'task-next': nextTask,
+  'task-edit': id => taskForm(getRow('tasks', id)), 'task-progress': id => taskProgressForm(getRow('tasks', id)), 'task-next': nextTask,
   'task-delete': id => {
     const row = getRow('tasks', id);
     confirmDelete('删除任务', '确定删除「' + row.title + '」？', async () => {
