@@ -15,8 +15,9 @@ const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proj: '项目', proposer: '需求提出方', category: '工单分类' };
+const otherTaskCategory = '其他';
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
-const defaultFilters = { taskQuery: '', taskStatus: '', taskScope: 'mine', demandQuery: '', peopleQuery: '', peopleTeam: '' };
+const defaultFilters = { taskQuery: '', taskCategory: '', taskStatus: '', taskScope: 'mine', demandQuery: '', peopleQuery: '', peopleTeam: '' };
 const listPageSize = 10;
 const firstListPages = { tasks: 1, demands: 1 };
 const state = {
@@ -25,6 +26,7 @@ const state = {
   filters: { ...defaultFilters },
   listPages: { ...firstListPages },
   catalog: { teams: [], roles: [] },
+  taskCategories: new Set(),
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proj',
   guidelines: undefined, guidelinesError: '', guidelinesPending: false,
   loadWarnings: []
@@ -165,6 +167,7 @@ function showAuth(error = '') {
   state.demands = [];
   state.profiles = [];
   state.accounts = [];
+  state.taskCategories.clear();
   state.demandCatalog = null;
   state.demandCatalogError = '';
   state.demandCatalogKind = 'proj';
@@ -273,7 +276,17 @@ async function refresh() {
     if (Object.hasOwn(previous, field) && state[field] !== previous[field]) return;
     const rows = result.value?.[field === 'accounts' ? 'accounts' : 'data'];
     if (result.status === 'fulfilled' && Array.isArray(rows)) {
-      state[field] = field === 'tasks' ? rows.map(normalizeTask) : rows;
+      if (field === 'tasks') {
+        state.tasks = rows.map(normalizeTask);
+        state.taskCategories = new Set(unique(result.value.taskCategories ?? []).filter(name => name !== otherTaskCategory));
+        const selected = state.filters.taskCategory;
+        if (selected && selected !== otherTaskCategory && !state.taskCategories.has(selected)) {
+          state.filters.taskCategory = '';
+          state.listPages.tasks = 1;
+        }
+      } else {
+        state[field] = rows;
+      }
     } else {
       state.loadWarnings.push(label);
     }
@@ -340,7 +353,7 @@ function workspacePage() {
     `<div class="grid-two">${panel('我的待办', table(['任务', '项目', '状态', '计划完成'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>`;
 }
 
-const taskHeaders = ['任务', '项目', '状态', '负责人', '合作者', '计划完成', '开始 / 完成', '工时', '附件', '操作'];
+const taskHeaders = ['任务', '项目', '工单分类', '状态', '负责人', '合作者', '计划完成', '开始 / 完成', '工时', '附件', '操作'];
 const personalTaskScopes = [['mine', '我的全部任务'], ['assigned', '我是责任人'], ['collaborating', '我是合作者']];
 
 function matchesTaskScope(task, scope) {
@@ -350,9 +363,14 @@ function matchesTaskScope(task, scope) {
   return ownTask(task);
 }
 
+function taskCategoryLabel(task) {
+  return state.taskCategories.has(task.category) ? task.category : otherTaskCategory;
+}
+
 function filteredTasks() {
-  const { taskQuery, taskStatus, taskScope } = state.filters;
+  const { taskQuery, taskCategory, taskStatus, taskScope } = state.filters;
   return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
+    (!taskCategory || taskCategoryLabel(task) === taskCategory) &&
     hasText(taskQuery, task.title, task.id, task.proj, task.owner_name, task.desc, task.result, collaboratorNames(task)));
 }
 function fileAction(task) {
@@ -371,7 +389,7 @@ function taskRows(tasks) {
     const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
     return `<tr>
     <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
-    <td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td><td>${shown(collaboratorNames(task))}</td>
+    <td>${shown(task.proj)}</td><td>${text(taskCategoryLabel(task))}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td><td>${shown(collaboratorNames(task))}</td>
     <td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueDate)}</td>
     <td>${shown(task.startDate)}<small class="muted">${shown(task.endDate)}</small></td><td>${text(withHours(task.hours))}</td><td>${fileAction(task)}</td>
     <td><div class="row-actions">${taskEditActions(task, 'link') + remove || '—'}</div></td></tr>`;
@@ -380,7 +398,8 @@ function taskRows(tasks) {
 function tasksPage() {
   const scopes = admin() ? [['all', '所有任务'], ...personalTaskScopes] : personalTaskScopes;
   const scope = `<select aria-label="任务范围" data-filter="taskScope">${scopes.map(([value, label]) => option(value, state.filters.taskScope, label)).join('')}</select>`;
-  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目或负责人')}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${scope}</div>`;
+  const category = filterSelect('taskCategory', '按工单分类筛选', [...state.taskCategories, otherTaskCategory], '全部分类');
+  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${scope}</div>`;
   return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     pagedListPanel('tasks', toolbar);
 }

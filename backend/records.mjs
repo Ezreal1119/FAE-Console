@@ -292,8 +292,11 @@ export function openRecords(store, { recordTaskChange } = {}) {
         }
         if (table === 'tasks') {
           const demands = new Map(db.demands.map(demand => [demand.id, demand]));
-          return { data: db.tasks.filter(task => visibleTask(user, task))
-            .map(task => publicTask(db, task, demands.get(task.demand_id) ?? null)) };
+          return {
+            data: db.tasks.filter(task => visibleTask(user, task))
+              .map(task => publicTask(db, task, demands.get(task.demand_id) ?? null)),
+            taskCategories: db.demandOptions.category
+          };
         }
         if (table === 'demands') {
           const links = new Map();
