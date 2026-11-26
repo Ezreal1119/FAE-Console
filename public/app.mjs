@@ -4,6 +4,9 @@ const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const dialog = $('#dialog');
 const guidelinesDialog = $('#guidelines-dialog');
+const guidelinesBody = $('#guidelines-dialog-body');
+const guidelinesConfirm = $('#confirm-guidelines');
+const guidelinesScrollHint = $('#guidelines-scroll-hint');
 const STATUS = ['待规划', '开发中', '测试中', '已完成'];
 const PRIORITY = ['高', '中', '低'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
@@ -25,6 +28,7 @@ const state = {
 let toastTimer;
 let demandCatalogLoad;
 let guidelinesLoad;
+let guidelinesReachedEnd = false;
 let refreshVersion = 0;
 let authOptionsVersion = 0;
 
@@ -539,9 +543,19 @@ function guidelinesPage() {
 
 function renderGuidelinesNotice() {
   const source = state.guidelines;
-  $('#guidelines-dialog-body').innerHTML = source ? guidelinesDocument(source, 'notice') : guidelinesStatus();
+  guidelinesBody.innerHTML = source ? guidelinesDocument(source, 'notice') : guidelinesStatus();
   if (source) $('#guidelines-dialog-title').textContent = source.title;
-  $('#confirm-guidelines').disabled = !source;
+  guidelinesScrollHint.hidden = !source || guidelinesReachedEnd;
+  unlockGuidelinesConfirmation();
+}
+
+function unlockGuidelinesConfirmation() {
+  if (!guidelinesDialog.open || !state.guidelines || guidelinesReachedEnd) return;
+  const remaining = guidelinesBody.scrollHeight - guidelinesBody.clientHeight - guidelinesBody.scrollTop;
+  if (remaining > 1) return;
+  guidelinesReachedEnd = true;
+  guidelinesConfirm.disabled = false;
+  guidelinesScrollHint.hidden = true;
 }
 
 function loadGuidelines() {
@@ -570,10 +584,13 @@ function loadGuidelines() {
 }
 
 function openGuidelinesNotice() {
+  guidelinesReachedEnd = false;
+  guidelinesConfirm.disabled = true;
   formError($('#guidelines-confirm-error'), '');
-  $('#guidelines-dialog-body').scrollTop = 0;
+  guidelinesBody.scrollTop = 0;
   renderGuidelinesNotice();
   if (!guidelinesDialog.open) guidelinesDialog.showModal();
+  unlockGuidelinesConfirmation();
   void loadGuidelines();
 }
 
@@ -1434,13 +1451,15 @@ dialog.addEventListener('close', () => {
 });
 guidelinesDialog.addEventListener('cancel', event => event.preventDefault());
 guidelinesDialog.addEventListener('close', () => {
-  if (!guidelinesDialog.open) $('#guidelines-dialog-body').replaceChildren();
+  if (!guidelinesDialog.open) guidelinesBody.replaceChildren();
 });
-$('#confirm-guidelines').addEventListener('click', async event => {
-  const button = event.currentTarget;
+guidelinesBody.addEventListener('scroll', unlockGuidelinesConfirmation, { passive: true });
+window.addEventListener('resize', unlockGuidelinesConfirmation);
+guidelinesConfirm.addEventListener('click', async () => {
+  if (guidelinesConfirm.disabled || !guidelinesReachedEnd) return;
   const message = $('#guidelines-confirm-error');
   const session = state.user;
-  button.disabled = true;
+  guidelinesConfirm.disabled = true;
   formError(message, '');
   try {
     await post('/api/guidelines/acknowledge');
@@ -1450,7 +1469,7 @@ $('#confirm-guidelines').addEventListener('click', async event => {
   } catch (error) {
     if (session === state.user) {
       formError(message, error.message);
-      button.disabled = false;
+      guidelinesConfirm.disabled = false;
     }
   }
 });

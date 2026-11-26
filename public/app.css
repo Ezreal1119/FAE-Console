@@ -270,7 +270,7 @@ dialog::backdrop { background: #0f183677; }
 .guidelines-dialog-header h2 { font-size: clamp(1.03rem, 2vw, 1.28rem); }
 .guidelines-dialog-body { padding: 16px clamp(13px, 3vw, 23px); overflow: auto; overscroll-behavior: contain; }
 .guidelines-dialog-footer { display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding: 12px clamp(13px, 3vw, 23px); border-top: 1px solid var(--line); }
-.guidelines-dialog-footer .form-error { margin-inline-end: auto; }
+.guidelines-dialog-footer p { margin-inline-end: auto; }
 .guidelines-dialog-footer .button { min-width: 78px; }
 .guidelines-dialog .guidelines-layout { display: block; }
 .guidelines-dialog .guidelines-toc { position: static; margin-block: 14px; }
