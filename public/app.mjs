@@ -802,7 +802,7 @@ function taskForm(task = {}, demand) {
     : field('负责人', 'owner_display', task.owner_name, 'readonly');
   const identityFields = canEditNameAndProject
     ? field('任务名称', 'title', task.title, 'required maxlength="180"') +
-      `<div class="form-grid">${field('项目', 'proj', task.proj, 'maxlength="100"')}${ownerField}</div>`
+      `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
     : ownerField;
   const setupFields = progressOnly ? '' : identityFields + collaboratorField() +
     `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, PRIORITY.includes(task.pri) ? task.pri : '中')}${field('计划完成', 'due', task.dueDate, 'type="date"')}
@@ -817,7 +817,7 @@ function taskForm(task = {}, demand) {
     (task.fileName ? '<p class="muted text-small">当前附件：' + text(task.fileName) + '</p>' : '') + (progressOnly ? '' : choiceStatus);
   const formTitle = demand ? '派发任务' : progressOnly ? '更新任务进度' : task.id ? '编辑任务' : '新建任务';
   const context = demand?.title || (task.id ? '#' + task.id + ' ' + task.title : '');
-  let owner, collaborators, loadChoices;
+  let project, owner, collaborators, loadChoices;
   const form = modalForm(formTitle, context, fields, async values => {
     const patch = {};
     if (!demand) {
@@ -833,7 +833,7 @@ function taskForm(task = {}, demand) {
       if (canEditNameAndProject) {
         const title = trimmed(values.title);
         if (!title) throw new Error('请填写任务名称。');
-        Object.assign(patch, { title, proj: optional(values.proj) });
+        Object.assign(patch, { title, proj: project.value() });
       }
       const assignee = owner?.value() ?? currentAssignee;
       if (!task.id && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
@@ -866,13 +866,17 @@ function taskForm(task = {}, demand) {
     toast(demand ? '任务已派发。' : task.id ? '任务已更新。' : '任务已创建。');
   }, demand ? { submit: '派发任务' } : {});
   if (progressOnly) return;
+  if (canEditNameAndProject) {
+    project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
+  }
   collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), initialPeople, currentAssignee);
   if (canChooseOwner) {
     owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), {
       value: currentAssignee, label: task.owner_name || (!demand && !task.id ? myName() : '')
     }, { clearable: false, onChange: collaborators.setOwner });
   }
-  loadChoices = prepareFormChoices(form, ({ people }) => {
+  loadChoices = prepareFormChoices(form, ({ people, options }) => {
+    project?.setOptions(catalogChoiceEntries(options.proj));
     const entries = peopleChoices(people);
     owner?.setOptions(entries.map(({ id, label }) => ({ value: id, label })));
     collaborators.setPeople(entries);
@@ -894,24 +898,24 @@ async function nextTask(id) {
   toast('任务状态已更新。');
 }
 
-function choiceField(label, key) {
+function choiceField(label, key, { allowCustom = false } = {}) {
   return `<div class="choice-field" data-choice="${key}">
     <label for="choice-${key}">${label}</label>
     <div class="choice-control">
       <input id="choice-${key}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="choices-${key}"
-        autocomplete="off" placeholder="请选择或输入关键词" disabled>
+        autocomplete="off" ${allowCustom ? 'maxlength="100" placeholder="请选择或直接输入项目"' : 'placeholder="请选择或输入关键词"'} disabled>
       <span aria-hidden="true" class="choice-arrow"></span>
       <ul id="choices-${key}" class="choice-list" role="listbox" aria-label="${label}" hidden></ul>
     </div>
   </div>`;
 }
 
-function bindChoice(field, initial, { clearable = true, onChange } = {}) {
+function bindChoice(field, initial, { clearable = true, allowCustom = false, onChange } = {}) {
   const input = field.querySelector('input');
   const list = field.querySelector('ul');
   let options = [];
   let selected = initial;
-  let query = '';
+  let query = null;
   let results = [];
   let active = -1;
 
@@ -921,7 +925,7 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
       return;
     }
     const current = options.find(option => option.value === selected.value);
-    const suffix = selected.value === initial.value ? '（原有值）' : '（不可选）';
+    const suffix = allowCustom ? '' : selected.value === initial.value ? '（原有值）' : '（不可选）';
     input.value = current?.label ?? (selected.label ? selected.label + suffix : '');
   }
   function highlight(index) {
@@ -935,11 +939,13 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
     } else input.removeAttribute('aria-activedescendant');
   }
   function show() {
-    results = options.filter(option => hasText(query, option.label));
-    if (clearable && !query.trim() && selected.value !== null) results.push({ value: null, label: '清空选择' });
-    list.innerHTML = results.map(({ value, label }, index) =>
-      `<li role="option" id="${list.id}-${index}" data-index="${index}" aria-selected="${value === selected.value}">${text(label)}</li>`).join('') ||
-      `<li role="option" aria-disabled="true" class="muted">${query.trim() ? '没有匹配的选项' : '暂无可选项'}</li>`;
+    const typed = optional(query);
+    results = options.filter(option => hasText(typed ?? '', option.label));
+    if (allowCustom && typed && !results.some(option => option.value === typed)) results.push({ value: typed, label: typed, custom: true });
+    if (clearable && !typed && selected.value !== null) results.push({ value: null, label: '清空选择' });
+    list.innerHTML = results.map(({ value, label, custom }, index) =>
+      `<li role="option" id="${list.id}-${index}" data-index="${index}" aria-selected="${value === selected.value}">${text(custom ? '使用「' + label + '」' : label)}</li>`).join('') ||
+      `<li role="option" aria-disabled="true" class="muted">${typed ? '没有匹配的选项' : '暂无可选项'}</li>`;
     list.hidden = false;
     input.setAttribute('aria-expanded', 'true');
     list.scrollTop = 0;
@@ -949,7 +955,7 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
     list.hidden = true;
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
-    query = '';
+    query = null;
     restore();
   }
   function choose(index) {
@@ -967,9 +973,18 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
   input.addEventListener('input', () => {
     query = input.value;
     show();
-    if (query.trim() && results.length) highlight(0);
+    if (query.trim() && results.length) {
+      const exact = allowCustom ? results.findIndex(option => option.value === optional(query)) : -1;
+      highlight(Math.max(0, exact));
+    }
   });
-  input.addEventListener('blur', close);
+  input.addEventListener('blur', () => {
+    if (allowCustom && query !== null) {
+      const value = optional(query);
+      selected = { value, label: value };
+    }
+    close();
+  });
   input.addEventListener('keydown', event => {
     if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -995,7 +1010,7 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
   });
 
   return {
-    value: () => selected.value,
+    value: () => allowCustom && query !== null ? optional(query) : selected.value,
     setOptions(next) {
       options = next;
       input.disabled = false;
@@ -1003,6 +1018,10 @@ function bindChoice(field, initial, { clearable = true, onChange } = {}) {
       else show();
     }
   };
+}
+
+function catalogChoiceEntries(values) {
+  return unique(values).map(value => ({ value, label: value }));
 }
 
 function peopleChoices(people) {
@@ -1183,7 +1202,7 @@ function demandForm(row = {}) {
     proposer: { value: row.proposer || null, label: row.proposer }
   };
   const form = modalForm(row.id ? '编辑需求' : '新建需求', '', field('需求名称', 'title', row.title, 'required maxlength="180"') +
-    `<div class="form-grid">${choiceField('项目', 'proj')}${choiceField('需求提出方', 'proposer')}</div>` + area('需求说明', 'descr', row.descr) +
+    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${choiceField('需求提出方', 'proposer')}</div>` + area('需求说明', 'descr', row.descr) +
     choiceStatus, async values => {
     const title = trimmed(values.title);
     if (!title) throw new Error('请填写需求名称。');
@@ -1203,10 +1222,10 @@ function demandForm(row = {}) {
     toast('需求已保存。');
   });
   const pickers = Object.fromEntries(Object.entries(initial).map(([key, entry]) =>
-    [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry)]));
+    [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: key === 'proj' })]));
   const loadChoices = prepareFormChoices(form, ({ options }) => {
     for (const key of Object.keys(demandOptionLabels)) {
-      pickers[key].setOptions(unique(options[key]).map(value => ({ value, label: value })));
+      pickers[key].setOptions(catalogChoiceEntries(options[key]));
     }
   });
 }

@@ -112,14 +112,6 @@ function publicDemand(db, user, row, linkedTasks) {
   }) };
 }
 
-function applyDemandChoices(db, row, patch) {
-  for (const [key, label] of Object.entries(demandOptionLabels)) {
-    if (patch[key] != null && patch[key] !== row[key] && !db.demandOptions[key].includes(patch[key])) {
-      throw new RequestError(409, label + '已不可选，请重新选择。');
-    }
-  }
-}
-
 function taskMember(db, id, label) {
   const profile = db.profiles.find(person => person.owner_id === id && person.status !== '已离职');
   if (!profile?.display_name || !db.users.some(user => user.id === id)) {
@@ -445,7 +437,10 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
       delete patch.proj;
     }
   }
-  if (table === 'demands') applyDemandChoices(db, row, patch);
+  if (table === 'demands' && patch.proposer != null && patch.proposer !== row.proposer &&
+      !db.demandOptions.proposer.includes(patch.proposer)) {
+    throw new RequestError(409, '需求提出方已不可选，请重新选择。');
+  }
   Object.assign(row, patch, { updated_at: now() });
   if (table === 'profiles') {
     if (!row.display_name) throw new RequestError(400, '请填写姓名。');
