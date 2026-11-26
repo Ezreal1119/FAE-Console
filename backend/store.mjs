@@ -3,6 +3,18 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from '
 import { join } from 'node:path';
 
 const demandOptionKinds = ['proj', 'proposer'];
+const defaultProjects = [
+  'SQ16', 'SQ27L', 'SQ27M', 'SQ27MB', 'SQ27TGW', 'SQ28W', 'SQ29', 'SQ29HM', 'SQ29M', 'SQ29MB', 'SQ29MR', 'SQ35',
+  'SQ45', 'SQ45S', 'SQ45T', 'SQ46', 'SQ46S', 'SQ47', 'SQ47PRO', 'SQ47S', 'SQ48', 'SQ48C', 'SQ48S',
+  'SQ51', 'SQ51Q', 'SQ53', 'SQ53B', 'SQ53D', 'SQ53H', 'SQ53P', 'SQ53PRO', 'SQ53R', 'SQ53S', 'SQ53ST', 'SQ53X',
+  'SQ53XC', 'SQ58', 'SQ58C', 'SQ58H', 'SQ58PRO',
+  'SQ65', 'SQ65A', 'SQ65B', 'SQ65E', 'SQ65F', 'SQ65FS', 'SQ65FSQ', 'SQ65FU', 'SQ66',
+  'SQ68', 'SQ68MB', 'SQ68MINI', 'SQ68P', 'SQ68PN',
+  'SQ69', 'SQ69B', 'SQ69BMP', 'SQ69BX', 'SQ69BXP', 'SQ69D', 'SQ69DM', 'SQ69DMP', 'SQ69DX', 'SQ69DXP', 'SQ69MINI', 'SQ69PC',
+  'SQ81', 'SQ83', 'SQ83A', 'SQ83S', 'SQ86', 'SQ91', 'SQ91-610', 'SQ92', 'SQ92P',
+  'SQ310', 'SQ510', 'SQ610', 'SQ610PRO', 'SQ610XC', 'SQ630', 'SQ630P'
+];
+const defaultProjectNames = new Set(defaultProjects);
 const defaultTaskOptions = {
   category: [
     '样机组装与改制', '调试改料与返工', '试产与量产导入', '测试与验证',
@@ -43,7 +55,8 @@ export function openStore(directory) {
     if (error.code !== 'ENOENT') throw error;
     data = {
       version: 1, users: [], profiles: [], tasks: [], demands: [], sessions: [], attachments: [],
-      demandOptions: { proj: [], proposer: [], ...structuredClone(defaultTaskOptions) },
+      demandOptions: { proj: [...defaultProjects], proposer: [], ...structuredClone(defaultTaskOptions) },
+      projectPresetsSeeded: true,
       seq: { user: 1, profile: 1, task: 1, demand: 1 }
     };
   }
@@ -70,13 +83,22 @@ export function openStore(directory) {
   }
 
   const missingOptions = taskOptionKinds.filter(key => !Object.hasOwn(data.demandOptions ?? {}, key));
-  if (missingOptions.length) {
+  const needsProjectPresets = data.projectPresetsSeeded !== true;
+  if (missingOptions.length || needsProjectPresets) {
     update(db => {
       db.demandOptions ??= Object.fromEntries(demandOptionKinds.map(key => {
         const names = db.demands.map(row => typeof row[key] === 'string' ? row[key].trim() : '').filter(Boolean);
         return [key, [...new Set(names)]];
       }));
       for (const key of missingOptions) db.demandOptions[key] = [...defaultTaskOptions[key]];
+      if (needsProjectPresets) {
+        const projects = db.demandOptions.proj.map(name => {
+          const canonical = name.normalize('NFKC').trim().toUpperCase().replace(/\s+(?=(?:PRO|MINI|S)$)/, '');
+          return defaultProjectNames.has(canonical) ? canonical : name;
+        });
+        db.demandOptions.proj = [...new Set([...projects, ...defaultProjects])];
+        db.projectPresetsSeeded = true;
+      }
     });
   }
 
