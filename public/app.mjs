@@ -1,5 +1,5 @@
 import { exportWeek } from './export.mjs';
-import { ACTIVE_TASK_STATUSES, formatPlanningTime, plannedCompletion, TASK_PRIORITIES as PRIORITY } from './task-planning.mjs';
+import { ACTIVE_TASK_STATUSES, formatPlanningTime, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES as PRIORITY } from './task-planning.mjs';
 
 const $ = selector => document.querySelector(selector);
 const content = $('#content');
@@ -62,7 +62,10 @@ const sortZh = (a, b) => a.localeCompare(b, 'zh-CN');
 const unique = values => [...new Set(values.filter(Boolean))].sort(sortZh);
 const trimmed = value => String(value ?? '').trim();
 const optional = value => trimmed(value) || null;
-const taskPriority = priority => PRIORITY.includes(priority) ? priority : '中';
+const taskPriority = value => {
+  const priority = normalizeTaskPriority(value);
+  return PRIORITY.includes(priority) ? priority : '中';
+};
 const sumHours = rows => Math.round(rows.reduce((sum, row) => sum + (Number(row.hours) || 0), 0) * 100) / 100;
 const withHours = value => value == null || value === '' ? '—' : value + 'h';
 const hasText = (query, ...fields) => fields.join(' ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
@@ -351,10 +354,15 @@ function statusBadge(status) {
   const variant = { 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
   return `<span class="tag ${variant}">${shown(status)}</span>`;
 }
-function priorityBadge(priority) {
-  const label = taskPriority(priority);
-  const variant = { 低: 'done', 中: 'start', 高: 'test', 极高: 'danger', 立即: 'danger' }[label];
-  return `<span class="tag ${variant}">${text(label)}</span>`;
+function priorityBadge(value, label) {
+  const priority = taskPriority(value);
+  const variant = { 低: 'done', 中: 'start', 高: 'test', 很高: 'danger', 立即: 'immediate' }[priority];
+  return `<span class="tag ${variant}">${text(label ?? priority)}</span>`;
+}
+function plannedHoursBadge(task, label = '') {
+  const hours = withHours(task.planned_hours);
+  if (hours === '—') return label ? `<span class="tag">${text(label + hours)}</span>` : hours;
+  return priorityBadge(task.pri, label + hours);
 }
 function option(value, selected, label = value) {
   return `<option value="${text(value)}"${value === selected ? ' selected' : ''}>${text(label)}</option>`;
@@ -389,7 +397,7 @@ function workspacePage() {
   const week = weekRange();
   const weekly = tasks.filter(task => inWeek(task.endDate, week));
   const queue = [...active].sort((a, b) => (a.dueTime || '9999').localeCompare(b.dueTime || '9999')).slice(0, 8);
-  const rows = queue.map(task => `<tr><td>${action(task.code, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueTime)}</td><td>${text(withHours(task.planned_hours))}</td></tr>`).join('');
+  const rows = queue.map(task => `<tr><td>${action(task.code, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueTime)}</td><td>${plannedHoursBadge(task)}</td></tr>`).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
     `<div class="grid-two workspace-overview">${panel('我的待办', table(['任务编号', '项目', '状态', '计划完成', '计划工时'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>` +
@@ -1043,7 +1051,7 @@ function taskDetails(task) {
     ...(source ? [['来源需求', action(source.code, 'demand-detail', source.id, 'link'), true]] : []),
     ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', taskDispatchTime(task)]] : []),
     ['状态', statusBadge(task.status), true], ['优先级', priorityBadge(task.pri), true],
-    ['计划完成时间', task.dueTime], ['计划投入工时', withHours(task.planned_hours)], ['投入工时', withHours(task.hours)],
+    ['计划完成时间', task.dueTime], ['计划投入工时', plannedHoursBadge(task), true], ['投入工时', withHours(task.hours)],
     ['开始时间', task.startTime], ['完成日期', task.endDate],
     ['附件', fileAction(task), true], ['前置依赖', task.deps]]);
   const remarks = `<div class="details-list"><div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>
@@ -1357,7 +1365,7 @@ function taskForm(task = {}, demand, plan) {
   const statusField = canChangeStatus ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
     : statusBadge(task.status);
   const headingAside = plan ? `<div class="dialog-priority"><span>优先级</span>${priorityBadge(priority)}</div>`
-    : isUpdate ? `<div class="dialog-task-meta"><span class="tag">计划投入工时 ${text(withHours(task.planned_hours))}</span>${statusField}</div>` : '';
+    : isUpdate ? `<div class="dialog-task-meta">${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>` : '';
   const taskOptionsFields = kindField + priorityField + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
   const setupFields = identityFields +
     (taskOptionsFields ? `<div class="form-grid">${taskOptionsFields}</div>` : '') +

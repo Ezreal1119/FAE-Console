@@ -1,6 +1,7 @@
-const priorityHours = { 低: 8, 中: 6, 高: 4, 极高: 2, 立即: 0 };
+const priorityHours = { 低: 8, 中: 6, 高: 4, 很高: 2, 立即: 0 };
 export const TASK_PRIORITIES = Object.keys(priorityHours);
 export const ACTIVE_TASK_STATUSES = ['开发中', '测试中'];
+export const normalizeTaskPriority = priority => priority === '极高' ? '很高' : priority;
 
 const minuteMs = 60_000;
 const dayMinutes = 24 * 60;
@@ -16,6 +17,7 @@ export function formatPlanningTime(timestamp) {
 }
 
 export function plannedCompletion(startedAt, hours, priority) {
+  priority = normalizeTaskPriority(priority);
   const workMinutes = Math.round(hours * 60);
   if (typeof hours !== 'number' || !Number.isSafeInteger(workMinutes) || workMinutes < 1 ||
       !Object.hasOwn(priorityHours, priority)) return null;

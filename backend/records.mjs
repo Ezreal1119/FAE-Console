@@ -3,7 +3,7 @@ import { openSync, closeSync, fstatSync, unlinkSync, writeFileSync } from 'node:
 import { join } from 'node:path';
 import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
 import { RequestError } from './store.mjs';
-import { ACTIVE_TASK_STATUSES, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
+import { ACTIVE_TASK_STATUSES, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
 
 const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
@@ -51,7 +51,7 @@ function cleanFields(table, payload) {
       if (value !== null && !validId(value)) throw new RequestError(400, '负责人编号无效。');
       patch[key] = value;
     } else if (key === 'pri') {
-      const priority = optionalText(value, maximum) || defaultPriority;
+      const priority = normalizeTaskPriority(optionalText(value, maximum)) || defaultPriority;
       if (!TASK_PRIORITIES.includes(priority)) throw new RequestError(400, '任务优先级无效。');
       patch[key] = priority;
     } else {
@@ -139,6 +139,7 @@ function taskHandledAt(user, task) {
 
 function publicTask(db, user, task, demand = db.demands.find(row => row.id === task.demand_id)) {
   const { title, dispatch_key, collaborators, transfer_history, revision, ...row } = task;
+  if (Object.hasOwn(row, 'pri')) row.pri = normalizeTaskPriority(row.pri);
   if (demand) row.proj = demand.proj ?? null;
   if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
     row.dispatched_at = row.created_at ?? null;
@@ -506,8 +507,8 @@ export function openRecords(store, { recordTaskChange } = {}) {
         }
         if (!changeable(db, user, 'tasks', task, 'update', patch)) throw new RequestError(403, '你没有权限修改这些任务信息。');
         const startedAt = new Date(minute * 60_000).toISOString();
-        const priority = TASK_PRIORITIES.includes(task.pri) ? task.pri : defaultPriority;
-        const due = plannedCompletion(startedAt, plannedHours, priority);
+        const priority = normalizeTaskPriority(task.pri);
+        const due = plannedCompletion(startedAt, plannedHours, TASK_PRIORITIES.includes(priority) ? priority : defaultPriority);
         if (!due) throw new RequestError(400, '请填写有效的计划投入工时，至少为 1 分钟。');
         Object.assign(patch, { status: '开发中', started_at: startedAt, planned_hours: plannedHours, planned_due_at: due });
         return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);

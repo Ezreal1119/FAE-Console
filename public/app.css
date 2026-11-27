@@ -192,6 +192,7 @@ tr:last-child td { border-bottom: 0; }
 .tag.test { background: #fff2d8; color: #795311; }
 .tag.done { background: #e2f7ef; color: #066448; }
 .tag.danger { background: #fdebf0; color: var(--red); }
+.tag.immediate { background: #991b1b; color: #fff; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
 .toolbar input { flex: 1 1 182px; }
 .toolbar select { width: auto; max-width: 200px; }
