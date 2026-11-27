@@ -433,6 +433,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
       const patch = cleanFields('tasks', changes);
       checkTaskSchedule(changes);
       checkTaskPeople(changes, false);
+      if (Object.hasOwn(patch, 'pri')) throw new RequestError(400, '开始规划时优先级为只读。');
       if (['status', 'hours', 'result'].some(field => Object.hasOwn(patch, field))) {
         throw new RequestError(400, '开始任务时只填写计划投入工时。');
       }
@@ -443,8 +444,8 @@ export function openRecords(store, { recordTaskChange } = {}) {
         }
         if (!changeable(db, user, 'tasks', task, 'update', patch)) throw new RequestError(403, '你没有权限修改这些任务信息。');
         const startedAt = new Date(minute * 60_000).toISOString();
-        const priority = patch.pri ?? task.pri;
-        const due = plannedCompletion(startedAt, plannedHours, TASK_PRIORITIES.includes(priority) ? priority : defaultPriority);
+        const priority = TASK_PRIORITIES.includes(task.pri) ? task.pri : defaultPriority;
+        const due = plannedCompletion(startedAt, plannedHours, priority);
         if (!due) throw new RequestError(400, '请填写有效的计划投入工时，至少为 1 分钟。');
         Object.assign(patch, { status: '开发中', started_at: startedAt, planned_hours: plannedHours, planned_due_at: due });
         return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);

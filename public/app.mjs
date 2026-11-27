@@ -1197,6 +1197,7 @@ function taskForm(task = {}, demand, plan) {
   if (isUpdate && (task.status === '已完成' || !canUpdateTaskProgress(task))) return;
   const canEditDetails = !isUpdate || canEditTask(task);
   const canEditClassification = !isUpdate || canEditTaskClassification(task);
+  const canEditPriority = canEditClassification && !plan;
   const priority = taskPriority(task.pri);
   const optionKinds = canEditClassification ? ['category', 'device_type'] : [];
   const canEditProject = canEditDetails && !demand && task.demand_id == null;
@@ -1210,11 +1211,11 @@ function taskForm(task = {}, demand, plan) {
   const kindField = isUpdate ? '' : `<label>任务类型（必填）<select name="task_kind" required>
     <option value="" selected disabled>请选择任务类型</option>
     ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, '', label)).join('')}</select></label>`;
-  const priorityField = canEditClassification ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
-    plan ? 'form="dialog-form"' : isDispatch ? 'required' : '') : '';
-  const headingAside = plan ? `<div class="dialog-priority">${priorityField || `<span>优先级</span>${priorityBadge(priority)}`}</div>`
+  const priorityField = canEditPriority ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
+    isDispatch ? 'required' : '') : '';
+  const headingAside = plan ? `<div class="dialog-priority"><span>优先级</span>${priorityBadge(priority)}</div>`
     : isUpdate ? `<span class="tag">计划投入工时 ${text(withHours(task.planned_hours))}</span>` : '';
-  const taskOptionsFields = kindField + (plan ? '' : priorityField) + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
+  const taskOptionsFields = kindField + priorityField + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
   const setupFields = identityFields +
     (taskOptionsFields ? `<div class="form-grid">${taskOptionsFields}</div>` : '') +
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
@@ -1246,13 +1247,13 @@ function taskForm(task = {}, demand, plan) {
       if (descriptionRequired && !desc) throw new Error('请填写任务描述。');
       if (desc !== optional(task.desc ?? demand?.descr)) patch.desc = desc;
     }
-    if (canEditClassification && (!isUpdate || values.pri !== priority)) patch.pri = values.pri;
+    if (canEditPriority && (!isUpdate || values.pri !== priority)) patch.pri = values.pri;
     if (isUpdate && !plan) {
       if (!completing && canChangeStatus && values.status !== task.status) patch.status = values.status;
       if (completing || resultText !== optional(task.result)) patch.result = resultText;
     }
     const plannedHours = plan ? Number(values.plan_hours) : null;
-    if (plan && !plannedCompletion(plan.startedAt, plannedHours, patch.pri ?? priority)) {
+    if (plan && !plannedCompletion(plan.startedAt, plannedHours, priority)) {
       throw new Error('请填写有效的计划投入工时，至少为 1 分钟。');
     }
     if (!isUpdate) {
@@ -1296,11 +1297,10 @@ function taskForm(task = {}, demand, plan) {
   if (plan) {
     const dueDisplay = form.querySelector('[data-plan-due]');
     const preview = () => {
-      const due = plannedCompletion(plan.startedAt, Number(form.elements.plan_hours.value), form.elements.pri?.value ?? priority);
+      const due = plannedCompletion(plan.startedAt, Number(form.elements.plan_hours.value), priority);
       dueDisplay.textContent = formatPlanningTime(due) || planDueHint;
     };
     bindPlanHours(form.elements.plan_hours, preview);
-    form.elements.pri?.addEventListener('input', preview);
     preview();
   }
   const taskOptions = bindTaskOptions(form, task, optionKinds);
