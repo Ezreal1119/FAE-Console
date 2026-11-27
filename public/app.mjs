@@ -17,12 +17,11 @@ const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', projects: '项目管理', projectDetail: '项目详情', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
-const catalogLabels = { proposer: '需求提出方', category: '工单分类', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态' };
-const otherTaskCategory = '其他';
+const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态' };
 const npiStages = ['EVT', 'DVT', 'PVT', 'MP'];
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
-  taskQuery: '', taskCategory: '', taskStatus: '', taskPriority: '', taskScope: 'mine',
+  taskQuery: '', taskStatus: '', taskPriority: '', taskScope: 'mine',
   demandQuery: '', peopleQuery: '', peopleTeam: ''
 };
 const listPageSize = 10;
@@ -35,7 +34,6 @@ const state = {
   taskSort: null,
   hiddenTaskFields: new Set(),
   catalog: { teams: [], roles: [] },
-  taskCategories: new Set(),
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proposer',
   projectCatalog: null, projectCatalogError: '', projectDetail: null, projectDetailError: '', projectStageTab: null,
   guidelines: undefined, guidelinesError: '', guidelinesPending: false,
@@ -194,7 +192,6 @@ function showAuth(error = '') {
   state.demands = [];
   state.profiles = [];
   state.accounts = [];
-  state.taskCategories.clear();
   state.demandCatalog = null;
   state.demandCatalogError = '';
   state.demandCatalogKind = 'proposer';
@@ -323,12 +320,6 @@ async function refresh() {
     if (result.status === 'fulfilled' && Array.isArray(rows)) {
       if (field === 'tasks') {
         state.tasks = rows.map(normalizeTask);
-        state.taskCategories = new Set(unique(result.value.taskCategories ?? []).filter(name => name !== otherTaskCategory));
-        const selected = state.filters.taskCategory;
-        if (selected && selected !== otherTaskCategory && !state.taskCategories.has(selected)) {
-          state.filters.taskCategory = '';
-          state.listPages.tasks = 1;
-        }
       } else {
         state[field] = rows;
       }
@@ -431,7 +422,6 @@ function workspacePage() {
 const taskColumns = [
   { key: 'code', label: '任务编号', cell: task => `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>` },
   { key: 'proj', label: '项目', cell: task => `<td>${shown(task.proj)}</td>` },
-  { key: 'category', label: '工单分类', cell: task => `<td>${text(taskCategoryLabel(task))}</td>` },
   { key: 'status', label: '状态', cell: task => `<td>${statusBadge(task.status)}</td>` },
   { key: 'pri', label: '优先级', sortKey: 'pri', cell: task => `<td>${priorityBadge(task.pri)}</td>` },
   { key: 'owner_name', label: '负责人', adminOnly: true, cell: task => `<td>${shown(task.owner_name)}</td>` },
@@ -491,15 +481,11 @@ function matchesTaskScope(task, scope) {
   return (scope === 'all' && admin()) || assignedToMe(task);
 }
 
-function taskCategoryLabel(task) {
-  return state.taskCategories.has(task.category) ? task.category : otherTaskCategory;
-}
-
 function filteredTasks() {
-  const { taskQuery, taskCategory, taskStatus, taskPriority: priority, taskScope } = state.filters;
+  const { taskQuery, taskStatus, taskPriority: priority, taskScope } = state.filters;
   return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
-    (!taskCategory || taskCategoryLabel(task) === taskCategory) && (!priority || taskPriority(task.pri) === priority) &&
-    hasText(taskQuery, task.code, task.id, task.proj, task.category, task.device_type, task.project_stage,
+    (!priority || taskPriority(task.pri) === priority) &&
+    hasText(taskQuery, task.code, task.id, task.proj, task.device_type, task.project_stage,
       task.owner_name, task.desc, task.result));
 }
 function taskSortValue(task, key) {
@@ -567,9 +553,8 @@ function updateTaskOverdueIndicators() {
 }
 function tasksPage() {
   const scope = admin() ? `<select aria-label="任务范围" data-filter="taskScope">${option('all', state.filters.taskScope, '所有任务')}${option('mine', state.filters.taskScope, '我负责的任务')}</select>` : '';
-  const category = filterSelect('taskCategory', '按工单分类筛选', [...state.taskCategories, otherTaskCategory], '全部分类');
   const priority = filterSelect('taskPriority', '按优先级筛选', PRIORITY, '全部优先级');
-  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务编号、描述、项目、分类、设备类型、项目阶段或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
+  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务编号、描述、项目、设备类型、项目阶段或负责人')}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
   return heading('任务中心', '跟进任务分工、进度和交付记录。', action('显示选项', 'task-display-options') + action('刷新', 'refresh') +
     action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     pagedListPanel('tasks', toolbar);
@@ -1170,7 +1155,7 @@ function taskDispatchTime(task) {
 }
 function taskDetails(task) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
-  const info = details([['任务类型', TASK_KINDS[task.task_kind]], ['项目', task.proj], ['工单分类', task.category],
+  const info = details([['任务类型', TASK_KINDS[task.task_kind]], ['项目', task.proj],
     ['设备类型', task.device_type], ['项目阶段', task.project_stage],
     ['负责人', task.owner_name],
     ...(source ? [['来源需求', action(source.code, 'demand-detail', source.id, 'link'), true]] : []),
@@ -1529,7 +1514,7 @@ function taskForm(task = {}, demand, plan) {
   const canEditClassification = !isUpdate || canEditTaskClassification(task);
   const canEditPriority = canEditClassification && !plan;
   const priority = taskPriority(task.pri);
-  const optionKinds = canEditClassification ? ['category', 'device_type'] : [];
+  const optionKinds = canEditClassification ? ['device_type'] : [];
   const canEditProject = canEditDetails && !demand && task.demand_id == null;
   const isDispatch = Boolean(demand);
   const descriptionRequired = !isUpdate && !isDispatch;
@@ -1588,7 +1573,6 @@ function taskForm(task = {}, demand, plan) {
       patch.assignee_id = assignee;
     }
     if (isDispatch) {
-      if (!patch.category) throw new Error('请填写工单分类。');
       if (!patch.device_type) throw new Error('请填写设备类型。');
     }
     if (plan && !(await confirmTaskStart())) return false;

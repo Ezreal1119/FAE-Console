@@ -16,10 +16,6 @@ const defaultProjects = [
 ];
 const defaultProjectNames = new Set(defaultProjects);
 const defaultTaskOptions = {
-  category: [
-    '样机组装与改制', '调试改料与返工', '试产与量产导入', '测试与验证',
-    '工装治具', '技术资料与 SOP', '质量异常与客诉', '技术支持'
-  ],
   device_type: ['POS', 'PDA', '手柄', '扫描头', '座充与底座', '扫描枪', '穿戴设备'],
   project_stage: ['立项', 'EVT', 'DVT', 'PVT', 'MP']
 };

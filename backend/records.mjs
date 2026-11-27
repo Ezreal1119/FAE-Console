@@ -9,7 +9,7 @@ const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
     proj: 100, owner_name: 100, assignee_id: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
-    category: 100, device_type: 100,
+    device_type: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000
   },
   demands: { proj: 100, descr: 10000, proposer: 100 }
@@ -20,10 +20,10 @@ const defaultPriority = '中';
 const defaultProjectStage = '立项';
 const demandCodePrefix = 'REQ';
 const legacyDemandPrefix = /^FAE-/;
-const catalogKinds = new Set(['proposer', 'category', 'device_type', 'project_stage']);
+const catalogKinds = new Set(['proposer', 'device_type', 'project_stage']);
 const taskProgressFields = new Set(['status', 'result']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at', 'completed_at'];
-const taskClassificationFields = ['pri', 'category', 'device_type'];
+const taskClassificationFields = ['pri', 'device_type'];
 const retiredCollaboratorFields = ['collaborators', 'collaborator_ids', 'add_collaborator_ids', 'keep_as_collaborator'];
 const recordCodeDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -149,7 +149,7 @@ function taskHandledAt(user, task) {
 
 function publicTask(db, user, task, demand = db.demands.find(row => row.id === task.demand_id),
   files = db.attachments.filter(file => file.task_id === task.id && file.state === 'bound')) {
-  const { title, dispatch_key, collaborators, transfer_history, revision, requirement_owner_id, ...row } = task;
+  const { title, dispatch_key, collaborators, transfer_history, revision, requirement_owner_id, category, ...row } = task;
   if (Object.hasOwn(row, 'pri')) row.pri = normalizeTaskPriority(row.pri);
   if (demand) row.proj = demand.proj ?? null;
   if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
@@ -353,8 +353,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           }
           return {
             data: db.tasks.filter(task => visibleTask(user, task))
-              .map(task => publicTask(db, user, task, demands.get(task.demand_id) ?? null, attachments.get(task.id) ?? [])),
-            taskCategories: db.demandOptions.category
+              .map(task => publicTask(db, user, task, demands.get(task.demand_id) ?? null, attachments.get(task.id) ?? []))
           };
         }
         if (table === 'demands') {
@@ -549,7 +548,6 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       checkTaskPeople(task, true);
       if (!patch.assignee_id) throw new RequestError(400, '派发任务需要选择负责人。');
       if (!optionalText(task.pri, fields.tasks.pri)) throw new RequestError(400, '请选择优先级。');
-      if (!patch.category) throw new RequestError(400, '请填写工单分类。');
       if (!patch.device_type) throw new RequestError(400, '请填写设备类型。');
       const kind = taskKind(task);
       if (estimatedHours != null && (!Number.isFinite(estimatedHours) || estimatedHours !== Number(estimatedHours.toFixed(2)) ||

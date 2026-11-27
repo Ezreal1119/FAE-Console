@@ -17,16 +17,6 @@ const deviceAliases = new Map([
   ['PDA座充', '座充与底座'], ['穿戴', '穿戴设备'], ['指环', '穿戴设备'], ['手环', '穿戴设备']
 ]);
 const stageAliases = new Map([['DVT2', 'DVT'], ['DVT 2', 'DVT'], ['PVT1', 'PVT'], ['PVT2', 'PVT']]);
-const categoryRules = [
-  ['样机组装与改制', /样机(?:组装|装配|改制|整改)|(?:组装|装配|改制|整改)样机/u],
-  ['调试改料与返工', /调试改料|手工贴片|返工/u],
-  ['试产与量产导入', /试产|量产导入|转厂生产/u],
-  ['测试与验证', /功能测试|测试|ORT|写号工具/iu],
-  ['工装治具', /工装|治具|夹具/u],
-  ['技术资料与 SOP', /SOP|(?:文件|文档)(?:编辑|编写|制作)|售后\s*BOM|操作视频/iu],
-  ['质量异常与客诉', /质量异常|客诉|不良分析|开箱\s*DOA/iu],
-  ['技术支持', /技术支持/u]
-];
 const dayMillis = 86400000;
 const maxWorkbookBytes = 16 * 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -149,16 +139,6 @@ function configuredValue(source, options, key = matchKey, aliases) {
   return matches.length === 1 ? matches[0] : input;
 }
 
-function classify(source, options) {
-  const input = optionalSource(source);
-  if (!input) return null;
-  const existing = configuredValue(input, options);
-  if (options.includes(existing)) return existing;
-  const matched = categoryRules.filter(([, pattern]) => pattern.test(input));
-  const proposed = matched.length === 1 ? matched[0][0] : null;
-  return options.includes(proposed) ? proposed : input;
-}
-
 function indexMembers(db) {
   const accounts = new Set(db.users.map(user => user.id));
   const names = new Map();
@@ -174,7 +154,7 @@ function indexMembers(db) {
 
 function requiredCatalog(db) {
   const catalog = db.demandOptions;
-  const keys = ['proj', 'device_type', 'project_stage', 'category'];
+  const keys = ['proj', 'device_type', 'project_stage'];
   if (!keys.every(key => Array.isArray(catalog?.[key]))) throw new Error('数据库缺少基础配置选项，请先更新服务并启动一次。');
   return catalog;
 }
@@ -227,8 +207,7 @@ function prepareImport(db, workbook, workbookId) {
         desc: entry.log, status, due, end_time: end,
         proj: configuredValue(source.project, catalog.proj, projectKey),
         device_type: configuredValue(source.device, catalog.device_type, matchKey, deviceAliases),
-        project_stage: configuredValue(source.stage, catalog.project_stage, matchKey, stageAliases),
-        category: classify(source.category, catalog.category)
+        project_stage: configuredValue(source.stage, catalog.project_stage, matchKey, stageAliases)
       };
       const warnings = [];
       if (!due && optionalSource(source.due)) warnings.push('无法识别计划日期：' + sourceText(source.due));
