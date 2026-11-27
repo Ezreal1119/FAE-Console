@@ -51,7 +51,7 @@ export function readDatabase(file) {
 export function openStore(directory) {
   const file = join(directory, 'db.json');
   const attachments = join(directory, 'attachments');
-  mkdirSync(attachments, { recursive: true, mode: 0o700 });
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
 
   let data;
   try {

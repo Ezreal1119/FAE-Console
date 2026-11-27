@@ -1,6 +1,8 @@
+export const attachmentLabels = { requirement: '需求文件', delivery: '交付文件', legacy: '历史附件' };
+
 const utf8 = new TextEncoder();
 const csvHeader = [
-  '任务编号', '项目', '状态', '负责人', '计划完成', '开始时间', '完成时间', '工时(h)', '完成结果', '附件',
+  '任务编号', '项目', '状态', '负责人', '计划完成', '开始时间', '完成时间', '工时(h)', '完成结果', ...Object.values(attachmentLabels),
   '工单分类', '设备类型', '项目阶段', '优先级', '来源需求', '派发时间', '计划工时(h)', '前置依赖', '任务描述'
 ];
 const maxAttachmentBytes = 180 * 1024 * 1024;
@@ -25,7 +27,8 @@ function safeFilename(name) {
 function csvBytes(tasks) {
   const records = tasks.map(task => [
     task.code, task.proj, task.status, task.owner_name, task.dueTime || task.dueDate,
-    task.startTime || task.startDate, task.endDate, task.hours, task.result, task.fileName,
+    task.startTime || task.startDate, task.endDate, task.hours, task.result,
+    ...Object.keys(attachmentLabels).map(kind => task.attachments.filter(file => file.kind === kind).map(file => file.name).join('、')),
     task.category, task.device_type, task.project_stage, task.pri,
     task.sourceDemandCode, task.dispatchTime, task.planned_hours, task.deps, task.desc
   ]);
@@ -85,16 +88,25 @@ export async function exportWeek(tasks, exportName, fetchAttachment) {
   const files = [['本周工作任务.csv', csvBytes(tasks)]];
   const skipped = [];
   let totalBytes = 0;
-  for (const task of tasks.filter(row => row.fileName)) {
-    try {
-      if (files.length >= 65534 || totalBytes >= maxAttachmentBytes) throw new Error('本次导出已达到浏览器附件容量限制。');
-      const blob = await fetchAttachment(task);
-      if (totalBytes + blob.size > maxAttachmentBytes) throw new Error('本次导出已达到浏览器附件容量限制。');
-      const name = '附件/' + safeFilename(task.code) + '/' + safeFilename(task.fileName);
-      files.push([name, new Uint8Array(await blob.arrayBuffer())]);
-      totalBytes += blob.size;
-    } catch (error) {
-      skipped.push(task.code + ' / ' + task.fileName + '：' + error.message);
+  for (const task of tasks) {
+    const paths = new Set();
+    for (const file of task.attachments) {
+      try {
+        if (files.length >= 65534 || file.size > maxAttachmentBytes - totalBytes || totalBytes >= maxAttachmentBytes) {
+          throw new Error('本次导出已达到浏览器附件容量限制。');
+        }
+        const blob = await fetchAttachment(task, file);
+        if (totalBytes + blob.size > maxAttachmentBytes) throw new Error('本次导出已达到浏览器附件容量限制。');
+        const folder = attachmentLabels[file.kind] + '/' + safeFilename(task.code) + '/';
+        const name = safeFilename(file.name);
+        let path = folder + name;
+        for (let duplicate = 2; paths.has(path.toLowerCase()); duplicate++) path = folder + duplicate + '-' + name;
+        paths.add(path.toLowerCase());
+        files.push([path, new Uint8Array(await blob.arrayBuffer())]);
+        totalBytes += blob.size;
+      } catch (error) {
+        skipped.push(task.code + ' / ' + file.name + '：' + error.message);
+      }
     }
   }
   if (skipped.length) files.push(['未能导出的附件.txt', utf8.encode(skipped.join('\r\n'))]);

@@ -1,4 +1,4 @@
-import { exportWeek } from './export.mjs';
+import { attachmentLabels, exportWeek } from './export.mjs';
 import { ACTIVE_TASK_STATUSES, formatPlanningTime, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES as PRIORITY } from './task-planning.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -131,14 +131,17 @@ function normalizeTask(row) {
   const originalLocalFile = row.attachPath && /^(?:[a-z]:[\\/]|[\\/])/i.test(row.attachPath);
   const startTime = formatPlanningTime(row.started_at) || sharedDate(row.start_time, row.start, row.created_at);
   const dueTime = formatPlanningTime(row.planned_due_at) || dateValue(row.due, row.created_at);
+  const attachments = row.attachments ?? [];
+  const files = originalLocalFile && row.attach && !attachments.some(file => file.kind === 'legacy')
+    ? [...attachments, { id: null, kind: 'legacy', name: row.attach }]
+    : attachments;
   return {
     ...row,
     startTime, dueTime,
     startDate: startTime.slice(0, 10),
     endDate: formatPlanningTime(row.completed_at).slice(0, 10) || sharedDate(row.end_time, row.end, row.created_at),
     dueDate: dueTime.slice(0, 10),
-    sharedFile: !originalLocalFile && !!row.attachment_path,
-    fileName: originalLocalFile ? row.attach : row.attachment_name || row.attach || ''
+    attachments: files
   };
 }
 function sharedDate(iso, legacy, createdAt) {
@@ -506,11 +509,16 @@ function sortedTaskList() {
     return multiplier * (typeof left === 'number' ? left - right : left.localeCompare(right));
   });
 }
-function fileAction(task) {
-  if (!task.fileName) return '—';
-  return task.sharedFile
-    ? action(task.fileName, 'download', task.id, 'link')
-    : `<span title="原附件保存在桌面客户端电脑上">${text(task.fileName)}<small class="muted">桌面本地附件</small></span>`;
+function attachmentUrl(taskId, fileId) {
+  return '/api/attachments/' + encodeURIComponent(taskId) + '/' + encodeURIComponent(fileId);
+}
+function taskFiles(task, kind) {
+  const links = task.attachments.filter(file => file.kind === kind).map(file => file.id
+    ? `<div><a class="link" href="${attachmentUrl(task.id, file.id)}" download>${text(file.name)}</a></div>`
+    : `<div>${text(file.name)} <small class="muted">桌面本地附件</small></div>`);
+  const canAppend = kind === 'requirement' ? task.canAppendRequirement : kind === 'delivery' && task.canAppendDelivery;
+  if (canAppend) links.push(action('补传' + attachmentLabels[kind], 'task-attachment-append', JSON.stringify([task.id, kind]), 'link'));
+  return links.join('') || '—';
 }
 function taskEditActions(task, className) {
   return task.status !== '已完成' && canUpdateTaskProgress(task)
@@ -776,7 +784,7 @@ function boardPage() {
   const completed = done.slice(0, 12).map(task => `<div class="detail-item">${action(task.code, 'task-detail', task.id, 'link')}<span class="number">${shown(task.endDate)}</span><p class="muted text-small">${shown(task.result)}</p></div>`).join('');
   return heading('数据看板', admin() ? '根据团队可见任务实时计算。' : '根据你可见的任务实时计算。') +
     stats([['任务总数', tasks.length], ['完成率', (tasks.length ? Math.round(done.length / tasks.length * 100) : 0) + '%', done.length + ' 项已完成'],
-      ['投入工时', sumHours(tasks) + 'h', tasks.filter(task => task.fileName).length + ' 项含附件'], ['按时交付率', due.length ? Math.round(onTime.length / due.length * 100) + '%' : '—', due.length ? onTime.length + ' / ' + due.length + ' 项' : '暂无可统计交付日期']]) +
+      ['投入工时', sumHours(tasks) + 'h', tasks.filter(task => task.attachments.length).length + ' 项含附件'], ['按时交付率', due.length ? Math.round(onTime.length / due.length * 100) + '%' : '—', due.length ? onTime.length + ' / ' + due.length + ' 项' : '暂无可统计交付日期']]) +
     `<div class="grid-two">${panel('项目工时分布', chart(hours, '暂无工时记录。', 'h'))}${panel('团队负载', chart(load, '暂无进行中的任务。'), '<span class="muted text-small">进行中工时 ÷ 40h</span>')}
     ${panel('任务状态分布', distribution(tasks))}${panel('近期完成结果', completed ? '<div class="details-list">' + completed + '</div>' : '<p class="empty">暂无已完成的任务。</p>')}</div>`;
 }
@@ -1064,7 +1072,9 @@ function taskDetails(task) {
     ['状态', statusBadge(task.status), true], ['优先级', priorityBadge(task.pri), true],
     ['计划完成时间', task.dueTime], ['计划投入工时', plannedHoursBadge(task), true], ['投入工时', withHours(task.hours)],
     ['开始时间', task.startTime], ['完成日期', task.endDate],
-    ['附件', fileAction(task), true], ['前置依赖', task.deps]]);
+    ['需求文件', taskFiles(task, 'requirement'), true], ['交付文件', taskFiles(task, 'delivery'), true],
+    ...(task.attachments.some(file => file.kind === 'legacy') ? [['历史附件', taskFiles(task, 'legacy'), true]] : []),
+    ['前置依赖', task.deps]]);
   const remarks = `<div class="details-list"><div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>
     <div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div></div>`;
   return info + remarks;
@@ -1220,12 +1230,70 @@ function bindTaskComments(container) {
     });
   });
 }
-async function taskAttachmentPatch(file) {
-  if (!file?.name) return {};
-  if (!file.size || file.size > 20 * 1024 * 1024) throw new Error('请选择不超过 20MB 的非空附件。');
-  const uploaded = await request('/api/upload', { method: 'POST', file });
-  return { attachment_path: uploaded.path, attachment_name: file.name };
+const uploadProgress = '<p class="muted text-small" data-upload-progress role="status" hidden></p>';
+function taskFileField(kind, required = false) {
+  const label = attachmentLabels[kind] + '（' + (required ? '' : '选填，') + '每次最多 12 个，每个最多 50 MB）';
+  return field(label, 'files', '', 'type="file" multiple' + (required ? ' required' : ''));
 }
+
+function bindFileUploads(form, getFiles) {
+  const account = state.user;
+  const uploaded = new Map();
+  const status = form.querySelector('[data-upload-progress]');
+  let closed = false;
+  async function discard(files) {
+    if (!files.length || state.user !== account) return;
+    await post('/api/upload/discard', { ids: files.map(file => uploaded.get(file).id) });
+    for (const file of files) uploaded.delete(file);
+  }
+  dialog.addEventListener('close', () => {
+    if (dialog.contains(form) && dialog.open) return;
+    closed = true;
+    void discard([...uploaded.keys()]).catch(() => {});
+  }, { once: true });
+
+  return async kind => {
+    const files = [...(getFiles() ?? [])].filter(file => file.name);
+    if (files.length > 12) throw new Error('每次最多上传 12 个文件。');
+    for (const file of files) {
+      if (!file.size || file.size > 50 * 1024 * 1024) throw new Error('请选择不超过 50 MB 的非空文件。');
+      if (!file.name.trim() || file.name.length > 255 || /[\x00-\x1f\x7f/\\]/.test(file.name)) {
+        throw new Error('文件名称无效，请重新命名后上传。');
+      }
+    }
+    await discard([...uploaded.keys()].filter(file => !files.includes(file)));
+    try {
+      for (const [index, file] of files.entries()) {
+        if (closed || account !== state.user) return [];
+        if (uploaded.has(file)) continue;
+        status.textContent = '正在上传文件 ' + (index + 1) + ' / ' + files.length + '…';
+        status.hidden = false;
+        const { id } = await request('/api/upload?kind=' + kind, { method: 'POST', file });
+        uploaded.set(file, { id, name: file.name });
+        if (closed) { await discard([file]); return []; }
+      }
+      return files.map(file => uploaded.get(file));
+    } finally {
+      status.hidden = true;
+    }
+  };
+}
+
+function appendTaskFiles([taskId, kind]) {
+  const task = getRow('tasks', taskId);
+  const form = modalForm('补传' + attachmentLabels[kind], task.code, taskFileField(kind, true) + uploadProgress, async () => {
+    const session = state.user;
+    const files = await upload(kind);
+    if (state.user !== session || !dialog.open || !dialog.contains(form)) return false;
+    const result = await post('/api/tasks/attachments', { taskId, kind, files });
+    updateRow('tasks', normalizeTask(result.task));
+    toast('已添加' + attachmentLabels[kind] + '。');
+    if (dialog.open && dialog.contains(form)) taskDetail(taskId);
+    return false;
+  }, { submit: '确认上传' });
+  const upload = bindFileUploads(form, () => form.elements.files.files);
+}
+
 async function applySavedTask(row) {
   const saved = normalizeTask(row);
   updateRow('tasks', saved);
@@ -1278,16 +1346,16 @@ function confirmTaskStart() {
 }
 
 function confirmTaskCompletion(draft) {
-  const { result, hours, file } = taskCompleteDialog.querySelector('form').elements;
+  const { result, hours, files } = taskCompleteDialog.querySelector('form').elements;
   result.value = draft.result ?? '';
   result.setCustomValidity('');
   hours.value = draft.hours ?? '';
-  if (file.files[0] !== draft.file) file.value = '';
+  if (files.files !== draft.files) files.value = '';
   taskCompleteDialog.returnValue = 'cancel';
   return new Promise(resolve => {
     taskCompleteDialog.addEventListener('close', () => {
       resolve(taskCompleteDialog.returnValue === 'complete'
-        ? { result: trimmed(result.value), hours: hours.valueAsNumber, file: file.files[0] } : null);
+        ? { result: trimmed(result.value), hours: hours.valueAsNumber, files: files.files } : null);
     }, { once: true });
     taskCompleteDialog.showModal();
   });
@@ -1380,7 +1448,8 @@ function taskForm(task = {}, demand, plan) {
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields) +
-    (isDispatch ? field('附件（选填，最多 20 MB）', 'file', '', 'type="file"') : '') +
+    (isDispatch ? taskFileField('requirement') : '') +
+    (isDispatch || isUpdate && !plan && canChangeStatus ? uploadProgress : '') +
     (isUpdate && !plan ? taskCommentSection(task) : '') + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
   const context = demand?.code || task.code || '';
@@ -1422,17 +1491,17 @@ function taskForm(task = {}, demand, plan) {
     if (!formUser || state.user !== formUser) return false;
     try {
       if (completion) {
-        const attachment = await taskAttachmentPatch(completion.file);
-        if (state.user !== formUser) return false;
+        const files = await upload('delivery');
+        if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
         const result = await post('/api/tasks/complete', {
-          taskId: task.id, expectedVersion: task.version, hours: completion.hours,
-          changes: { ...patch, ...attachment, result: completion.result }
+          taskId: task.id, expectedVersion: task.version, hours: completion.hours, files,
+          changes: { ...patch, result: completion.result }
         });
         await applySavedTask(result.task);
       } else if (demand) {
-        const attachment = await taskAttachmentPatch(values.file);
-        if (state.user !== formUser) return false;
-        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, task: { ...patch, ...attachment } });
+        const files = await upload('requirement');
+        if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, files, task: patch });
         updateRow('tasks', normalizeTask(result.task));
         updateRow('demands', result.demand);
       } else if (plan) {
@@ -1448,6 +1517,9 @@ function taskForm(task = {}, demand, plan) {
     }
     toast(completing ? '任务已完成。' : demand ? '任务已派发。' : plan ? '任务已开始。' : isUpdate ? '任务已更新。' : '任务已创建。');
   }, { submit, headingAside, focusTitle: isUpdate && !plan, secondarySubmit: isUpdate && !plan && canChangeStatus ? '完成任务' : '' });
+  const upload = isDispatch || isUpdate && !plan && canChangeStatus
+    ? bindFileUploads(form, () => isDispatch ? form.elements.files.files : completionDraft?.files)
+    : null;
   bindTaskComments(form);
   if (plan) {
     const dueDisplay = form.querySelector('[data-plan-due]');
@@ -1937,11 +2009,6 @@ function saveDownload(blob, filename) {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 15000);
 }
-async function downloadTask(id) {
-  const task = getRow('tasks', id);
-  const blob = await request('/api/attachments/' + encodeURIComponent(task.id), { download: true });
-  saveDownload(blob, task.fileName || '附件');
-}
 async function exportTasks() {
   const [from, to] = weekRange();
   const selected = state.page === 'tasks' ? filteredTasks() : state.tasks.filter(assignedToMe);
@@ -1957,9 +2024,9 @@ async function exportTasks() {
     dispatchTime: taskDispatchTime(task)
   }));
   toast('正在整理 ' + rows.length + ' 项任务和附件…');
-  const skipped = await exportWeek(exportRows, (teamScope ? '团队' : '本周') + '工作任务_' + from + '_' + to, task => {
-    if (!task.sharedFile) throw new Error('附件只保存在桌面客户端。');
-    return request('/api/attachments/' + encodeURIComponent(task.id), { download: true });
+  const skipped = await exportWeek(exportRows, (teamScope ? '团队' : '本周') + '工作任务_' + from + '_' + to, (task, file) => {
+    if (!file.id) throw new Error('附件只保存在桌面客户端。');
+    return request(attachmentUrl(task.id, file.id), { download: true });
   });
   toast('已导出 ' + rows.length + ' 项任务' + (skipped ? '，' + skipped + ' 份附件未能下载，详情见压缩包。' : '。'));
 }
@@ -2062,7 +2129,7 @@ const actions = {
     render();
     catalog(kind);
   },
-  password: () => passwordForm(), download: downloadTask, 'export-week': exportTasks
+  password: () => passwordForm(), 'task-attachment-append': id => appendTaskFiles(JSON.parse(id)), 'export-week': exportTasks
 };
 
 document.addEventListener('click', async event => {

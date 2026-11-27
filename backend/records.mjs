@@ -1,6 +1,5 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { openSync, closeSync, fstatSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { attachmentKind, bindAttachments } from './attachments.mjs';
 import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
 import { RequestError } from './store.mjs';
 import { ACTIVE_TASK_STATUSES, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
@@ -10,7 +9,7 @@ const fields = {
   tasks: {
     proj: 100, owner_name: 100, assignee_id: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
     category: 100, device_type: 100,
-    start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
+    start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000
   },
   demands: { proj: 100, descr: 10000, proposer: 100 }
 };
@@ -18,14 +17,13 @@ const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const defaultPriority = '中';
 const catalogKinds = new Set(['proposer', 'category', 'device_type', 'project_stage']);
-const taskProgressFields = new Set(['status', 'result', 'attachment_name', 'attachment_path']);
+const taskProgressFields = new Set(['status', 'result']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at', 'completed_at'];
 const taskClassificationFields = ['pri', 'category', 'device_type'];
 const retiredCollaboratorFields = ['collaborators', 'collaborator_ids', 'add_collaborator_ids', 'keep_as_collaborator'];
 const recordCodeDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
 });
-const expiry = 24 * 60 * 60 * 1000;
 const taskCommentPageSize = 10;
 
 function recordId(value) {
@@ -38,6 +36,9 @@ const validId = value => Number.isSafeInteger(value) && value > 0;
 
 function cleanFields(table, payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new RequestError(400, '没有可保存的内容。');
+  if (table === 'tasks' && ['attachment_name', 'attachment_path'].some(key => Object.hasOwn(payload, key))) {
+    throw new RequestError(400, '请刷新工作台后重新上传文件。');
+  }
   const patch = {};
   for (const [key, maximum] of Object.entries(fields[table])) {
     if (!Object.hasOwn(payload, key)) continue;
@@ -137,8 +138,9 @@ function taskHandledAt(user, task) {
   return null;
 }
 
-function publicTask(db, user, task, demand = db.demands.find(row => row.id === task.demand_id)) {
-  const { title, dispatch_key, collaborators, transfer_history, revision, ...row } = task;
+function publicTask(db, user, task, demand = db.demands.find(row => row.id === task.demand_id),
+  files = db.attachments.filter(file => file.task_id === task.id && file.state === 'bound')) {
+  const { title, dispatch_key, collaborators, transfer_history, revision, requirement_owner_id, ...row } = task;
   if (Object.hasOwn(row, 'pri')) row.pri = normalizeTaskPriority(row.pri);
   if (demand) row.proj = demand.proj ?? null;
   if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
@@ -146,6 +148,9 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
   }
   const handledAt = taskHandledAt(user, task);
   return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
+    attachments: files.map(({ id, kind, name, size }) => ({ id, kind, name, size })),
+    canAppendRequirement: canAppendAttachment(user, task, 'requirement'),
+    canAppendDelivery: canAppendAttachment(user, task, 'delivery'),
     project_stage: projectStage(db, row.proj), handled_by_me: handledAt !== null, handled_at: handledAt || null };
 }
 
@@ -198,7 +203,15 @@ function managesRecord(user, row) {
 }
 
 function visibleTask(user, task) {
-  return managesRecord(user, task) || taskHandledAt(user, task) !== null;
+  return managesRecord(user, task) || task.requirement_owner_id === user.id || taskHandledAt(user, task) !== null;
+}
+
+function canAppendAttachment(user, task, kind) {
+  if (kind === 'requirement') {
+    const fromDemand = task.demand_id != null || Object.hasOwn(task, 'initial_receiver_id');
+    return fromDemand && (isAdmin(user) || task.requirement_owner_id === user.id);
+  }
+  return task.status === '已完成' && (managesRecord(user, task) || task.assignee_id === user.id);
 }
 
 function taskForComments(db, user, taskId) {
@@ -233,34 +246,6 @@ function newTaskPatch(patch) {
 function checkTaskSchedule(payload) {
   if (taskScheduleFields.some(field => Object.hasOwn(payload, field))) {
     throw new RequestError(400, '任务时间和计划投入工时由任务流程记录。');
-  }
-}
-
-function changeAttachment(db, user, task, patch) {
-  if (!Object.hasOwn(patch, 'attachment_path') && !Object.hasOwn(patch, 'attachment_name')) return [];
-  const nextId = patch.attachment_path ?? null;
-  const oldId = task.attachment_path;
-  if (nextId) {
-    const file = db.attachments.find(row => row.id === nextId);
-    const pendingOwnFile = file && file.task_id === null && file.uploaded_by === user.id && file.created_at > Date.now() - expiry;
-    if (!file || (file.task_id !== task.id && !pendingOwnFile)) {
-      throw new RequestError(400, '附件不可用，请重新选择并上传文件。');
-    }
-    if (!patch.attachment_name) throw new RequestError(400, '缺少附件名称。');
-    file.task_id = task.id;
-  }
-  task.attachment_path = nextId;
-  task.attachment_name = nextId ? patch.attachment_name : null;
-  if (!oldId || oldId === nextId) return [];
-  db.attachments = db.attachments.filter(file => file.id !== oldId);
-  return [oldId];
-}
-
-function removeFile(directory, id) {
-  if (!/^[a-f0-9-]{36}$/.test(id)) return;
-  try { unlinkSync(join(directory, id)); }
-  catch (error) {
-    if (error.code !== 'ENOENT') console.error('清理附件失败：', error.code);
   }
 }
 
@@ -300,7 +285,7 @@ export function insertHistoricalTask(db, admin, member, fields) {
   return row;
 }
 
-export function openRecords(store, { recordTaskChange } = {}) {
+export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}) {
   const planningKey = randomBytes(32);
 
   function planningTask(db, user, id) {
@@ -317,8 +302,9 @@ export function openRecords(store, { recordTaskChange } = {}) {
 
   const needsDemandCode = demand => !demand.code;
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
+  const needsRequirementOwner = task => task.demand_id != null && !Object.hasOwn(task, 'requirement_owner_id');
   const { demands, tasks } = store.read();
-  if (demands.some(needsDemandCode) || tasks.some(task => needsReceiver(task) || !task.code)) {
+  if (demands.some(needsDemandCode) || tasks.some(task => needsReceiver(task) || needsRequirementOwner(task) || !task.code)) {
     store.update(db => {
       const fallback = Date.now();
       for (const demand of db.demands.filter(needsDemandCode).sort((a, b) => a.id - b.id)) {
@@ -329,23 +315,13 @@ export function openRecords(store, { recordTaskChange } = {}) {
         task.initial_receiver_id = task.assignee_id ?? null;
         task.initial_receiver_name = taskOwnerName(db, task) ?? null;
       }
+      const sources = new Map(db.demands.map(demand => [demand.id, demand]));
+      for (const task of db.tasks.filter(needsRequirementOwner)) {
+        const source = sources.get(task.demand_id);
+        task.requirement_owner_id = source?.creator_id ?? source?.owner_id ?? null;
+      }
     });
   }
-
-  function cleanupUploads() {
-    const expired = store.read().attachments.filter(row => row.task_id === null && row.created_at <= Date.now() - expiry);
-    if (!expired.length) return;
-    const ids = new Set(expired.map(row => row.id));
-    store.update(db => { db.attachments = db.attachments.filter(row => !ids.has(row.id)); });
-    ids.forEach(id => removeFile(store.attachments, id));
-  }
-
-  cleanupUploads();
-  const cleanup = setInterval(() => {
-    try { cleanupUploads(); }
-    catch (error) { console.error('未完成的附件清理未成功：', error.code || error.message); }
-  }, 60 * 60 * 1000);
-  cleanup.unref();
 
   return {
     query(user, { table, op, eq, payload }) {
@@ -359,9 +335,15 @@ export function openRecords(store, { recordTaskChange } = {}) {
         }
         if (table === 'tasks') {
           const demands = new Map(db.demands.map(demand => [demand.id, demand]));
+          const attachments = new Map();
+          for (const file of db.attachments) {
+            if (file.state !== 'bound') continue;
+            if (!attachments.has(file.task_id)) attachments.set(file.task_id, []);
+            attachments.get(file.task_id).push(file);
+          }
           return {
             data: db.tasks.filter(task => visibleTask(user, task))
-              .map(task => publicTask(db, user, task, demands.get(task.demand_id) ?? null)),
+              .map(task => publicTask(db, user, task, demands.get(task.demand_id) ?? null, attachments.get(task.id) ?? [])),
             taskCategories: db.demandOptions.category
           };
         }
@@ -391,7 +373,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
           newTaskPatch(patch);
         }
       }
-      const { row, removed } = store.update(db => {
+      const { row } = store.update(db => {
         const list = db[table];
         if (id !== null) {
           const index = list.findIndex(item => item.id === id);
@@ -410,10 +392,11 @@ export function openRecords(store, { recordTaskChange } = {}) {
               }
             }
             const [row] = list.splice(index, 1);
-            if (table === 'tasks') delete db.taskComments?.[row.id];
-            const removed = table === 'tasks' ? db.attachments.filter(file => file.task_id === row.id).map(file => file.id) : [];
-            if (removed.length) db.attachments = db.attachments.filter(file => file.task_id !== row.id);
-            return { row, removed };
+            if (table === 'tasks') {
+              delete db.taskComments?.[row.id];
+              for (const file of db.attachments) if (file.task_id === row.id) file.state = 'deleting';
+            }
+            return { row };
           }
           if (table === 'tasks') {
             const current = list[index].status;
@@ -426,7 +409,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
         }
         return insertRecord(db, user, table, patch, recordTaskChange, extra);
       });
-      removed.forEach(id => removeFile(store.attachments, id));
+      if (table === 'tasks' && op === 'delete') void cleanupAttachments?.();
       return { data: [publicRecord(store.read(), user, table, row)] };
     },
 
@@ -500,7 +483,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
       if (['status', 'hours', 'result'].some(field => Object.hasOwn(patch, field))) {
         throw new RequestError(400, '开始任务时只填写计划投入工时。');
       }
-      const { row, removed } = store.update(db => {
+      const { row } = store.update(db => {
         const task = planningTask(db, user, id);
         if (!timingSafeEqual(planningSignature(user, task, minute), Buffer.from(signature, 'hex'))) {
           throw new RequestError(409, '规划凭证已失效，请刷新并重新打开开始规划。');
@@ -513,11 +496,10 @@ export function openRecords(store, { recordTaskChange } = {}) {
         Object.assign(patch, { status: '开发中', started_at: startedAt, planned_hours: plannedHours, planned_due_at: due });
         return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
       });
-      removed.forEach(id => removeFile(store.attachments, id));
       return { task: publicTask(store.read(), user, row) };
     },
 
-    completeTask(user, { taskId, expectedVersion, hours, changes }) {
+    completeTask(user, { taskId, expectedVersion, hours, changes, files }) {
       const id = recordId(taskId);
       if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
         throw new RequestError(400, '请刷新任务后重试。');
@@ -533,7 +515,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
         throw new RequestError(400, '任务状态和投入工时由完成操作记录。');
       }
 
-      const { row, removed } = store.update(db => {
+      const { row } = store.update(db => {
         const task = db.tasks.find(item => item.id === id);
         if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
         if (!changeable(db, user, 'tasks', task, 'update', patch)) {
@@ -543,14 +525,14 @@ export function openRecords(store, { recordTaskChange } = {}) {
           throw new RequestError(409, '只有开发中或测试中的任务可以完成，请刷新后查看。');
         }
         if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请重新打开更新任务后重试。');
+        bindAttachments(db, user, task, 'delivery', files);
         Object.assign(patch, { status: '已完成', hours, completed_at: now() });
         return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
       });
-      removed.forEach(id => removeFile(store.attachments, id));
       return { task: publicTask(store.read(), user, row) };
     },
 
-    dispatchDemand(user, { demandId, dispatchKey, task }) {
+    dispatchDemand(user, { demandId, dispatchKey, task, files }) {
       const id = recordId(demandId);
       if (typeof dispatchKey !== 'string' || !/^[a-f0-9-]{36}$/.test(dispatchKey)) throw new RequestError(400, '派发编号无效。');
       const patch = newTaskPatch(cleanFields('tasks', task));
@@ -572,8 +554,10 @@ export function openRecords(store, { recordTaskChange } = {}) {
         }
         const details = { desc: source.descr ?? null, ...patch, proj: source.proj ?? null };
         const row = insertRecord(db, user, 'tasks', details, recordTaskChange, {
-          demand_id: id, dispatch_key: dispatchKey, task_kind: kind
+          demand_id: id, dispatch_key: dispatchKey, task_kind: kind,
+          requirement_owner_id: source.creator_id ?? source.owner_id
         }).row;
+        bindAttachments(db, user, row, 'requirement', files);
         row.initial_receiver_id = row.assignee_id;
         row.initial_receiver_name = row.owner_name;
         return { created: row, demand: source };
@@ -662,39 +646,28 @@ export function openRecords(store, { recordTaskChange } = {}) {
       });
     },
 
-    upload(user, body) {
-      if (!body.length) throw new RequestError(400, '请选择非空文件。');
-      const pending = store.read().attachments.filter(file => file.uploaded_by === user.id && file.task_id === null);
-      if (pending.length >= 12) throw new RequestError(429, '待绑定的附件过多，请先保存已上传的任务。');
-      const id = randomUUID();
-      writeFileSync(join(store.attachments, id), body, { flag: 'wx', mode: 0o600 });
-      try {
-        store.update(db => {
-          db.attachments.push({ id, task_id: null, uploaded_by: user.id, created_at: Date.now() });
-        });
-      } catch (error) {
-        removeFile(store.attachments, id);
-        throw error;
-      }
-      return { path: id };
+    appendTaskAttachments(user, { taskId, kind, files }) {
+      const id = recordId(taskId);
+      attachmentKind(kind);
+      if (!Array.isArray(files) || !files.length) throw new RequestError(400, '请至少选择一个文件。');
+      const task = store.update(db => {
+        const row = db.tasks.find(item => item.id === id && visibleTask(user, item));
+        if (!row) throw new RequestError(404, '未找到此任务。');
+        if (!canAppendAttachment(user, row, kind)) throw new RequestError(403, '你没有权限补传此类文件。');
+        bindAttachments(db, user, row, kind, files);
+        return row;
+      });
+      return { task: publicTask(store.read(), user, task) };
     },
 
-    openAttachment(user, value) {
-      const id = recordId(value);
+    attachmentForDownload(user, taskId, fileId) {
+      const id = recordId(taskId);
       const db = store.read();
       const task = db.tasks.find(row => row.id === id && visibleTask(user, row));
-      const file = task && db.attachments.find(row => row.task_id === id && row.id === task.attachment_path);
-      if (!file) throw new RequestError(404, '这条任务没有可下载的附件。');
-      const path = join(store.attachments, file.id);
-      let fd;
-      try {
-        fd = openSync(path, 'r');
-        return { fd, name: task.attachment_name || '附件', size: fstatSync(fd).size };
-      } catch (error) {
-        if (fd !== undefined) closeSync(fd);
-        if (error.code !== 'ENOENT') throw error;
-        throw new RequestError(404, '服务器上找不到这份附件。');
-      }
+      const file = task && db.attachments.find(row => row.task_id === id && row.state === 'bound' &&
+        (fileId ? row.id === fileId : row.kind === 'legacy' && row.id === task.attachment_path));
+      if (!file) throw new RequestError(404, '这条任务没有这份可下载的文件。');
+      return file;
     }
   };
 }
@@ -703,13 +676,9 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
   const before = table === 'tasks' && recordTaskChange ? {
     creating, owner: row.assignee_id
   } : null;
-  let removed = [];
   if (table === 'tasks') {
     applyTaskAssignee(db, row, patch);
     row.revision = (row.revision ?? 0) + 1;
-    removed = changeAttachment(db, user, row, patch);
-    delete patch.attachment_path;
-    delete patch.attachment_name;
     if (!creating && row.demand_id != null) delete patch.proj;
   }
   if (table === 'demands' && patch.proposer != null && patch.proposer !== row.proposer &&
@@ -723,5 +692,5 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
   }
   if (table === 'tasks' && !statuses.includes(row.status)) throw new RequestError(400, '任务状态无效。');
   if (before) recordTaskChange(db, row, before);
-  return { row, removed };
+  return { row };
 }

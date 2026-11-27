@@ -1,12 +1,13 @@
 import { createServer } from 'node:http';
-import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { isAdmin, openAccounts, sessionSeconds } from './backend/accounts.mjs';
+import { openAttachments } from './backend/attachments.mjs';
 import { MEMBER_IMPORT_LIMIT_BYTES, readMemberWorkbook } from './backend/member-import.mjs';
 import { openRecords } from './backend/records.mjs';
+import { openSftpStorage } from './backend/sftp-storage.mjs';
 import { openStore, RequestError } from './backend/store.mjs';
 import { openWecomNotifications } from './backend/wecom-notifications.mjs';
 
@@ -15,7 +16,6 @@ const host = process.env.HOST || '127.0.0.1';
 const secureCookie = process.env.SECURE_COOKIE === '1' ? '; Secure' : '';
 const trustProxy = process.env.TRUST_PROXY === '1';
 const sessionCookie = 'fae_console_session';
-const attachmentLimit = 20 * 1024 * 1024;
 const dataDirectory = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : fileURLToPath(new URL('./data/', import.meta.url));
 const store = openStore(dataDirectory);
 const guidelinesFile = process.env.CREDENTIALS_DIRECTORY
@@ -33,7 +33,11 @@ const guidelines = await readFile(guidelinesFile, 'utf8').then(source => {
   return null;
 });
 const accounts = openAccounts(store, process.env, { guidelinesEnabled: guidelines !== null });
-const records = openRecords(store, openWecomNotifications(store, process.env.WECOM_GROUP_WEBHOOK_URL));
+const storage = openSftpStorage(process.env);
+const attachments = openAttachments(store, storage);
+const records = openRecords(store, {
+  ...openWecomNotifications(store, process.env.WECOM_GROUP_WEBHOOK_URL), cleanupAttachments: attachments.cleanup
+});
 
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -53,8 +57,8 @@ const apiRoutes = new Map([
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/complete', 'POST'], ['/api/tasks/transfer', 'POST'],
-  ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
-  ['/api/db', 'POST'], ['/api/upload', 'POST']
+  ['/api/tasks/attachments', 'POST'], ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
+  ['/api/db', 'POST'], ['/api/upload', 'POST'], ['/api/upload/discard', 'POST']
 ]);
 let importingMembers = false;
 
@@ -165,16 +169,25 @@ function disposition(name) {
   return "attachment; filename*=UTF-8''" + encoded;
 }
 
-async function download(res, user, id) {
-  const { fd, name, size } = records.openAttachment(user, id);
-  const stream = createReadStream(null, { fd });
-  res.writeHead(200, {
-    'Content-Type': 'application/octet-stream',
-    'Content-Length': size,
-    'Content-Disposition': disposition(name),
-    'Cache-Control': 'private, no-store'
-  });
-  await pipeline(stream, res);
+async function streamResponse(res, work) {
+  const controller = new AbortController();
+  const abort = () => { if (!res.writableFinished) controller.abort(); };
+  res.once('close', abort);
+  try { return await work(controller.signal); }
+  finally { res.off('close', abort); }
+}
+
+async function download(res, user, taskId, fileId) {
+  const file = records.attachmentForDownload(user, taskId, fileId);
+  await streamResponse(res, signal => storage.read(file, async (stream, transferSignal) => {
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': file.size,
+      'Content-Disposition': disposition(file.name),
+      'Cache-Control': 'private, no-store'
+    });
+    await pipeline(stream, res, { signal: transferSignal });
+  }, signal));
 }
 
 function privateApi(path, session, body) {
@@ -199,6 +212,8 @@ function privateApi(path, session, body) {
     case '/api/tasks/plan-preview': return records.previewTaskPlan(session.user, body);
     case '/api/tasks/start': return records.startTask(session.user, body);
     case '/api/tasks/complete': return records.completeTask(session.user, body);
+    case '/api/upload/discard': return attachments.discard(session.user, body);
+    case '/api/tasks/attachments': return records.appendTaskAttachments(session.user, body);
     case '/api/tasks/transfer': return records.transferTask(session.user, body);
     case '/api/tasks/comments': return records.listTaskComments(session.user, body);
     case '/api/tasks/comments/change': return records.changeTaskComment(session.user, body);
@@ -212,7 +227,8 @@ function privateApi(path, session, body) {
   }
 }
 
-async function handleApi(req, res, path, attachmentId) {
+async function handleApi(req, res, url, attachmentRoute) {
+  const path = url.pathname;
   if (path === '/api/auth-options') {
     return sendJson(res, 200, { ok: true, registrationEnabled: accounts.registrationEnabled });
   }
@@ -231,7 +247,7 @@ async function handleApi(req, res, path, attachmentId) {
     accounts.signOut(session);
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionHeader() });
   }
-  if (attachmentId) return await download(res, session.user, attachmentId);
+  if (attachmentRoute) return await download(res, session.user, attachmentRoute[1], attachmentRoute[2]);
   if (path === '/api/admin/member-import-template') {
     const template = await readFile(new URL('./backend/templates/member-import.xlsx', import.meta.url));
     res.writeHead(200, {
@@ -257,9 +273,14 @@ async function handleApi(req, res, path, attachmentId) {
     }
   }
   if (path === '/api/upload') {
-    const body = await readBody(req, attachmentLimit);
-    const current = sessionFor(req, path);
-    return sendJson(res, 200, { ok: true, ...records.upload(current.user, body) });
+    try {
+      const result = await streamResponse(res, signal => attachments.upload(
+        session.user, url.searchParams.get('kind'), req, signal, () => sessionFor(req, path)
+      ));
+      return sendJson(res, 200, { ok: true, ...result });
+    } finally {
+      if (!req.readableEnded) req.resume();
+    }
   }
 
   const body = req.method === 'POST' ? await readJson(req) : undefined;
@@ -272,7 +293,8 @@ const server = createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   try {
-    const path = new URL(req.url, 'http://localhost').pathname;
+    const url = new URL(req.url, 'http://localhost');
+    const path = url.pathname;
     if (path === '/favicon.ico' && req.method === 'GET') {
       res.writeHead(204);
       return res.end();
@@ -284,14 +306,15 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache', 'Content-Length': content.length });
       return res.end(req.method === 'HEAD' ? undefined : content);
     }
-    const attachmentId = path.match(/^\/api\/attachments\/(\d+)$/)?.[1];
-    const method = apiRoutes.get(path) || (attachmentId ? 'GET' : undefined);
+    const attachmentRoute = path.match(/^\/api\/attachments\/(\d+)(?:\/([a-f0-9-]{36}))?$/);
+    const method = apiRoutes.get(path) || (attachmentRoute ? 'GET' : undefined);
     if (!method) throw new RequestError(404, '页面或接口不存在。');
     if (req.method !== method) throw new RequestError(405, '请求方法不受支持。');
     if (method === 'POST') checkOrigin(req);
 
-    await handleApi(req, res, path, attachmentId);
+    await handleApi(req, res, url, attachmentRoute);
   } catch (error) {
+    if (res.destroyed) return;
     if (res.headersSent) return res.destroy();
     const known = error instanceof RequestError;
     const status = known ? error.status : 500;

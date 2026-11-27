@@ -18,7 +18,7 @@ npm ci --omit=dev
 npm start
 ```
 
-打开 http://127.0.0.1:4173。可用 `HOST`、`PORT` 和 `DATA_DIR` 修改监听地址、端口和数据目录。默认数据目录为项目下的 `data/`，其中 `db.json` 保存账号、人员档案、任务、需求和会话，`attachments/` 保存任务附件。备份应同时包含两者。这个 JSON 数据库由单个服务进程写入。
+打开 http://127.0.0.1:4173。可用 `HOST`、`PORT` 和 `DATA_DIR` 修改监听地址、端口和数据目录。默认数据目录为项目下的 `data/`，其中 `db.json` 保存账号、人员档案、任务、需求、会话和附件索引。附件内容保存在公司 SFTP，备份时应同时保留索引和 SFTP 文件。这个 JSON 数据库由单个服务进程写入。
 
 超级管理员可在「人员管理 → 成员档案」授权或撤销管理员权限。成员继续使用自己的账号和密码，权限变更后需要重新登录。管理员建号或重置密码时，界面会显示生成的临时密码，成员登录后须修改。默认开启自助注册，设置 `ALLOW_REGISTRATION=0` 可以关闭。
 
@@ -29,7 +29,13 @@ npm start
 - `deploy/fae-console.service` 由 systemd 管理，假定项目位于 `/opt/fae-console`。运行数据写入 `/var/lib/fae-console`，超级管理员凭证由项目根目录的 `/opt/fae-console/.env` 提供。环境文件应只允许 root 读取，并包含 `ADMIN_ACCOUNT` 和 `ADMIN_PASSWORD`。已有实例升级时，将旧环境文件里的值带到项目根目录，再重新安装服务定义并执行 `systemctl daemon-reload` 和 `systemctl restart fae-console`。
 - `deploy/fae-console.conf` 为 `fae-work-console.patrick-shenzhen.cn` 提供入口，并将网页和 API 一并转发至 `127.0.0.1:4173`。启用前请确认 DNS 和服务器防火墙，HTTPS 由 Certbot 配置。
 - systemd 配置要求通过 HTTPS 使用登录会话。用本地端口检查服务时，首页仍可访问。
-- 附件单文件最多 20 MB。周任务可导出 ZIP，内含 CSV 和有权限下载的附件。原桌面版的本地附件需从原电脑重新上传。
+- 需求文件和交付文件单文件最多 50 MiB，每批最多 12 个。周任务可导出 ZIP，内含 CSV 和有权限下载的文件。原桌面版的本地附件需从原电脑重新上传。
+
+## 附件存储
+
+在现有的服务环境文件中设置 `SFTP_HOST`、`SFTP_PORT`、`SFTP_USERNAME`、`SFTP_PASSWORD` 和 `SFTP_HOST_FINGERPRINT`。根目录 `SFTP_ROOT` 默认为 `/FAE-Console`。当前公司端点还需要 `SFTP_LEGACY_SSH=1`。部署时运行 `node --env-file=.env backend/attachment-maintenance.mjs prepare` 初始化目录。
+
+旧版本的本地服务器附件需要迁移时，停止服务，备份 `db.json`，以服务数据目录的所有者身份运行 `node --env-file=.env backend/attachment-maintenance.mjs migrate <DATA_DIR>`。确认新索引和 SFTP 下载后，在开放业务写入前运行同一命令的 `purge <DATA_DIR>` 子命令。清理前会重新校验每个历史附件。
 
 ## 一次性导入工程中心 WBS
 
