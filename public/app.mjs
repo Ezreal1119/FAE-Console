@@ -2185,8 +2185,14 @@ function demandDetail(id) {
     const pickers = {
       proj: bindChoice(form.querySelector('[data-choice="proj"]'), { value: demand.proj || null, label: demand.proj }, {
         allowCustom: true,
+        clearable: false,
         onChange: value => {
           const latest = getRow('demands', demand.id);
+          if (!value) {
+            pickers.proj.setValue(optional(latest.proj));
+            formError(formMessage, '项目不能为空。');
+            return;
+          }
           if (value === optional(latest.proj)) return;
           void autoSave({ proj: value }, {
             rollback: () => { try { pickers.proj.setValue(optional(getRow('demands', demand.id).proj)); } catch { /* ignore */ } }
@@ -2195,8 +2201,14 @@ function demandDetail(id) {
       }),
       proposer: bindChoice(form.querySelector('[data-choice="proposer"]'), { value: demand.proposer || null, label: demand.proposer }, {
         allowCustom: false,
+        clearable: false,
         onChange: value => {
           const latest = getRow('demands', demand.id);
+          if (!value) {
+            pickers.proposer.setValue(optional(latest.proposer));
+            formError(formMessage, '需求提出方不能为空。');
+            return;
+          }
           if (value === optional(latest.proposer)) return;
           void autoSave({ proposer: value }, {
             rollback: () => { try { pickers.proposer.setValue(optional(getRow('demands', demand.id).proposer)); } catch { /* ignore */ } }
@@ -2215,6 +2227,11 @@ function demandDetail(id) {
       try { latest = getRow('demands', demand.id); } catch { return; }
       const nextDescr = optional(descrField.value);
       if (nextDescr === optional(latest.descr)) return;
+      if (!nextDescr) {
+        descrField.value = latest.descr ?? '';
+        formError(formMessage, '需求说明不能为空。');
+        return;
+      }
       void autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
     });
   }
@@ -2226,7 +2243,12 @@ function demandDetail(id) {
     if (descrField) {
       const latest = getRow('demands', demand.id);
       const nextDescr = optional(descrField.value);
-      if (nextDescr !== optional(latest.descr)) await autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
+      if (!nextDescr && optional(latest.descr)) {
+        descrField.value = latest.descr;
+        formError(formMessage, '需求说明不能为空。');
+        return;
+      }
+      if (nextDescr && nextDescr !== optional(latest.descr)) await autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
     }
     await saveQueue;
     if (!state.user) return;
@@ -2238,12 +2260,16 @@ function demandDetail(id) {
 function demandForm() {
   const initial = { proj: { value: null, label: '' }, proposer: { value: null, label: '' } };
   const form = modalForm('新建需求', '需求编码将在保存后自动生成。',
-    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${choiceField('需求提出方', 'proposer')}</div>` + area('需求说明', 'descr', '') +
+    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true, required: true })}${choiceField('需求提出方', 'proposer', { required: true })}</div>` + area('需求说明（必填）', 'descr', '', true) +
     choiceStatus, async values => {
-    const patch = { descr: optional(values.descr) };
-    for (const [key, picker] of Object.entries(pickers)) patch[key] = picker.value();
+    const descr = optional(values.descr);
+    const proj = pickers.proj.value();
+    const proposer = pickers.proposer.value();
+    if (!proj) throw new Error('请填写项目。');
+    if (!proposer) throw new Error('请选择需求提出方。');
+    if (!descr) throw new Error('请填写需求说明。');
     try {
-      const saved = await saveRow('demands', patch);
+      const saved = await saveRow('demands', { proj, proposer, descr });
       updateRow('demands', saved);
     } catch (error) {
       if (error.status === 409) await loadChoices().catch(() => {});
@@ -2252,7 +2278,7 @@ function demandForm() {
     toast('需求已保存。');
   });
   const pickers = Object.fromEntries(Object.entries(initial).map(([key, entry]) =>
-    [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: key === 'proj' })]));
+    [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: key === 'proj', clearable: false })]));
   const loadChoices = prepareFormChoices(form, ({ options }) => {
     for (const [key, picker] of Object.entries(pickers)) {
       picker.setOptions(catalogChoiceEntries(options[key]));

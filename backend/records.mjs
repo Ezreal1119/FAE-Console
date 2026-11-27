@@ -413,6 +413,17 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       const id = op === 'insert' ? null : recordId(Array.isArray(eq) && eq[0] === 'id' ? eq[1] : null);
       const patch = op === 'delete' ? {} : cleanFields(table, payload);
       let extra;
+      if (table === 'demands' && op !== 'delete') {
+        if (op === 'insert') {
+          if (!patch.proj) throw new RequestError(400, '请填写项目。');
+          if (!patch.proposer) throw new RequestError(400, '请选择需求提出方。');
+          if (!patch.descr) throw new RequestError(400, '请填写需求说明。');
+        } else {
+          if (Object.hasOwn(patch, 'proj') && !patch.proj) throw new RequestError(400, '项目不能为空。');
+          if (Object.hasOwn(patch, 'proposer') && !patch.proposer) throw new RequestError(400, '需求提出方不能为空。');
+          if (Object.hasOwn(patch, 'descr') && !patch.descr) throw new RequestError(400, '需求说明不能为空。');
+        }
+      }
       if (table === 'tasks' && op !== 'delete') {
         checkTaskPeople(payload, op === 'insert');
         if (op === 'update') {
