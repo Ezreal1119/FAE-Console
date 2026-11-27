@@ -19,7 +19,8 @@ const priorities = ['低', '中', '高', '极高'];
 const defaultPriority = '中';
 const catalogKinds = new Set(['proj', 'proposer', 'category', 'device_type', 'project_stage']);
 const taskProgressFields = new Set(['status', 'start', 'end', 'start_time', 'end_time', 'hours', 'result', 'attachment_name', 'attachment_path']);
-const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'category', 'device_type', 'project_stage']);
+const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'project_stage']);
+const taskClassificationFields = ['pri', 'category', 'device_type'];
 const taskHandoverFields = ['assignee_id', 'keep_as_collaborator'];
 const expiry = 24 * 60 * 60 * 1000;
 
@@ -197,9 +198,13 @@ function changeable(db, user, table, row, op, patch) {
     if (row.owner_id === user.id) return op !== 'delete';
     return isAdmin(user) && !db.users.some(account => account.id === row.owner_id && isPrimaryAdmin(account));
   }
+  if (table === 'tasks' && op === 'update' && taskClassificationFields.some(field => Object.hasOwn(patch, field))) {
+    const source = row.demand_id == null ? null : db.demands.find(demand => demand.id === row.demand_id);
+    if (!managesRecord(user, source ?? row)) return false;
+  }
   if (managesRecord(user, row)) return true;
   return table === 'tasks' && op === 'update' && row.assignee_id === user.id &&
-    Object.keys(patch).every(field => taskProgressFields.has(field) || taskAssigneeEditFields.has(field) ||
+    Object.keys(patch).every(field => taskProgressFields.has(field) || taskAssigneeEditFields.has(field) || taskClassificationFields.includes(field) ||
       (Object.hasOwn(patch, 'keep_as_collaborator') && taskHandoverFields.includes(field)));
 }
 
@@ -350,6 +355,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
       if (typeof dispatchKey !== 'string' || !/^[a-f0-9-]{36}$/.test(dispatchKey)) throw new RequestError(400, '派发编号无效。');
       const patch = cleanFields('tasks', task);
       if (!patch.assignee_id) throw new RequestError(400, '派发任务需要选择负责人。');
+      for (const field of ['due', 'planned_hours', 'project_stage']) delete patch[field];
 
       const { created, demand } = store.update(db => {
         const source = db.demands.find(row => row.id === id);

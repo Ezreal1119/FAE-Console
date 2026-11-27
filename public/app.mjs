@@ -15,7 +15,6 @@ const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proj: '项目', proposer: '需求提出方', category: '工单分类', device_type: '设备类型', project_stage: '项目阶段' };
-const taskContextFields = ['device_type', 'project_stage'];
 const otherTaskCategory = '其他';
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
@@ -155,6 +154,10 @@ function canEditProfile(person) {
     (admin() && !state.accounts.some(account => account.is_primary_admin && same(account.id, person.owner_id)));
 }
 function canManageDemand(demand) { return admin() || same(demand.creator_id ?? demand.owner_id, state.user.id); }
+function canEditTaskClassification(task) {
+  const source = task.demand_id == null ? null : state.demands.find(demand => same(demand.id, task.demand_id));
+  return source ? canManageDemand(source) : canEditTask(task);
+}
 function canDeleteDemand(demand) { return admin() || (canManageDemand(demand) && !demand.linked_tasks?.length); }
 const collaboratorNames = task => (task.collaborators || []).map(person => person.name).join('、');
 
@@ -949,16 +952,20 @@ function confirmTaskHandover(form) {
 function taskAssignmentForm(task) {
   if (!assignedToMe(task)) return;
   const existing = new Set((task.collaborators || []).map(person => person.id));
-  const fields = choiceField('负责人', 'assignee_id') + taskOptionField('category') +
-    `<div class="form-grid">${taskContextFields.map(taskOptionField).join('')}</div>` +
+  const canEditClassification = canEditTaskClassification(task);
+  const optionKinds = canEditClassification ? ['category', 'device_type', 'project_stage'] : ['project_stage'];
+  const priorityField = canEditClassification ? selectField('优先级', 'pri', PRIORITY, taskPriority(task.pri)) : '';
+  const fields = choiceField('负责人', 'assignee_id') +
+    `<div class="form-grid">${priorityField}${optionKinds.map(taskOptionField).join('')}</div>` +
     `<p class="muted text-small">当前合作者：${shown(collaboratorNames(task))}</p>` +
     collaboratorField(false, '添加合作者') + choiceStatus;
   let owner, collaborators, loadChoices;
-  const form = modalForm('编辑任务', '#' + task.id + ' ' + task.title, fields, async () => {
+  const form = modalForm('编辑任务', '#' + task.id + ' ' + task.title, fields, async values => {
     const assignee = owner.value();
     const transferring = assignee !== task.assignee_id;
     const added = collaborators.ids().filter(id => id !== assignee);
     const patch = taskOptions.changes();
+    if (canEditClassification && values.pri !== taskPriority(task.pri)) patch.pri = values.pri;
     if (!transferring && !added.length && !Object.keys(patch).length) throw new Error('请修改任务信息、选择接手人或添加合作者。');
     if (added.length) patch.add_collaborator_ids = added;
     if (transferring) {
@@ -975,7 +982,7 @@ function taskAssignmentForm(task) {
     }
     toast(transferring ? '任务已转交。' : added.length ? '合作者已加入任务。' : '任务信息已更新。');
   });
-  const taskOptions = bindTaskOptions(form, task, ['category', ...taskContextFields]);
+  const taskOptions = bindTaskOptions(form, task, optionKinds);
   collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), [], task.assignee_id);
   owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: task.assignee_id, label: task.owner_name },
     { clearable: false, onChange: collaborators.setOwner });
@@ -1001,7 +1008,10 @@ function taskForm(task = {}, demand) {
   const newStandaloneTask = !task.id && !demand;
   const currentOwner = Boolean(task.id) && assignedToMe(task);
   const canChooseOwner = task.demand_id == null || admin() || currentOwner;
-  const canPlanHours = Boolean(demand) || Object.hasOwn(task, 'dispatched_at');
+  const canPlanHours = Object.hasOwn(task, 'dispatched_at');
+  const canEditClassification = !task.id || canEditTaskClassification(task);
+  const optionKinds = canEditClassification ? ['category', 'device_type'] : [];
+  if (!demand) optionKinds.push('project_stage');
   const canEditNameAndProject = !demand && task.demand_id == null;
   const dispatchKey = demand && crypto.randomUUID();
   const currentAssignee = task.assignee_id ?? (task.id ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
@@ -1013,10 +1023,12 @@ function taskForm(task = {}, demand) {
       `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
     : ownerField;
   const setupFields = identityFields + collaboratorField() +
-    `<div class="form-grid">${selectField('优先级', 'pri', PRIORITY, taskPriority(task.pri))}${field('计划完成', 'due', task.dueDate, 'type="date"')}
-      ${taskOptionField('category')}
+    `<div class="form-grid">${canEditClassification ? selectField('优先级', 'pri', PRIORITY, taskPriority(task.pri)) : ''}
+      ${demand ? '' : field('计划完成', 'due', task.dueDate, 'type="date"')}
+      ${canEditClassification ? taskOptionField('category') : ''}
       ${canPlanHours ? field('计划工时（小时）', 'planned_hours', task.planned_hours, 'type="number" min="0" step="0.01"') : ''}
-      ${taskContextFields.map(taskOptionField).join('')}</div>` +
+      ${canEditClassification ? taskOptionField('device_type') : ''}
+      ${demand ? '' : taskOptionField('project_stage')}</div>` +
     area('任务描述', 'desc', task.desc ?? demand?.descr);
   const fields = setupFields + (newStandaloneTask ? taskProgressFields(task) : '') +
     (task.id ? '' : taskAttachmentFields(task)) + choiceStatus;
@@ -1040,7 +1052,9 @@ function taskForm(task = {}, demand) {
     }
     const people = collaborators.ids();
     const previousPeople = transferring ? initialPeople.filter(person => person.id !== assignee) : initialPeople;
-    Object.assign(patch, { pri: values.pri, due: optional(values.due), desc: optional(values.desc) }, taskOptions.changes());
+    Object.assign(patch, { desc: optional(values.desc) }, taskOptions.changes());
+    if (canEditClassification) patch.pri = values.pri;
+    if (!demand) patch.due = optional(values.due);
     if (canPlanHours) patch.planned_hours = values.planned_hours === '' ? null : Number(values.planned_hours);
     if (canChooseOwner && (!task.id || assignee !== currentAssignee)) patch.assignee_id = assignee;
     if (people.length !== previousPeople.length || previousPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
@@ -1060,7 +1074,7 @@ function taskForm(task = {}, demand) {
     }
     toast(demand ? '任务已派发。' : transferring ? '任务已转交。' : task.id ? '任务已更新。' : '任务已创建。');
   }, demand ? { submit: '派发任务' } : {});
-  const taskOptions = bindTaskOptions(form, task, ['category', ...taskContextFields]);
+  const taskOptions = bindTaskOptions(form, task, optionKinds);
   if (canEditNameAndProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
   }
