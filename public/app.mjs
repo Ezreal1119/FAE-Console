@@ -2090,12 +2090,10 @@ function peopleChoices(people) {
     .sort((a, b) => sortZh(a.label, b.label));
 }
 
-const choiceStatus = '<p class="muted text-small" data-choice-loading role="status">正在加载可选项…</p>' +
-  '<div data-choice-retry hidden><button type="button" class="link">重新加载可选项</button></div>';
+const choiceStatus = '<div data-choice-retry hidden><button type="button" class="link">重新加载可选项</button></div>';
 
 function prepareFormChoices(form, applyChoices) {
   const submitButtons = form.querySelectorAll('[type=submit]');
-  const loading = form.querySelector('[data-choice-loading]');
   const retry = form.querySelector('[data-choice-retry]');
   const message = form.querySelector('.form-error');
   async function loadChoices() {
@@ -2104,7 +2102,6 @@ function prepareFormChoices(form, applyChoices) {
   }
   async function prepareChoices() {
     submitButtons.forEach(button => { button.disabled = true; });
-    loading.hidden = false;
     retry.hidden = true;
     formError(message, '');
     try {
@@ -2113,8 +2110,6 @@ function prepareFormChoices(form, applyChoices) {
     } catch (error) {
       formError(message, error.message);
       retry.hidden = false;
-    } finally {
-      loading.hidden = true;
     }
   }
   retry.querySelector('button').addEventListener('click', prepareChoices);
