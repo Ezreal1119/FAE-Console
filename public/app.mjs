@@ -801,8 +801,8 @@ function navigate(page) {
   }
 }
 
-function details(entries) {
-  return `<dl class="form-grid">${entries.map(([label, value, markup]) => `<div><dt>${text(label)}</dt><dd>${markup ? value : shown(value)}</dd></div>`).join('')}</dl>`;
+function details(entries, className = 'form-grid') {
+  return `<dl class="${className}">${entries.map(([label, value, markup]) => `<div><dt>${text(label)}</dt><dd>${markup ? value : shown(value)}</dd></div>`).join('')}</dl>`;
 }
 function field(label, name, value = '', attributes = '') {
   return `<label>${label}<input name="${name}" value="${text(value)}" ${attributes}></label>`;
@@ -945,14 +945,19 @@ function confirmTaskStart() {
   });
 }
 
+const planDueHint = '填写计划投入工时后计算';
+
 function taskScheduleFields(task, plan, priority) {
   const start = plan ? formatPlanningTime(plan.startedAt) : task.startTime;
-  const hours = plan
-    ? field('计划投入工时（小时）', 'plan_hours', task.planned_hours, 'type="number" min="0.01" step="0.01" required')
-    : field('计划投入工时（小时）', 'plan_hours_display', task.planned_hours ?? '—', 'readonly');
-  const priorityDisplay = plan && priority ? field('优先级', 'priority_display', priority, 'readonly') : '';
-  return `<div class="form-grid">${field('开始时间', 'start_display', start || '—', 'readonly')}${hours}
-    ${field('计划完成时间', 'due_display', plan ? '' : task.dueTime || '—', 'readonly')}${priorityDisplay}</div>`;
+  const entries = [['开始时间', start]];
+  if (plan) {
+    entries.push(['计划完成时间', `<span data-plan-due aria-live="polite">${planDueHint}</span>`, true]);
+    if (priority) entries.push(['优先级', priorityBadge(priority), true]);
+  } else {
+    entries.push(['计划完成时间', task.dueTime], ['计划投入工时', withHours(task.planned_hours)], ['完成日期', task.endDate]);
+  }
+  const summary = details(entries, 'form-grid task-form-facts task-schedule-summary');
+  return plan ? summary + field('计划投入工时（小时）', 'plan_hours', task.planned_hours, 'type="number" min="0.01" step="0.01" required') : summary;
 }
 
 async function openTaskUpdate(id) {
@@ -985,7 +990,7 @@ function taskForm(task = {}, demand, plan) {
   const initialPeople = task.collaborators || [];
   const existingPeople = new Set(initialPeople.map(person => person.id));
   const ownerField = canChooseOwner ? choiceField(demand ? '负责人（必填）' : '负责人', 'assignee_id')
-    : field('负责人', 'owner_display', task.owner_name, 'readonly');
+    : details([['负责人', task.owner_name]], 'task-form-facts');
   const identityFields = canEditNameAndProject
     ? field('任务名称', 'title', task.title, 'required maxlength="180"') +
       `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
@@ -998,10 +1003,9 @@ function taskForm(task = {}, demand, plan) {
     (canEditDetails ? area('任务描述', 'desc', task.desc ?? demand?.descr) : '');
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
   const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status)
-    : field('状态', 'status_display', task.status, 'readonly');
+    : details([['状态', statusBadge(task.status), true]], 'task-form-facts');
   const progressFields = isUpdate && !plan ? `<div class="form-grid">${statusField}
-    ${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}
-    ${field('完成日期', 'end_display', task.endDate || '—', 'readonly')}</div>` + area('完成结果', 'result', task.result) : '';
+    ${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}</div>` + area('完成结果', 'result', task.result) : '';
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan, canEditClassification ? '' : priority) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields + progressFields) +
     taskAttachmentFields(task) + choiceStatus;
@@ -1070,9 +1074,10 @@ function taskForm(task = {}, demand, plan) {
     toast(demand ? '任务已派发。' : plan ? '任务已开始。' : transferring ? '任务已转交。' : isUpdate ? '任务已更新。' : '任务已创建。');
   }, { submit });
   if (plan) {
+    const dueDisplay = form.querySelector('[data-plan-due]');
     const preview = () => {
       const due = plannedCompletion(plan.startedAt, Number(form.elements.plan_hours.value), form.elements.pri?.value ?? priority);
-      form.elements.due_display.value = formatPlanningTime(due);
+      dueDisplay.textContent = formatPlanningTime(due) || planDueHint;
     };
     form.elements.plan_hours.addEventListener('input', preview);
     form.elements.pri?.addEventListener('input', preview);
