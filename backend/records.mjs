@@ -11,7 +11,7 @@ const fields = {
     add_collaborator_ids: 0, keep_as_collaborator: 0, category: 100, device_type: 100, project_stage: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
-  demands: { title: 180, proj: 100, descr: 10000, proposer: 100 }
+  demands: { proj: 100, descr: 10000, proposer: 100 }
 };
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', '开发中', '测试中', '已完成'];
@@ -22,6 +22,9 @@ const taskProgressFields = new Set(['status', 'start', 'end', 'start_time', 'end
 const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'project_stage']);
 const taskClassificationFields = ['pri', 'category', 'device_type'];
 const taskHandoverFields = ['assignee_id', 'keep_as_collaborator'];
+const demandCodeDate = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+});
 const expiry = 24 * 60 * 60 * 1000;
 
 function recordId(value) {
@@ -86,8 +89,19 @@ function taskOwnerName(db, task) {
   return assignee ? displayName(db, assignee) : task.owner_name;
 }
 
+function assignDemandCode(db, demand) {
+  const createdAt = Date.parse(demand.created_at);
+  const parts = demandCodeDate.formatToParts(Number.isFinite(createdAt) ? createdAt : Date.now());
+  const { year, month, day } = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  const date = year + month + day;
+  db.demandCodeSequences ??= {};
+  const next = (db.demandCodeSequences[date] ?? 0) + 1;
+  db.demandCodeSequences[date] = next;
+  demand.code = `FAE-${date}${String(next).padStart(3, '0')}`;
+}
+
 function demandTaskFields(demand) {
-  return { title: demand.title, proj: demand.proj ?? null };
+  return { title: demand.title || demand.code, proj: demand.proj ?? null };
 }
 
 function publicTask(db, task, demand = db.demands.find(row => row.id === task.demand_id)) {
@@ -115,7 +129,7 @@ function publicDemand(db, user, row, linkedTasks) {
       Object.assign(summary, { task_id: task.id, assignee_id: task.assignee_id,
         collaborator_ids: (task.collaborators || []).map(person => person.id) });
     }
-    return visibleTask(user, task) ? { ...summary, id: task.id, title: row.title } : summary;
+    return visibleTask(user, task) ? { ...summary, id: task.id, title: row.title || row.code } : summary;
   }) };
 }
 
@@ -250,6 +264,7 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
   }
   const row = { id: db.seq[sequence[table]]++, owner_id: user.id, owner_name: displayName(db, user), created_at: now(), ...extra };
   if (table !== 'profiles') row.creator_id = user.id;
+  if (table === 'demands') assignDemandCode(db, row);
   if (table === 'tasks') {
     Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], pri: defaultPriority, collaborators: [] });
   }
@@ -268,9 +283,12 @@ export function insertHistoricalTask(db, admin, member, fields) {
 }
 
 export function openRecords(store, { recordTaskChange } = {}) {
+  const needsDemandCode = demand => !demand.code;
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
-  if (store.read().tasks.some(needsReceiver)) {
+  const { demands, tasks } = store.read();
+  if (demands.some(needsDemandCode) || tasks.some(needsReceiver)) {
     store.update(db => {
+      for (const demand of db.demands.filter(needsDemandCode).sort((a, b) => a.id - b.id)) assignDemandCode(db, demand);
       for (const task of db.tasks.filter(needsReceiver)) {
         task.initial_receiver_id = task.assignee_id ?? null;
         task.initial_receiver_name = taskOwnerName(db, task) ?? null;
@@ -496,7 +514,7 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
   if (table === 'profiles') {
     if (!row.display_name) throw new RequestError(400, '请填写姓名。');
     row.owner_name = row.display_name;
-  } else if (!row.title) {
+  } else if (table === 'tasks' && !row.title) {
     throw new RequestError(400, '请填写名称。');
   }
   if (table === 'tasks' && !statuses.includes(row.status)) throw new RequestError(400, '任务状态无效。');

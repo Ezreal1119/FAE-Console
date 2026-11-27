@@ -455,7 +455,7 @@ function tasksPage() {
     pagedListPanel('tasks', toolbar);
 }
 
-const demandHeaders = ['需求', '项目', '需求说明', '任务进度', '初始接收人', '当前负责人', '提出方', '创建人', '操作'];
+const demandHeaders = ['需求编码', '项目', '需求说明', '任务进度', '初始接收人', '当前负责人', '提出方', '创建人', '操作'];
 function demandOwner(demand, task) {
   return task?.task_id && admin() ? action(task.owner_name || '设置负责人', 'demand-owner', demand.id, 'link') : shown(task?.owner_name);
 }
@@ -465,7 +465,7 @@ function demandAssignmentAction(demand, className) {
     : action('派发任务', 'demand-dispatch', demand.id, className);
 }
 function filteredDemands() {
-  return state.demands.filter(row => hasText(state.filters.demandQuery, row.title, row.proj, row.descr, row.proposer,
+  return state.demands.filter(row => hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.descr, row.proposer,
     ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name])));
 }
 function demandRows(demands) {
@@ -474,14 +474,14 @@ function demandRows(demands) {
     const edit = canManageDemand(demand) ? action('编辑', 'demand-edit', demand.id, 'link') : '';
     const remove = canDeleteDemand(demand) ? action('删除', 'demand-delete', demand.id, 'link danger') : '';
     return `<tr>
-    <td>${action(demand.title || '未命名需求', 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td><td>${shown(demand.descr)}</td>
+    <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td><td>${shown(demand.descr)}</td>
     <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td><td>${shown(task?.initial_receiver_name)}</td>
     <td>${demandOwner(demand, task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
     <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td></tr>`;
   }).join('');
 }
 function demandsPage() {
-  const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求、项目或任务负责人')}</div>`;
+  const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求编码、项目或任务负责人')}</div>`;
   return heading('需求管理', '登记需求、派发任务并跟踪进度。', action('刷新', 'refresh') + action('＋ 新建需求', 'demand-new', '', 'button primary')) +
     pagedListPanel('demands', toolbar);
 }
@@ -874,7 +874,7 @@ function taskDetails(task) {
   const info = details([['项目', task.proj], ['工单分类', task.category],
     ['设备类型', task.device_type], ['项目阶段', task.project_stage],
     ['负责人', task.owner_name], ['合作者', collaboratorNames(task)],
-    ...(source ? [['来源需求', action(source.title, 'demand-detail', source.id, 'link'), true]] : []),
+    ...(source ? [['来源需求', action(source.code, 'demand-detail', source.id, 'link'), true]] : []),
     ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', taskDispatchTime(task)]] : []),
     ['状态', statusBadge(task.status), true], ['优先级', priorityBadge(task.pri), true],
     ['计划完成', task.dueDate], ['计划工时', withHours(task.planned_hours)], ['投入工时', withHours(task.hours)],
@@ -1033,7 +1033,7 @@ function taskForm(task = {}, demand) {
   const fields = setupFields + (newStandaloneTask ? taskProgressFields(task) : '') +
     (task.id ? '' : taskAttachmentFields(task)) + choiceStatus;
   const formTitle = demand ? '派发任务' : task.id ? '编辑任务' : '新建任务';
-  const context = demand?.title || (task.id ? '#' + task.id + ' ' + task.title : '');
+  const context = demand?.code || (task.id ? '#' + task.id + ' ' + task.title : '');
   let project, owner, collaborators, loadChoices;
   const form = modalForm(formTitle, context, fields, async values => {
     const patch = newStandaloneTask ? taskProgressPatch(values) : {};
@@ -1376,7 +1376,7 @@ function demandDetail(id) {
   const items = tasks.map(task => `<div class="detail-item demand-task-item">
     <div>${task.id ? action(task.title || '打开任务', 'demand-task', task.id, 'link') : '<strong>任务</strong>'}
     <p class="muted text-small">${shown(task.owner_name)}</p></div>${statusBadge(task.status)}</div>`).join('');
-  modal(demand.title, '需求 #' + demand.id, details([['项目', demand.proj], ['需求提出方', demand.proposer], ['创建人', demand.owner_name],
+  modal(demand.code, demand.title, details([['项目', demand.proj], ['需求提出方', demand.proposer], ['创建人', demand.owner_name],
     ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
     ['初始接收人', task?.initial_receiver_name], ['当前负责人', demandOwner(demand, task), true]]) +
     `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div>
@@ -1396,7 +1396,7 @@ function demandOwnerForm(id) {
   const task = demand.linked_tasks?.[0];
   if (!task?.task_id) throw new Error('未找到关联任务，请刷新后重试。');
   let owner, loadChoices;
-  const form = modalForm('更换负责人', demand.title, choiceField('当前负责人', 'assignee_id') + choiceStatus, async () => {
+  const form = modalForm('更换负责人', demand.code, choiceField('当前负责人', 'assignee_id') + choiceStatus, async () => {
     const assignee = owner.value();
     if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
     if (assignee === task.assignee_id) return;
@@ -1418,7 +1418,7 @@ function demandCollaboratorsForm(id) {
   const task = demand.linked_tasks?.[0];
   if (!task?.task_id) throw new Error('未找到关联任务，请刷新后重试。');
   let collaborators, loadChoices;
-  const form = modalForm('增加合作者', demand.title, collaboratorField(true) + choiceStatus, async () => {
+  const form = modalForm('增加合作者', demand.code, collaboratorField(true) + choiceStatus, async () => {
     const people = collaborators.ids();
     if (!people.length) throw new Error('请至少选择一位合作者。');
     try {
@@ -1440,12 +1440,11 @@ function demandForm(row = {}) {
     proj: { value: row.proj || null, label: row.proj },
     proposer: { value: row.proposer || null, label: row.proposer }
   };
-  const form = modalForm(row.id ? '编辑需求' : '新建需求', '', field('需求名称', 'title', row.title, 'required maxlength="180"') +
+  const context = row.id ? '需求编码 ' + row.code : '需求编码将在保存后自动生成。';
+  const form = modalForm(row.id ? '编辑需求' : '新建需求', context,
     `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${choiceField('需求提出方', 'proposer')}</div>` + area('需求说明', 'descr', row.descr) +
     choiceStatus, async values => {
-    const title = trimmed(values.title);
-    if (!title) throw new Error('请填写需求名称。');
-    const patch = { title, descr: optional(values.descr) };
+    const patch = { descr: optional(values.descr) };
     for (const [key, picker] of Object.entries(pickers)) {
       const value = picker.value();
       if (!row.id || value !== initial[key].value) patch[key] = value;
@@ -1693,12 +1692,12 @@ async function exportTasks() {
   let rows = selected.filter(task => inWeek(task.startDate, [from, to]) || inWeek(task.endDate, [from, to]));
   if (!rows.length) rows = selected.filter(task => inWeek(task.dueDate, [from, to]) || ['开发中', '测试中'].includes(task.status));
   if (!rows.length) throw new Error('本周没有可导出的任务。');
-  const demandTitles = new Map(state.demands.map(row => [row.id, row.title]));
+  const demandCodes = new Map(state.demands.map(row => [row.id, row.code]));
   const exportRows = rows.map(task => ({
     ...task,
     pri: taskPriority(task.pri),
     collaboratorNames: collaboratorNames(task),
-    sourceDemandTitle: demandTitles.get(task.demand_id),
+    sourceDemandCode: demandCodes.get(task.demand_id),
     dispatchTime: taskDispatchTime(task)
   }));
   toast('正在整理 ' + rows.length + ' 项任务和附件…');
@@ -1747,7 +1746,7 @@ const actions = {
   'demand-delete': id => {
     const row = getRow('demands', id);
     if (!canDeleteDemand(row)) return;
-    const description = '确定删除「' + row.title + '」？' + (row.linked_tasks?.length ? ' 关联任务及其进度和附件会保留。' : '');
+    const description = '确定删除「' + row.code + '」？' + (row.linked_tasks?.length ? ' 关联任务及其进度和附件会保留。' : '');
     confirmDelete('删除需求', description, async () => {
       await removeRow('demands', row, '需求已删除。');
       if (state.user) await refresh();

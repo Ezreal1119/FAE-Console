@@ -27,7 +27,7 @@ function csvBytes(tasks) {
     '#' + task.id + ' ' + task.title, task.proj, task.status, task.owner_name, task.dueDate,
     task.startDate, task.endDate, task.hours, task.result, task.fileName,
     task.category, task.device_type, task.project_stage, task.pri, task.collaboratorNames,
-    task.sourceDemandTitle, task.dispatchTime, task.planned_hours, task.deps, task.desc
+    task.sourceDemandCode, task.dispatchTime, task.planned_hours, task.deps, task.desc
   ]);
   return utf8.encode('\ufeff' + [csvHeader, ...records].map(record => record.map(csvCell).join(',')).join('\r\n'));
 }
