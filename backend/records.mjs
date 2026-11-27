@@ -26,6 +26,7 @@ const recordCodeDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
 });
 const expiry = 24 * 60 * 60 * 1000;
+const taskCommentPageSize = 10;
 
 function recordId(value) {
   const id = Number(value);
@@ -197,6 +198,16 @@ function managesRecord(user, row) {
 
 function visibleTask(user, task) {
   return managesRecord(user, task) || taskHandledAt(user, task) !== null;
+}
+
+function taskForComments(db, user, taskId) {
+  const task = db.tasks.find(row => row.id === taskId);
+  if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
+  return task;
+}
+
+function canCommentOnTask(db, user, task) {
+  return task.status !== '已完成' && changeable(db, user, 'tasks', task, 'update', {});
 }
 
 function changeable(db, user, table, row, op, patch) {
@@ -398,6 +409,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
               }
             }
             const [row] = list.splice(index, 1);
+            if (table === 'tasks') delete db.taskComments?.[row.id];
             const removed = table === 'tasks' ? db.attachments.filter(file => file.task_id === row.id).map(file => file.id) : [];
             if (removed.length) db.attachments = db.attachments.filter(file => file.task_id !== row.id);
             return { row, removed };
@@ -415,6 +427,55 @@ export function openRecords(store, { recordTaskChange } = {}) {
       });
       removed.forEach(id => removeFile(store.attachments, id));
       return { data: [publicRecord(store.read(), user, table, row)] };
+    },
+
+    listTaskComments(user, { taskId, before }) {
+      const db = store.read();
+      const task = taskForComments(db, user, recordId(taskId));
+      const cursor = before == null ? null : recordId(before);
+      const rows = db.taskComments?.[task.id]?.rows ?? [];
+      const end = cursor === null ? rows.length : rows.findLastIndex(row => row.id < cursor) + 1;
+      const recent = rows.slice(Math.max(0, end - taskCommentPageSize), end).reverse();
+      const canComment = canCommentOnTask(db, user, task);
+      return {
+        comments: recent.map(({ author_id, ...row }) => ({
+          ...row,
+          canEdit: canComment && author_id === user.id,
+          canDelete: canComment && (author_id === user.id || isAdmin(user))
+        })),
+        before: end > taskCommentPageSize ? recent.at(-1).id : null,
+        canComment
+      };
+    },
+
+    changeTaskComment(user, { taskId, action, commentId, expectedVersion, body }) {
+      const id = recordId(taskId);
+      if (!['create', 'update', 'delete'].includes(action)) throw new RequestError(400, '评论操作无效。');
+      const message = action === 'delete' ? null : optionalText(body, 2000);
+      if (action !== 'delete' && !message) throw new RequestError(400, '请填写评论。');
+      return store.update(db => {
+        const task = taskForComments(db, user, id);
+        if (!canCommentOnTask(db, user, task)) throw new RequestError(403, '你目前没有权限修改此任务的评论。');
+        if (action === 'create') {
+          db.taskComments ??= {};
+          const thread = (db.taskComments[id] ??= { nextId: 1, rows: [] });
+          thread.rows.push({ id: thread.nextId++, author_id: user.id, author_name: displayName(db, user),
+            body: message, created_at: now(), edited_at: null, version: 0 });
+          return {};
+        }
+        const rows = db.taskComments?.[id]?.rows ?? [];
+        const comment = recordId(commentId);
+        const index = rows.findIndex(row => row.id === comment);
+        if (index === -1) throw new RequestError(404, '找不到这条评论。');
+        const row = rows[index];
+        if (row.author_id !== user.id && (action !== 'delete' || !isAdmin(user))) {
+          throw new RequestError(403, '你没有权限操作这条评论。');
+        }
+        if (row.version !== expectedVersion) throw new RequestError(409, '评论已变化，请刷新后重试。');
+        if (action === 'delete') rows.splice(index, 1);
+        else if (row.body !== message) Object.assign(row, { body: message, edited_at: now(), version: row.version + 1 });
+        return {};
+      });
     },
 
     previewTaskPlan(user, { taskId }) {

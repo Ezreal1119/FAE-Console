@@ -53,6 +53,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/complete', 'POST'], ['/api/tasks/transfer', 'POST'],
+  ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
 ]);
 let importingMembers = false;
@@ -199,6 +200,8 @@ function privateApi(path, session, body) {
     case '/api/tasks/start': return records.startTask(session.user, body);
     case '/api/tasks/complete': return records.completeTask(session.user, body);
     case '/api/tasks/transfer': return records.transferTask(session.user, body);
+    case '/api/tasks/comments': return records.listTaskComments(session.user, body);
+    case '/api/tasks/comments/change': return records.changeTaskComment(session.user, body);
     case '/api/admin/add-member': return accounts.addMember(body);
     case '/api/admin/reset-account': return accounts.resetMember(body);
     case '/api/admin/delete-account':

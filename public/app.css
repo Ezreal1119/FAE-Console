@@ -297,6 +297,20 @@ dialog::backdrop { background: #0f183677; }
 .dialog-task-meta select { width: auto; min-height: 32px; padding-block: 4px; }
 .dialog-close { padding: 1px 6px; background: transparent; border: 0; color: var(--muted); font-size: 1.25rem; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px; }
+.task-comments { border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; min-width: 0; }
+.details-list + .task-comments { margin-top: 14px; }
+.task-comments > summary { cursor: pointer; color: var(--ink); font-size: .9rem; font-weight: 650; }
+.task-comment-compose { display: grid; gap: 6px; justify-items: end; margin-block: 10px; }
+.task-comments textarea { resize: none; }
+.task-comment-list { max-block-size: min(27dvh, 240px); overflow-y: auto; overscroll-behavior: contain; margin-top: 6px; }
+.task-comment { padding: 9px 3px; }
+.task-comment + .task-comment { border-top: 1px solid var(--line); }
+.task-comment header, .task-comment-actions, .task-comment-nav { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.task-comment header strong, .task-comment p { overflow-wrap: anywhere; }
+.task-comment p { margin-top: 5px; white-space: pre-wrap; }
+.task-comment textarea { margin-top: 5px; }
+.task-comment-actions, .task-comment-nav p { margin-inline-start: auto; }
+.task-comment-nav { justify-content: flex-end; margin-top: 5px; }
 .guidelines-layout { display: grid; grid-template-columns: minmax(186px, 220px) minmax(0, 1fr); align-items: start; gap: 18px; }
 .guidelines-toc { position: sticky; top: 18px; padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .guidelines-toc > p { padding: 3px 8px 8px; font-size: .85rem; font-weight: 700; }

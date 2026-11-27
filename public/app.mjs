@@ -936,6 +936,7 @@ function render() {
   const warnings = state.loadWarnings.length
     ? `<div class="panel actions" role="status"><span class="text-red">${text(state.loadWarnings.join('、'))}加载失败。</span>${action('重新加载', 'refresh', '', 'link')}</div>` : '';
   content.innerHTML = warnings + pages[state.page]();
+  if (state.page === 'taskLink') bindTaskComments(content);
 }
 function navigate(page) {
   if (!Object.hasOwn(pages, page) || ((page === 'demandCatalog' || page === 'projects') && !admin())) return;
@@ -1051,8 +1052,9 @@ function taskDetails(task) {
 }
 function taskDetail(id) {
   const task = getRow('tasks', id);
-  modal(task.code, '', taskDetails(task) + `<div class="dialog-actions">
+  modal(task.code, '', taskDetails(task) + taskCommentSection(task) + `<div class="dialog-actions">
     <a class="button" href="/?task=${text(task.id)}">打开任务页面</a>${action('关闭', 'close')}${taskEditActions(task, 'button primary')}</div>`);
+  bindTaskComments(dialog);
 }
 function taskLinkPage() {
   const task = state.tasks.find(row => same(row.id, linkedTaskId()));
@@ -1061,7 +1063,143 @@ function taskLinkPage() {
     const message = state.loadWarnings.includes('任务') ? '任务加载失败，请重新加载。' : '找不到该任务，或你没有权限查看。';
     return heading('任务详情', '', back) + '<p class="panel">' + message + '</p>';
   }
-  return heading(task.code, '', back + taskEditActions(task, 'button primary')) + panel('任务详情', taskDetails(task));
+  return heading(task.code, '', back + taskEditActions(task, 'button primary')) + panel('任务详情', taskDetails(task) + taskCommentSection(task));
+}
+
+function commentButton(label, name, { className = 'link', hidden = false } = {}) {
+  return `<button type="button" class="${className}" data-comment-action="${name}"${hidden ? ' hidden' : ''}>${label}</button>`;
+}
+
+function taskCommentSection(task) {
+  return `<details class="task-comments" data-task-comments="${text(task.id)}">
+    <summary>评论</summary>
+    <div class="task-comment-compose" data-comment-compose hidden>
+      <textarea rows="2" maxlength="2000" aria-label="新增评论" placeholder="写一条评论"></textarea>
+      ${commentButton('发表评论', 'create', { className: 'button' })}
+    </div>
+    <div class="task-comment-list" data-comment-list tabindex="0" aria-label="任务评论"></div>
+    <div class="task-comment-nav">
+      <p class="muted text-small" role="status" data-comment-message></p>
+      ${commentButton('重试', 'reload', { hidden: true })}
+      ${commentButton('较新', 'newer', { hidden: true })}
+      ${commentButton('较早', 'older', { hidden: true })}
+    </div>
+  </details>`;
+}
+
+function commentTime(value) {
+  return `<time datetime="${text(value)}">${text(formatPlanningTime(value))}</time>`;
+}
+
+function taskCommentMarkup(comment, editing) {
+  const controls = editing
+    ? commentButton('保存', 'update') + commentButton('取消', 'cancel')
+    : (comment.canEdit ? commentButton('编辑', 'edit') : '') +
+      (comment.canDelete ? commentButton('删除', 'delete', { className: 'link danger' }) : '');
+  return `<article class="task-comment" data-comment-id="${text(comment.id)}">
+    <header><strong>${shown(comment.author_name)}</strong>
+      <span class="muted text-small">${commentTime(comment.created_at)}${comment.edited_at ? ' · 已编辑 ' + commentTime(comment.edited_at) : ''}</span>
+      <div class="task-comment-actions">${controls}</div>
+    </header>
+    ${editing ? `<textarea rows="3" maxlength="2000" aria-label="编辑评论">${text(comment.body)}</textarea>`
+      : `<p>${text(comment.body)}</p>`}
+  </article>`;
+}
+
+function bindTaskComments(container) {
+  const section = container.querySelector('[data-task-comments]');
+  if (!section) return;
+  const taskId = Number(section.dataset.taskComments);
+  const list = section.querySelector('[data-comment-list]');
+  const compose = section.querySelector('[data-comment-compose]');
+  const input = compose.querySelector('textarea');
+  const message = section.querySelector('[data-comment-message]');
+  const button = name => section.querySelector(`[data-comment-action="${name}"]`);
+  let cursors = [null], next = null, comments = [], editing = null;
+  let busy = false;
+
+  function renderComments() {
+    const scrollTop = list.scrollTop;
+    list.innerHTML = comments.length ? comments.map(comment => taskCommentMarkup(comment, comment.id === editing)).join('')
+      : '<p class="muted text-small">暂无评论。</p>';
+    list.scrollTop = scrollTop;
+  }
+
+  async function load(page = cursors) {
+    const before = page.at(-1);
+    const response = await post('/api/tasks/comments', { taskId, before });
+    if (!section.isConnected) return;
+    const pageChanged = before !== cursors.at(-1);
+    cursors = page;
+    next = response.before;
+    comments = response.comments;
+    editing = null;
+    renderComments();
+    if (pageChanged) list.scrollTop = 0;
+    compose.hidden = !response.canComment;
+    button('newer').hidden = page.length === 1;
+    button('older').hidden = next === null;
+  }
+
+  async function run(work) {
+    if (busy) return;
+    busy = true;
+    message.textContent = '';
+    message.classList.remove('text-red');
+    button('reload').hidden = true;
+    section.setAttribute('aria-busy', 'true');
+    try {
+      await work();
+    } catch (error) {
+      message.textContent = error.message;
+      message.classList.add('text-red');
+      button('reload').hidden = false;
+    } finally {
+      busy = false;
+      section.removeAttribute('aria-busy');
+    }
+  }
+
+  section.addEventListener('toggle', () => {
+    if (section.open) void run(async () => {
+      message.textContent = '正在加载评论…';
+      await load();
+      if (section.isConnected) message.textContent = '';
+    });
+  });
+  section.addEventListener('click', event => {
+    const target = event.target.closest('[data-comment-action]');
+    if (!target || busy) return;
+    const name = target.dataset.commentAction;
+    if (name === 'reload') return void run(() => load());
+    if (name === 'newer') return void run(() => load(cursors.slice(0, -1)));
+    if (name === 'older') return void run(() => load([...cursors, next]));
+    const article = target.closest('[data-comment-id]');
+    const comment = comments.find(item => same(item.id, article?.dataset.commentId));
+    if (name === 'edit' || name === 'cancel') {
+      editing = name === 'edit' ? comment?.id : null;
+      renderComments();
+      list.querySelector(editing ? 'textarea' : `[data-comment-id="${comment?.id}"] [data-comment-action="edit"]`)?.focus();
+      return;
+    }
+    const field = name === 'create' ? input : article?.querySelector('textarea');
+    const body = trimmed(field?.value);
+    if (name !== 'delete' && !body) {
+      message.textContent = '请填写评论。';
+      message.classList.add('text-red');
+      field?.focus();
+      return;
+    }
+    if (name === 'delete' && !window.confirm('删除这条评论？')) return;
+    void run(async () => {
+      await post('/api/tasks/comments/change', { taskId, action: name, commentId: comment?.id,
+        expectedVersion: comment?.version, body });
+      if (name === 'create' && trimmed(input.value) === body) input.value = '';
+      if (!section.isConnected) return;
+      await load(name === 'create' ? [null] : cursors);
+      if (name === 'create') list.scrollTop = 0;
+    });
+  });
 }
 function taskAttachmentFields(task) {
   return field('附件（单个文件最多 20MB）', 'file', '', 'type="file"') +
@@ -1226,7 +1364,7 @@ function taskForm(task = {}, demand, plan) {
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields) +
-    taskAttachmentFields(task) + choiceStatus;
+    taskAttachmentFields(task) + (isUpdate && !plan ? taskCommentSection(task) : '') + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
   const context = demand?.code || task.code || '';
   const submit = demand ? '派发任务' : plan ? '开始任务' : '保存';
@@ -1291,6 +1429,7 @@ function taskForm(task = {}, demand, plan) {
     }
     toast(completing ? '任务已完成。' : demand ? '任务已派发。' : plan ? '任务已开始。' : isUpdate ? '任务已更新。' : '任务已创建。');
   }, { submit, headingAside, focusTitle: isUpdate && !plan, secondarySubmit: isUpdate && !plan && canChangeStatus ? '完成任务' : '' });
+  bindTaskComments(form);
   if (plan) {
     const dueDisplay = form.querySelector('[data-plan-due]');
     const preview = () => {
