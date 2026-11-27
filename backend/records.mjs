@@ -161,13 +161,22 @@ function projectStage(db, name) {
   return assigned || (db.demandOptions.proj.includes(name) ? defaultProjectStage : null);
 }
 
+function projectDescription(db, name) {
+  const descriptions = db.projectDescriptions ?? {};
+  return name != null && Object.hasOwn(descriptions, name) ? descriptions[name] : null;
+}
+
 function projectStageOptions(db) {
   return [...new Set([defaultProjectStage, ...db.demandOptions.project_stage])];
 }
 
 function projectCatalog(db) {
   return {
-    projects: db.demandOptions.proj.map(name => ({ name, stage: projectStage(db, name) })),
+    projects: db.demandOptions.proj.map(name => ({
+      name,
+      stage: projectStage(db, name),
+      description: projectDescription(db, name)
+    })),
     stages: projectStageOptions(db)
   };
 }
@@ -717,7 +726,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       const db = store.read();
       if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
       return {
-        project: { name, stage: projectStage(db, name) },
+        project: { name, stage: projectStage(db, name), description: projectDescription(db, name) },
         stages: projectStageOptions(db),
         requirements: projectRequirementRows(db, name)
       };
@@ -725,13 +734,23 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     changeProjectRequirement: input => store.update(db => changeProjectRequirement(db, input)),
 
-    changeProject({ action, name, stage }) {
-      if (!['create', 'update', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
+    changeProject({ action, name, stage, newName, description }) {
+      if (!['create', 'update', 'rename', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
       if (action === 'create') name = optionalText(name);
       if (typeof name !== 'string' || !name) throw new RequestError(400, '请填写项目名称。');
+      let nextName;
+      if (action === 'rename') {
+        nextName = optionalText(newName, 100);
+        if (!nextName) throw new RequestError(400, '请填写新的项目名称。');
+      }
       if (action === 'update') {
-        if (stage === null) stage = defaultProjectStage;
-        if (typeof stage !== 'string') throw new RequestError(400, '请选择项目阶段。');
+        if (stage !== undefined) {
+          if (stage === null) stage = defaultProjectStage;
+          if (typeof stage !== 'string') throw new RequestError(400, '请选择项目阶段。');
+        }
+        if (description !== undefined) {
+          description = optionalText(description, 10000);
+        }
       }
       return store.update(db => {
         const names = db.demandOptions.proj;
@@ -742,17 +761,54 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           initializeProjectRequirements(db, name);
         } else {
           if (index === -1) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
-          if (action === 'update' && !projectStageOptions(db).includes(stage)) {
-            throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
-          }
-          if (action === 'remove') {
+          if (action === 'update') {
+            if (stage !== undefined) {
+              if (!projectStageOptions(db).includes(stage)) {
+                throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
+              }
+              db.projectStages = { ...db.projectStages, [name]: stage };
+            }
+            if (description !== undefined) {
+              db.projectDescriptions = { ...db.projectDescriptions };
+              if (description) db.projectDescriptions[name] = description;
+              else delete db.projectDescriptions[name];
+            }
+          } else if (action === 'rename') {
+            if (nextName !== name) {
+              if (names.includes(nextName)) throw new RequestError(409, '项目名称已存在。');
+              names[index] = nextName;
+              if (db.projectStages && Object.hasOwn(db.projectStages, name)) {
+                db.projectStages[nextName] = db.projectStages[name];
+                delete db.projectStages[name];
+              }
+              if (db.projectRequirements && Object.hasOwn(db.projectRequirements, name)) {
+                db.projectRequirements[nextName] = db.projectRequirements[name];
+                delete db.projectRequirements[name];
+              }
+              if (db.projectDescriptions && Object.hasOwn(db.projectDescriptions, name)) {
+                db.projectDescriptions[nextName] = db.projectDescriptions[name];
+                delete db.projectDescriptions[name];
+              }
+              const timestamp = now();
+              for (const task of db.tasks) {
+                if (task.proj === name) {
+                  task.proj = nextName;
+                  task.revision = (task.revision ?? 0) + 1;
+                  task.updated_at = timestamp;
+                }
+              }
+              for (const demand of db.demands) {
+                if (demand.proj === name) {
+                  demand.proj = nextName;
+                  demand.updated_at = timestamp;
+                }
+              }
+            }
+          } else if (action === 'remove') {
             names.splice(index, 1);
             if (db.projectRequirements) delete db.projectRequirements[name];
-          }
-          if (action === 'update') {
-            db.projectStages = { ...db.projectStages, [name]: stage };
-          } else if (db.projectStages) {
-            delete db.projectStages[name];
+            if (db.projectStages) delete db.projectStages[name];
+            if (db.projectDescriptions) delete db.projectDescriptions[name];
           }
         }
         return projectCatalog(db);

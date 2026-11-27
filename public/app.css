@@ -153,9 +153,9 @@ td { overflow-wrap: anywhere; }
 td:first-child { min-width: 105px; }
 .task-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .task-code { white-space: nowrap; }
-.table-wrap > table:has(> :is(#todo-rows, #handled-rows, #task-rows, #demand-rows)) { width: max-content; min-width: 100%; }
-:is(#todo-rows, #handled-rows, #task-rows, #demand-rows) td { white-space: nowrap; overflow-wrap: normal; }
-:is(#todo-rows, #handled-rows, #task-rows, #demand-rows) td.list-desc-cell { max-width: 300px; }
+.table-wrap > table:has(> :is(#todo-rows, #handled-rows, #task-rows, #demand-rows, #project-rows)) { width: max-content; min-width: 100%; }
+:is(#todo-rows, #handled-rows, #task-rows, #demand-rows, #project-rows) td { white-space: nowrap; overflow-wrap: normal; }
+:is(#todo-rows, #handled-rows, #task-rows, #demand-rows, #project-rows) td.list-desc-cell { max-width: 300px; }
 .list-desc { display: block; max-width: 300px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #task-rows .task-code + small { display: inline; margin-inline-start: 5px; }
 .task-due-date.text-red { font-weight: 700; }

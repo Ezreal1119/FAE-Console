@@ -722,9 +722,9 @@ function projectsPage() {
   const header = heading(PAGE_TITLES.projects, '', state.projectCatalog ? action('＋ 新建项目', 'project-new', '', 'button primary') : '');
   if (!state.projectCatalog) return header + panel('项目列表', projectLoading(state.projectCatalogError, 'project-load'));
   const rows = state.projectCatalog.projects.toSorted((a, b) => sortZh(a.name, b.name)).map(project => `<tr>
-    <td><a class="link" data-project-link href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td><td>${shown(project.stage)}</td>
-    <td>${action('删除', 'project-remove', project.name, 'link danger')}</td></tr>`).join('');
-  return header + panel('项目列表', table(['项目名称', '项目阶段', '操作'], rows, '暂无项目。'));
+    <td><a class="link" data-project-link href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td>
+    <td>${shown(project.stage)}</td>${descCell(project.description)}</tr>`).join('');
+  return header + panel('项目列表', table(['项目名称', '项目阶段', '项目描述'], rows, '暂无项目。', 'project-rows'));
 }
 
 function projectLoading(error, retry) {
@@ -735,7 +735,12 @@ function projectLoading(error, retry) {
 
 function projectDetailPage() {
   const name = linkedProjectName();
-  const header = heading(name || PAGE_TITLES.projectDetail, '', action('返回项目列表', 'project-list'));
+  const detailActions = state.projectDetail
+    ? action('重命名项目', 'project-rename', state.projectDetail.project.name) +
+      action('删除项目', 'project-remove', state.projectDetail.project.name, 'button danger') +
+      action('返回项目列表', 'project-list')
+    : action('返回项目列表', 'project-list');
+  const header = heading(name || PAGE_TITLES.projectDetail, '', detailActions);
   if (!state.projectDetail) return header + panel('项目详情', projectLoading(state.projectDetailError, 'project-detail-load'));
 
   const { project } = state.projectDetail;
@@ -744,8 +749,8 @@ function projectDetailPage() {
   const options = (retiredStage ? `<option selected disabled>${text(project.stage)}（已从基础配置移除）</option>` : '') +
     stages.map(stage => option(stage, project.stage)).join('');
   const config = `<form id="project-stage-form">
-    <div class="project-stage-controls"><label>当前项目阶段<select name="stage">${options}</select></label>
-      <button type="submit" class="button primary">保存</button></div>
+    <div class="project-stage-controls"><label>当前项目阶段<select name="stage">${options}</select></label></div>
+    ${area('项目描述', 'description', project.description, false)}
     <p class="form-error" role="alert" hidden></p>
   </form>`;
 
@@ -816,27 +821,72 @@ async function loadProjectDetail() {
   if (current()) render();
 }
 
-async function changeProject(action, name, stage) {
-  const result = await post('/api/admin/projects/change', { action, name, stage });
+async function changeProject(action, name, payload = {}) {
+  const result = await post('/api/admin/projects/change', { action, name, ...payload });
   projectCatalogLoad = undefined;
   state.projectCatalog = result;
+  if (action === 'rename') {
+    const nextName = payload.newName;
+    if (state.page === 'projectDetail' && state.projectDetail?.project.name === name) {
+      history.replaceState(history.state, '', '/?project=' + encodeURIComponent(nextName.toWellFormed()));
+      state.projectDetail.project = result.projects.find(project => project.name === nextName);
+      state.projectDetail.stages = result.stages;
+    }
+    await refresh();
+    toast('项目已重命名。');
+    return;
+  }
+  if (action === 'remove') {
+    state.projectDetail = null;
+    if (state.page === 'projectDetail') navigate('projects');
+    else render();
+    toast('项目已删除。');
+    return;
+  }
   if (state.page === 'projects') render();
   else if (state.page === 'projectDetail' && state.projectDetail?.project.name === name) {
     state.projectDetail.project = result.projects.find(project => project.name === name);
     state.projectDetail.stages = result.stages;
-    state.projectStageTab = null;
-    render();
+    if (payload.stage !== undefined) {
+      state.projectStageTab = null;
+      render();
+    }
   }
-  toast({ create: '项目已新建。', update: '项目阶段已保存。', remove: '项目已删除。' }[action]);
+  const message = action === 'create' ? '项目已新建。'
+    : payload.stage !== undefined ? '项目阶段已保存。' : '项目描述已保存。';
+  toast(message);
 }
 
-function projectForm() {
+function projectForm(initialName = '') {
   if (!admin() || !state.projectCatalog) return;
-  modalForm('新建项目', '', field('项目名称', 'name', '', 'required maxlength="100"'), async values => {
+  modalForm('新建项目', '', field('项目名称', 'name', initialName, 'required maxlength="100"'), async values => {
     const name = trimmed(values.name);
     if (!name) throw new Error('请填写项目名称。');
-    await changeProject('create', name);
-  });
+    modalForm('确认新建项目', `是否确定新建项目「${name}」？系统将自动创建立项阶段及默认阶段需求清单。`, '', async () => {
+      await changeProject('create', name);
+    }, { submit: '确定新建', onCancel: () => projectForm(name) });
+    return false;
+  }, { submit: '确定新建' });
+}
+
+function projectRenameForm(name) {
+  if (!admin() || !name) return;
+  modalForm('重命名项目', '重命名后，关联的任务、需求和阶段需求清单都会同步更新为新名称。',
+    field('新项目名称', 'newName', name, 'required maxlength="100"'), async values => {
+      const newName = trimmed(values.newName);
+      if (!newName) throw new Error('请填写新的项目名称。');
+      if (newName === name) return;
+      await changeProject('rename', name, { newName });
+    }, { submit: '确认重命名' });
+}
+
+function projectDeleteForm(name) {
+  if (!admin() || !name) return;
+  modalForm('删除项目', `确定删除「${name}」及其阶段需求清单？已有任务和需求会保留项目名称。`,
+    field('请输入「我确定」以确认删除', 'confirm', '', 'required autocomplete="off" placeholder="请输入：我确定"'), async values => {
+      if (trimmed(values.confirm) !== '我确定') throw new Error('请输入「我确定」后再确认删除。');
+      await changeProject('remove', name);
+    }, { danger: true, submit: '确认删除' });
 }
 
 function projectRequirementForm(code) {
@@ -2600,14 +2650,12 @@ const actions = {
   },
   'project-load': loadProjects,
   'project-detail-load': loadProjectDetail,
-  'project-new': projectForm,
+  'project-new': () => projectForm(),
+  'project-rename': projectRenameForm,
   'project-list': () => history.state?.fromProjectList ? history.back() : navigate('projects'),
   'project-requirement-add': () => projectRequirementForm(),
   'project-requirement-edit': projectRequirementForm,
-  'project-remove': name => {
-    if (!admin() || !state.projectCatalog?.projects.some(project => project.name === name)) return;
-    confirmDelete('删除项目', `确定删除「${name}」及其阶段需求清单？已有任务和需求会保留项目名称。`, () => changeProject('remove', name));
-  },
+  'project-remove': projectDeleteForm,
   'demand-catalog-load': loadDemandCatalog,
   'demand-catalog-tab': kind => {
     if (!Object.hasOwn(catalogLabels, kind)) return;
@@ -2717,25 +2765,35 @@ content.addEventListener('keydown', event => {
     Home: 0, End: tabs.length - 1 }[event.key];
   selectProjectStageTab(tabs[destination]);
 });
-content.addEventListener('change', ({ target }) => {
-  if (target.form?.id === 'project-stage-form' && target.name === 'stage') showProjectStageTab(target.value);
-});
-content.addEventListener('submit', async event => {
-  const form = event.target;
-  if (form.id !== 'project-stage-form') return;
-  event.preventDefault();
-  const submit = form.querySelector('button[type="submit"]');
-  if (submit.disabled) return;
+content.addEventListener('change', async ({ target }) => {
+  if (target.form?.id !== 'project-stage-form' || target.name !== 'stage') return;
   const project = state.projectDetail?.project;
-  const stage = new FormData(form).get('stage');
+  const stage = target.value;
   if (!project || !stage) return;
-  if (stage === project.stage) return showProjectStageTab(stage);
-  const errorMessage = form.querySelector('.form-error');
-  submit.disabled = true;
+  showProjectStageTab(stage);
+  if (stage === project.stage) return;
+  const errorMessage = target.form.querySelector('.form-error');
+  target.disabled = true;
   formError(errorMessage, '');
-  try { await changeProject('update', project.name, stage); }
+  try { await changeProject('update', project.name, { stage }); }
+  catch (error) {
+    target.value = project.stage;
+    formError(errorMessage, error.message);
+  } finally { target.disabled = false; }
+});
+content.addEventListener('focusout', async ({ target }) => {
+  if (target.form?.id !== 'project-stage-form' || target.name !== 'description') return;
+  const project = state.projectDetail?.project;
+  if (!project) return;
+  const description = optional(target.value);
+  if (description === optional(project.description)) return;
+  const errorMessage = target.form.querySelector('.form-error');
+  formError(errorMessage, '');
+  try { await changeProject('update', project.name, { description }); }
   catch (error) { formError(errorMessage, error.message); }
-  finally { submit.disabled = false; }
+});
+content.addEventListener('submit', event => {
+  if (event.target.id === 'project-stage-form') event.preventDefault();
 });
 setInterval(updateTaskOverdueIndicators, 60_000);
 document.addEventListener('visibilitychange', updateTaskOverdueIndicators);
