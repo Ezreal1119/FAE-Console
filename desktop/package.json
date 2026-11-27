@@ -2,12 +2,13 @@
   "name": "fae-console-desktop",
   "version": "0.1.1",
   "private": true,
-  "description": "工程小管家 Windows 桌面客户端",
+  "description": "工程小管家桌面客户端",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
     "check": "node --check main.cjs",
-    "build:win": "electron-builder --win --x64 --publish never"
+    "build:win": "electron-builder --win --x64 --publish never",
+    "build:mac": "electron-builder --mac dir --publish never"
   },
   "build": {
     "appId": "cn.patrick.fae-console.desktop",
@@ -24,6 +25,11 @@
     "win": {
       "target": "portable",
       "signAndEditExecutable": false
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false
     },
     "portable": {
       "requestExecutionLevel": "user",

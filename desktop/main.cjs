@@ -4,6 +4,7 @@ const path = require('node:path');
 
 const workspace = new URL('https://fae-work-console.patrick-shenzhen.cn/');
 const desktopTheme = readFileSync(path.join(__dirname, 'classic.css'), 'utf8');
+const isMac = process.platform === 'darwin';
 let mainWindow;
 
 function isWorkspace(url) {
@@ -78,15 +79,29 @@ function createWindow() {
 
 if (app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
-    if (!mainWindow) return;
+    if (!mainWindow) {
+      if (isMac && app.isReady()) createWindow();
+      return;
+    }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   });
   app.whenReady().then(() => {
-    Menu.setApplicationMenu(null);
+    const menu = isMac ? Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { role: 'editMenu', label: '编辑' },
+      { role: 'viewMenu', label: '显示' },
+      { role: 'windowMenu', label: '窗口' }
+    ]) : null;
+    Menu.setApplicationMenu(menu);
     createWindow();
+    app.on('activate', () => {
+      if (!mainWindow) createWindow();
+    });
   });
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', () => {
+    if (!isMac) app.quit();
+  });
 } else {
   app.quit();
 }

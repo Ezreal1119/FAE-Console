@@ -113,6 +113,17 @@ npm --prefix desktop run build:win
 
 在 `desktop/dist/` 取 `FAE-Console-Windows-x64-Portable-<版本>.exe`。在 Windows x64 上双击运行，登录时需联网。桌面源码和锁文件随 Git 维护，生成的二进制单独交付。
 
+## macOS 调试版
+
+在 Mac 上运行以下命令，打包当前 Mac 架构的应用。
+
+```bash
+npm --prefix desktop ci
+npm --prefix desktop run build:mac
+```
+
+Apple 芯片版本位于 `desktop/dist/mac-arm64/工程小管家.app`，Intel 版本位于 `desktop/dist/mac/工程小管家.app`。双击打开，使用同一套线上账号登录。调试时可按 `⌥⌘I` 打开开发者工具。此构建使用临时签名，供本机调试。
+
 ```bash
 npm run check
 ```
