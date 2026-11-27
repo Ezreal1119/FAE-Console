@@ -7,6 +7,7 @@ const dialog = $('#dialog');
 const taskStartDialog = $('#task-start-dialog');
 const taskCompleteDialog = $('#task-complete-dialog');
 const taskUploadHistoryDialog = $('#task-upload-history-dialog');
+const taskHistoryDialog = $('#task-history-dialog');
 const taskTransferDialog = $('#task-transfer-dialog');
 const guidelinesDialog = $('#guidelines-dialog');
 const guidelinesBody = $('#guidelines-dialog-body');
@@ -216,6 +217,7 @@ function showAuth(error = '') {
   if (taskStartDialog.open) taskStartDialog.close('cancel');
   if (taskCompleteDialog.open) taskCompleteDialog.close('cancel');
   if (taskUploadHistoryDialog.open) taskUploadHistoryDialog.close();
+  if (taskHistoryDialog.open) taskHistoryDialog.close();
   if (taskTransferDialog.open) taskTransferDialog.close('cancel');
   dialog.close();
   guidelinesDialog.close();
@@ -1165,16 +1167,17 @@ function taskDemandSection(task, source) {
     ['派发人', task.dispatched_by_name],
     ['派发时间', taskDispatchTime(task)]
   ], 'task-demand-grid');
+  const hasRequirementFiles = task.attachments.some(file => file.kind === 'requirement');
+  const filesBlock = (hasRequirementFiles || task.canAppendRequirement)
+    ? `<div class="task-demand-files"><dt>需求文件</dt><dd>${taskFiles(task, 'requirement')}</dd></div>`
+    : '';
   return `<section class="task-demand-section" aria-label="需求信息">
     <h3>需求信息</h3>
     ${meta}
-    <div class="task-demand-files">
-      <dt>需求文件</dt>
-      <dd>${taskFiles(task, 'requirement')}</dd>
-    </div>
+    ${filesBlock}
   </section>`;
 }
-function taskDetails(task, { editable = {} } = {}) {
+function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
   const isCompleted = task.status === '已完成';
   const info = details([
@@ -1182,7 +1185,7 @@ function taskDetails(task, { editable = {} } = {}) {
     ...(!editable.deviceType ? [['设备类型', task.device_type]] : []),
     ...(!editable.proj ? [['项目', task.proj]] : []),
     ['项目阶段', task.project_stage],
-    ['负责人', task.owner_name],
+    ...(!hideOwner ? [['负责人', task.owner_name]] : []),
     ...(!editable.status ? [['状态', statusBadge(task.status), true]] : []),
     ...(!editable.pri ? [['优先级', priorityBadge(task.pri), true]] : []),
     ['开始时间', task.startTime],
@@ -1209,11 +1212,15 @@ function taskDialogLeadingActions(task) {
 }
 function taskDetail(id) {
   const task = getRow('tasks', id);
+  const priority = taskPriority(task.pri);
+  const hideOwner = state.page === 'tasks' && assignedToMe(task);
   const leadingActions = taskDialogLeadingActions(task);
   const canOperate = task.status !== '已完成' && canUpdateTaskProgress(task);
   if (!canOperate) {
     const leading = leadingActions ? `<div class="dialog-actions-start">${leadingActions}</div>` : '';
-    modal(task.code, '', taskDetails(task) + taskUploadHistorySection(task) + `<div class="dialog-actions">${leading}${action('关闭', 'close')}</div>`, false, '', true);
+    const headingAside = `<div class="dialog-task-meta">${priorityBadge(priority)}${plannedHoursBadge(task, '计划投入工时 ')}${statusBadge(task.status)}</div>`;
+    modal(task.code, '', taskDetails(task, { editable: { pri: true, status: true }, hideOwner }) + taskUploadHistorySection(task) +
+      `<div class="dialog-actions">${leading}${action('关闭', 'close')}</div>`, false, headingAside, true);
     dialog.querySelector('[data-task-dialog-action="delete"]')?.addEventListener('click', () => {
       confirmDeleteTask(task, () => taskDetail(task.id));
     });
@@ -1226,20 +1233,23 @@ function taskDetail(id) {
   const canEditPriority = canEditClassification && !isPlanning;
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
   const hasEditableFields = canEditProject || canEditDetails || canEditClassification || canChangeStatus;
-  const priority = taskPriority(task.pri);
   const optionKinds = canEditClassification ? ['device_type'] : [];
   const needsChoices = canEditProject || optionKinds.length > 0;
+  const priorityControl = canEditPriority
+    ? selectField('', 'pri', PRIORITY, priority, 'form="dialog-form" aria-label="优先级"')
+    : priorityBadge(priority);
   const statusField = canChangeStatus
     ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
     : statusBadge(task.status);
-  const headingAside = `<div class="dialog-task-meta">${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>`;
-  const priorityField = canEditPriority ? selectField('优先级', 'pri', PRIORITY, priority) : '';
+  const headingAside = `<div class="dialog-task-meta">${priorityControl}${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>`;
   const optionFields = optionKinds.map(kind => taskOptionField(kind, false)).join('');
-  const editableRow = (priorityField || optionFields) ? `<div class="form-grid">${priorityField}${optionFields}</div>` : '';
+  const editableRow = (canEditProject && optionFields)
+    ? `<div class="form-grid">${optionFields}${choiceField('项目', 'proj', { allowCustom: true })}</div>`
+    : (canEditProject ? choiceField('项目', 'proj', { allowCustom: true }) : '') + optionFields;
   const fields = taskDetails(task, {
-    editable: { proj: canEditProject, deviceType: canEditClassification, pri: canEditPriority, status: true, desc: canEditDetails }
+    editable: { proj: canEditProject, deviceType: canEditClassification, pri: true, status: true, desc: canEditDetails },
+    hideOwner
   }) +
-    (canEditProject ? choiceField('项目', 'proj', { allowCustom: true }) : '') +
     editableRow +
     (canEditDetails ? area('任务描述', 'desc', task.desc, false) : '') +
     (canChangeStatus ? taskFileField('delivery') + uploadProgress : '') +
@@ -1360,7 +1370,34 @@ function taskUploadHistorySection(task) {
   const count = task.attachments.filter(file => file.kind === 'delivery').length;
   return `<div class="task-upload-history-bar">
     <button type="button" class="button" data-action="task-upload-history" data-id="${text(task.id)}">上传记录${count ? '（' + count + '）' : ''}</button>
+    <button type="button" class="button" data-action="task-history" data-id="${text(task.id)}">修改记录</button>
   </div>`;
+}
+
+async function openTaskHistory(id) {
+  const task = getRow('tasks', id);
+  const body = $('#task-history-body');
+  $('#task-history-code').textContent = task.code;
+  body.innerHTML = '<p class="empty">正在加载修改记录…</p>';
+  taskHistoryDialog.showModal();
+  const session = state.user;
+  try {
+    const { history } = await post('/api/tasks/history', { taskId: task.id });
+    if (state.user !== session || !taskHistoryDialog.open) return;
+    body.innerHTML = history.length
+      ? history.map(entry => `<div class="task-history-item">
+          <div class="task-history-header">
+            <strong>${shown(entry.actor_name)}</strong>
+            <time class="muted text-small">${text(attachmentUploadTime(entry.at))}</time>
+          </div>
+          <p>${text(entry.summary)}</p>
+        </div>`).join('')
+      : '<p class="empty">暂无修改记录。</p>';
+  } catch (error) {
+    if (state.user === session && taskHistoryDialog.open) {
+      body.innerHTML = `<p class="form-error" role="alert">${text(error.message)}</p>`;
+    }
+  }
 }
 
 function openTaskUploadHistory(id) {
@@ -2207,7 +2244,7 @@ const actions = {
     section.scrollIntoView({ block: 'start' });
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
-  'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-upload-history': openTaskUploadHistory, 'task-list': () => navigate('tasks'),
+  'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-upload-history': openTaskUploadHistory, 'task-history': openTaskHistory, 'task-list': () => navigate('tasks'),
   'task-display-options': taskDisplayOptions,
   'task-transfer': id => taskTransferForm(id),
   'demand-new': () => demandForm(), 'demand-edit': id => demandForm(getRow('demands', id)), 'demand-detail': demandDetail,
@@ -2381,6 +2418,9 @@ taskStartDialog.addEventListener('submit', event => {
 taskStartDialog.querySelector('[name=plan_hours]').addEventListener('input', event => event.target.setCustomValidity(''));
 for (const button of taskUploadHistoryDialog.querySelectorAll('[data-upload-history-close]')) {
   button.addEventListener('click', () => taskUploadHistoryDialog.close());
+}
+for (const button of taskHistoryDialog.querySelectorAll('[data-task-history-close]')) {
+  button.addEventListener('click', () => taskHistoryDialog.close());
 }
 taskCompleteDialog.querySelector('[data-completion-cancel]').addEventListener('click', () => taskCompleteDialog.close('cancel'));
 taskCompleteDialog.addEventListener('submit', event => {

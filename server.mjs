@@ -66,7 +66,7 @@ const apiRoutes = new Map([
   ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/complete', 'POST'], ['/api/tasks/transfer', 'POST'],
-  ['/api/tasks/attachments', 'POST'], ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
+  ['/api/tasks/attachments', 'POST'], ['/api/tasks/history', 'POST'], ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST'], ['/api/upload/discard', 'POST']
 ]);
 let importingMembers = false;
@@ -226,6 +226,7 @@ function privateApi(url, session, body) {
     case '/api/tasks/complete': return records.completeTask(session.user, body);
     case '/api/upload/discard': return attachments.discard(session.user, body);
     case '/api/tasks/attachments': return records.appendTaskAttachments(session.user, body);
+    case '/api/tasks/history': return records.listTaskHistory(session.user, body);
     case '/api/tasks/transfer': return records.transferTask(session.user, body);
     case '/api/tasks/comments': return records.listTaskComments(session.user, body);
     case '/api/tasks/comments/change': return records.changeTaskComment(session.user, body);

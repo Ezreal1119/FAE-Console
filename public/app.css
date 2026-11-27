@@ -241,12 +241,16 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .file-selected-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .file-selected-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); font-size: .86rem; }
 .file-selected-list li span { min-width: 0; overflow-wrap: anywhere; }
-.task-upload-history-bar { display: flex; align-items: center; }
+.task-upload-history-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .upload-history-list { display: grid; gap: 8px; max-block-size: min(55dvh, 420px); overflow-y: auto; overscroll-behavior: contain; margin-bottom: 8px; }
 .upload-history-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); }
 .upload-history-meta { min-width: 0; display: grid; gap: 2px; }
 .upload-history-meta strong, .upload-history-meta a { overflow-wrap: anywhere; }
 .upload-history-meta time { font-variant-numeric: tabular-nums; }
+.task-history-item { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); }
+.task-history-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.task-history-header time { font-variant-numeric: tabular-nums; }
+.task-history-item p { margin: 0; overflow-wrap: anywhere; font-size: .9rem; }
 .import-file-state { overflow-wrap: anywhere; }
 .member-import-form .form-error { white-space: pre-line; overflow-wrap: anywhere; }
 .import-results { max-height: 50dvh; overflow: auto; }

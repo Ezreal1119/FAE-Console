@@ -29,6 +29,38 @@ const recordCodeDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
 });
 const taskCommentPageSize = 10;
+const taskHistoryFieldLabels = {
+  proj: '项目',
+  device_type: '设备类型',
+  pri: '优先级',
+  status: '状态',
+  desc: '任务描述'
+};
+
+function appendTaskHistory(db, user, taskId, summary) {
+  if (!summary) return;
+  db.taskHistory ??= {};
+  const log = (db.taskHistory[taskId] ??= { nextId: 1, rows: [] });
+  log.rows.push({
+    id: log.nextId++,
+    actor_name: displayName(db, user),
+    summary,
+    at: now()
+  });
+}
+
+function taskFieldDiffs(before, after, keys = Object.keys(taskHistoryFieldLabels)) {
+  const changes = [];
+  for (const key of keys) {
+    const prev = before[key] ?? null;
+    const next = after[key] ?? null;
+    if (prev === next) continue;
+    const label = taskHistoryFieldLabels[key];
+    if (key === 'desc') changes.push(`修改${label}`);
+    else changes.push(`${label}：${prev || '空'} → ${next || '空'}`);
+  }
+  return changes;
+}
 
 function recordId(value) {
   const id = Number(value);
@@ -408,20 +440,34 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             const [row] = list.splice(index, 1);
             if (table === 'tasks') {
               delete db.taskComments?.[row.id];
+              delete db.taskHistory?.[row.id];
               for (const file of db.attachments) if (file.task_id === row.id) file.state = 'deleting';
             }
             return { row };
           }
+          let taskBefore = null;
           if (table === 'tasks') {
             const current = list[index].status;
             if (Object.hasOwn(patch, 'status') && patch.status !== current &&
                 !(ACTIVE_TASK_STATUSES.includes(current) && ACTIVE_TASK_STATUSES.includes(patch.status))) {
               throw new RequestError(409, '任务状态只能在开发中和测试中切换。开始任务请使用开始规划。');
             }
+            const t = list[index];
+            taskBefore = { proj: t.proj, device_type: t.device_type, pri: normalizeTaskPriority(t.pri), status: t.status, desc: t.desc };
           }
-          return applyPatch(db, user, table, list[index], patch, recordTaskChange);
+          const updated = applyPatch(db, user, table, list[index], patch, recordTaskChange);
+          if (taskBefore) {
+            const diffs = taskFieldDiffs(taskBefore, { ...updated.row, pri: normalizeTaskPriority(updated.row.pri) });
+            if (diffs.length) appendTaskHistory(db, user, updated.row.id, diffs.join('；'));
+          }
+          return updated;
         }
-        return insertRecord(db, user, table, patch, recordTaskChange, extra);
+        const inserted = insertRecord(db, user, table, patch, recordTaskChange, extra);
+        if (table === 'tasks') {
+          appendTaskHistory(db, user, inserted.row.id,
+            inserted.row.owner_name ? `创建任务（负责人：${inserted.row.owner_name}）` : '创建任务');
+        }
+        return inserted;
       });
       if (table === 'tasks' && op === 'delete') void cleanupAttachments?.();
       return { data: [publicRecord(store.read(), user, table, row)] };
@@ -507,8 +553,13 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         const priority = normalizeTaskPriority(task.pri);
         const due = plannedCompletion(startedAt, plannedHours, TASK_PRIORITIES.includes(priority) ? priority : defaultPriority);
         if (!due) throw new RequestError(400, '请填写有效的计划投入工时，至少为 1 分钟。');
+        const before = { proj: task.proj, device_type: task.device_type, desc: task.desc };
         Object.assign(patch, { status: '开发中', started_at: startedAt, planned_hours: plannedHours, planned_due_at: due });
-        return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
+        const result = applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
+        const diffs = taskFieldDiffs(before, result.row, ['proj', 'device_type', 'desc']);
+        appendTaskHistory(db, user, result.row.id,
+          [`开始规划（状态：待规划 → 开发中，计划投入工时：${plannedHours}h）`, ...diffs].join('；'));
+        return result;
       });
       return { task: publicTask(store.read(), user, row) };
     },
@@ -539,9 +590,16 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           throw new RequestError(409, '只有开发中或测试中的任务可以完成，请刷新后查看。');
         }
         if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请重新打开更新任务后重试。');
+        const prevStatus = task.status;
+        const before = { proj: task.proj, device_type: task.device_type, pri: normalizeTaskPriority(task.pri), desc: task.desc };
         bindAttachments(db, user, task, 'delivery', files);
         Object.assign(patch, { status: '已完成', hours, completed_at: now() });
-        return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
+        const result = applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
+        const diffs = taskFieldDiffs(before, { ...result.row, pri: normalizeTaskPriority(result.row.pri) }, ['proj', 'device_type', 'pri', 'desc']);
+        const filePart = files?.length ? [`上传交付文件：${files.map(file => file.name).join('、')}`] : [];
+        appendTaskHistory(db, user, result.row.id,
+          [`完成任务（状态：${prevStatus} → 已完成，投入工时：${hours}h）`, ...diffs, ...filePart].join('；'));
+        return result;
       });
       return { task: publicTask(store.read(), user, row) };
     },
@@ -577,6 +635,8 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         bindAttachments(db, user, row, 'requirement', files);
         row.initial_receiver_id = row.assignee_id;
         row.initial_receiver_name = row.owner_name;
+        const filePart = files?.length ? `；上传需求文件：${files.map(file => file.name).join('、')}` : '';
+        appendTaskHistory(db, user, row.id, `从需求派发任务（负责人：${row.owner_name || '未分配'}${filePart}）`);
         return { created: row, demand: source };
       });
       const db = store.read();
@@ -595,9 +655,13 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请刷新后重新转交。');
         if (task.status === '已完成') throw new RequestError(409, '已完成的任务不能转交。');
         if (task.assignee_id === assigneeId) throw new RequestError(400, '请选择其他成员接手任务。');
+        const prevOwner = taskOwnerName(db, task) || '未分配';
         task.transfer_history ??= [];
         task.transfer_history.push({ from_id: task.assignee_id ?? null, to_id: assigneeId, at: now() });
-        return applyPatch(db, user, 'tasks', task, { assignee_id: assigneeId }, recordTaskChange);
+        const result = applyPatch(db, user, 'tasks', task, { assignee_id: assigneeId }, recordTaskChange);
+        const nextOwner = taskOwnerName(db, result.row) || '未分配';
+        appendTaskHistory(db, user, result.row.id, `转交负责人：${prevOwner} → ${nextOwner}`);
+        return result;
       });
       return { task: publicTask(store.read(), user, row) };
     },
@@ -689,9 +753,18 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if (!row) throw new RequestError(404, '未找到此任务。');
         if (!canAppendAttachment(user, row, kind)) throw new RequestError(403, '你没有权限补传此类文件。');
         bindAttachments(db, user, row, kind, files);
+        const label = kind === 'requirement' ? '需求文件' : '交付文件';
+        appendTaskHistory(db, user, row.id, `上传${label}：${files.map(file => file.name).join('、')}`);
         return row;
       });
       return { task: publicTask(store.read(), user, task) };
+    },
+
+    listTaskHistory(user, { taskId }) {
+      const db = store.read();
+      const task = taskForComments(db, user, recordId(taskId));
+      const rows = db.taskHistory?.[task.id]?.rows ?? [];
+      return { history: [...rows].reverse() };
     },
 
     attachmentForDownload(user, taskId, fileId) {
