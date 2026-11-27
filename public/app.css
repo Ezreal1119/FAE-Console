@@ -244,6 +244,7 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .choice-list li[data-index] { cursor: pointer; }
 .choice-list li[data-index]:hover, .choice-list li.active { background: #edf2ff; }
 .choice-list [aria-selected="true"] { color: var(--brand-dark); font-weight: 650; }
+.choice-list-inline { position: static; margin-top: 4px; max-height: min(42dvh, 260px); box-shadow: none; overscroll-behavior: contain; }
 .demand-task-item { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
 dialog { width: min(calc(100% - 30px), 620px); max-height: min(90dvh, 820px); border: 1px solid var(--line); border-radius: 16px; padding: 22px; color: var(--ink); box-shadow: 0 20px 80px #17244038; }
 dialog::backdrop { background: #0f183677; }

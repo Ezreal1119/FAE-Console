@@ -5,6 +5,7 @@ const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const dialog = $('#dialog');
 const taskStartDialog = $('#task-start-dialog');
+const taskTransferDialog = $('#task-transfer-dialog');
 const guidelinesDialog = $('#guidelines-dialog');
 const guidelinesBody = $('#guidelines-dialog-body');
 const guidelinesConfirm = $('#confirm-guidelines');
@@ -194,6 +195,7 @@ function showAuth(error = '') {
   state.taskSort = null;
   document.title = '工程小管家';
   if (taskStartDialog.open) taskStartDialog.close('cancel');
+  if (taskTransferDialog.open) taskTransferDialog.close('cancel');
   dialog.close();
   guidelinesDialog.close();
   content.replaceChildren();
@@ -928,10 +930,14 @@ function taskTransferForm(id) {
   const task = getRow('tasks', id);
   if (!canTransferTask(task)) return;
   let recipient, loadChoices;
-  const fields = details([['当前负责人', task.owner_name]], 'task-form-facts') + choiceField('接手人（必填）', 'assignee_id') + choiceStatus;
+  const fields = details([['当前负责人', task.owner_name]], 'task-form-facts') +
+    choiceField('接手人（必填）', 'assignee_id', { inlineList: true }) + choiceStatus;
   const form = modalForm('转交负责人', '#' + task.id + ' ' + task.title, fields, async () => {
-    const assigneeId = recipient.value();
+    const session = state.user;
+    const { value: assigneeId, label } = recipient.selection();
     if (!Number.isSafeInteger(assigneeId)) throw new Error('请选择接手人。');
+    recipient.close();
+    if (!(await confirmTaskTransfer(task, label)) || state.user !== session) return false;
     try {
       const result = await post('/api/tasks/transfer', { taskId: task.id, assignee_id: assigneeId, expectedVersion: task.version });
       await applySavedTask(result.task);
@@ -942,9 +948,19 @@ function taskTransferForm(id) {
     }
     toast('负责人已转交。');
   }, { submit: '确认转交' });
-  recipient = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: null, label: '' }, { clearable: false });
+  recipient = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: null, label: '' }, { clearable: false, closeOnBlur: false });
   loadChoices = prepareFormChoices(form, ({ people }) => recipient.setOptions(peopleChoices(people)
     .filter(person => !same(person.id, task.assignee_id)).map(({ id, label }) => ({ value: id, label }))));
+}
+
+function confirmTaskTransfer(task, recipient) {
+  $('#task-transfer-summary').textContent = '#' + task.id + ' ' + task.title;
+  $('#task-transfer-recipient').textContent = recipient;
+  taskTransferDialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    taskTransferDialog.addEventListener('close', () => resolve(taskTransferDialog.returnValue === 'transfer'), { once: true });
+    taskTransferDialog.showModal();
+  });
 }
 
 function confirmTaskStart() {
@@ -1117,19 +1133,20 @@ function taskForm(task = {}, demand, plan) {
   });
 }
 
-function choiceField(label, key, { allowCustom = false } = {}) {
+function choiceField(label, key, { allowCustom = false, inlineList = false } = {}) {
+  const list = `<ul id="choices-${key}" class="choice-list${inlineList ? ' choice-list-inline' : ''}" role="listbox" aria-label="${label}" hidden></ul>`;
   return `<div class="choice-field" data-choice="${key}">
     <label for="choice-${key}">${label}</label>
     <div class="choice-control">
       <input id="choice-${key}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="choices-${key}"
         autocomplete="off" ${allowCustom ? `maxlength="100" placeholder="请选择或直接输入${label}"` : 'placeholder="请选择或输入关键词"'} disabled>
       <span aria-hidden="true" class="choice-arrow"></span>
-      <ul id="choices-${key}" class="choice-list" role="listbox" aria-label="${label}" hidden></ul>
-    </div>
+      ${inlineList ? '' : list}
+    </div>${inlineList ? list : ''}
   </div>`;
 }
 
-function bindChoice(field, initial, { clearable = true, allowCustom = false } = {}) {
+function bindChoice(field, initial, { clearable = true, allowCustom = false, closeOnBlur = true } = {}) {
   const input = field.querySelector('input');
   const list = field.querySelector('ul');
   let options = [];
@@ -1197,6 +1214,7 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false } = 
     }
   });
   input.addEventListener('blur', () => {
+    if (!closeOnBlur) return;
     if (allowCustom && query !== null) {
       const value = optional(query);
       selected = { value, label: value };
@@ -1221,7 +1239,9 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false } = 
       input.select();
     }
   });
-  list.addEventListener('mousedown', event => event.preventDefault());
+  list.addEventListener('mousedown', event => {
+    if (closeOnBlur || event.target.closest('[data-index]')) event.preventDefault();
+  });
   list.addEventListener('click', event => {
     const entry = event.target.closest('[data-index]');
     if (entry) choose(Number(entry.dataset.index));
@@ -1229,6 +1249,8 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false } = 
 
   return {
     value: () => allowCustom && query !== null ? optional(query) : selected.value,
+    selection: () => selected,
+    close,
     setOptions(next) {
       options = next;
       input.disabled = false;

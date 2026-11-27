@@ -72,6 +72,17 @@
   </div>
 
   <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <dialog id="task-transfer-dialog" aria-labelledby="task-transfer-title">
+    <div class="dialog-heading"><div class="dialog-heading-text">
+      <h2 id="task-transfer-title">确定转交负责人？</h2>
+      <p id="task-transfer-summary" class="muted text-small"></p>
+    </div></div>
+    <dl class="task-form-facts"><dt>接手人</dt><dd id="task-transfer-recipient"></dd></dl>
+    <form method="dialog" class="dialog-actions">
+      <button class="button" value="cancel" autofocus>取消</button>
+      <button class="button primary" value="transfer">确定转交</button>
+    </form>
+  </dialog>
   <dialog id="task-start-dialog" aria-labelledby="task-start-title">
     <div class="dialog-heading"><h2 id="task-start-title">确定开始任务？</h2></div>
     <p>确认后，任务将进入开发中。开始时间、计划投入工时和计划完成时间会锁定。</p>
