@@ -569,29 +569,23 @@ function tasksPage() {
     pagedListPanel('tasks', toolbar);
 }
 
-const demandHeaders = ['需求编码', '项目', '任务进度', '当前负责人', '提出方', '创建人', '操作', '需求说明'];
+const demandHeaders = ['需求编码', '项目', '项目阶段', '任务进度', '当前负责人', '提出方', '创建人', '需求说明'];
 function demandOwner(task) {
   return task?.id && canTransferTask(task)
     ? action(task.owner_name || '设置负责人', 'task-transfer', task.id, 'link') : shown(task?.owner_name);
 }
-function demandAssignmentAction(demand, className) {
-  return canManageDemand(demand) && !demand.linked_tasks?.length
-    ? action('派发任务', 'demand-dispatch', demand.id, className) : '';
-}
 function filteredDemands() {
-  return state.demands.filter(row => hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.descr, row.proposer,
+  return state.demands.filter(row => hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.project_stage, row.descr, row.proposer,
     ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name])));
 }
 function demandRows(demands) {
   return demands.map(demand => {
     const task = demand.linked_tasks?.[0];
-    const edit = canManageDemand(demand) ? action('编辑', 'demand-edit', demand.id, 'link') : '';
-    const remove = canDeleteDemand(demand) ? action('删除', 'demand-delete', demand.id, 'link danger') : '';
     return `<tr>
     <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td>
+    <td>${shown(demand.project_stage)}</td>
     <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td>
     <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
-    <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td>
     ${descCell(demand.descr)}</tr>`;
   }).join('');
 }
@@ -2124,40 +2118,134 @@ function prepareFormChoices(form, applyChoices) {
   return loadChoices;
 }
 
+function confirmDeleteDemand(row, onCancel) {
+  if (!canDeleteDemand(row)) return;
+  const description = '确定删除「' + row.code + '」？' + (row.linked_tasks?.length ? ' 关联任务及其进度和附件会保留。' : '');
+  confirmDelete('删除需求', description, async () => {
+    await removeRow('demands', row, '需求已删除。');
+    if (state.user) await refresh();
+  }, onCancel ? { onCancel } : {});
+}
+
 function demandDetail(id) {
   const demand = getRow('demands', id);
   const tasks = demand.linked_tasks || [];
   const task = tasks[0];
-  const items = tasks.map(task => `<div class="detail-item demand-task-item">
-    <div>${task.id ? action(task.code, 'demand-task', task.id, 'link') : '<strong>任务</strong>'}
-    <p class="muted text-small">${shown(task.owner_name)}</p></div>${statusBadge(task.status)}</div>`).join('');
-  modal(demand.code, demand.title, details([['项目', demand.proj], ['需求提出方', demand.proposer], ['创建人', demand.owner_name],
+  const canEdit = canManageDemand(demand);
+  const canDelete = canDeleteDemand(demand);
+  const canDispatch = canEdit && !tasks.length;
+  const items = tasks.map(row => `<div class="detail-item demand-task-item">
+    <div>${row.id ? action(row.code, 'demand-task', row.id, 'link') : '<strong>任务</strong>'}
+    <p class="muted text-small">${shown(row.owner_name)}</p></div>${statusBadge(row.status)}</div>`).join('');
+  const info = details([
+    ['项目', canEdit ? inlineChoiceControl('项目', 'proj') : demand.proj, canEdit],
+    ['项目阶段', `<span data-demand-project-stage>${shown(demand.project_stage)}</span>`, true],
+    ['需求提出方', canEdit ? inlineChoiceControl('需求提出方', 'proposer', { allowCustom: false }) : demand.proposer, canEdit],
+    ['创建人', demand.owner_name],
     ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
-    ['初始接收人', task?.initial_receiver_name], ['当前负责人', demandOwner(task), true]]) +
-    `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div>
-      <div class="detail-item"><strong>关联任务</strong>${items || '<p class="muted">待派发</p>'}</div></div>
-    <div class="dialog-actions">${action('关闭', 'close')}${demandAssignmentAction(demand, 'button primary')}</div>`);
+    ['当前负责人', demandOwner(task), true],
+    ...(task?.initial_receiver_name ? [['初始接收人', task.initial_receiver_name]] : [])
+  ]);
+  const descriptionBlock = canEdit
+    ? area('需求说明', 'descr', demand.descr, false)
+    : `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div></div>`;
+  const linkedBlock = `<div class="details-list"><div class="detail-item"><strong>关联任务</strong>${items || '<p class="muted">待派发</p>'}</div></div>`;
+  const leading = canDelete ? '<div class="dialog-actions-start"><button type="button" class="button danger" data-demand-dialog-action="delete">删除</button></div>' : '';
+  const dispatchBtn = canDispatch ? '<button type="button" class="button primary" data-demand-dialog-action="dispatch">派发任务</button>' : '';
+  const footer = (leading || dispatchBtn) ? `<div class="dialog-actions">${leading}${dispatchBtn}</div>` : '';
+  const body = `<form id="dialog-form"><div class="stack">${info}${descriptionBlock}${linkedBlock}${canEdit ? choiceStatus : ''}</div><p class="form-error" role="alert" hidden></p>${footer}</form>`;
+  modal(demand.code, demand.title, body, false, '', true);
+  const form = dialog.querySelector('form');
+  form.addEventListener('submit', event => event.preventDefault());
+  const formMessage = form.querySelector('.form-error');
+  let saveQueue = Promise.resolve();
+  let loadChoices;
+  function autoSave(patch, { rollback, message: toastText = '已保存。' } = {}) {
+    const run = async () => {
+      const session = state.user;
+      if (dialog.contains(form)) formError(formMessage, '');
+      try {
+        const saved = await saveRow('demands', patch, demand.id);
+        if (state.user !== session) return;
+        updateRow('demands', saved);
+        const stageEl = dialog.querySelector('[data-demand-project-stage]');
+        if (stageEl) stageEl.textContent = saved.project_stage || '—';
+        if (saved.linked_tasks?.length) await refresh();
+        toast(toastText);
+      } catch (error) {
+        rollback?.();
+        if (dialog.contains(form)) formError(formMessage, error.message);
+        else toast(error.message);
+        if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
+      }
+    };
+    saveQueue = saveQueue.then(run, run);
+    return saveQueue;
+  }
+  if (canEdit) {
+    const pickers = {
+      proj: bindChoice(form.querySelector('[data-choice="proj"]'), { value: demand.proj || null, label: demand.proj }, {
+        allowCustom: true,
+        onChange: value => {
+          const latest = getRow('demands', demand.id);
+          if (value === optional(latest.proj)) return;
+          void autoSave({ proj: value }, {
+            rollback: () => { try { pickers.proj.setValue(optional(getRow('demands', demand.id).proj)); } catch { /* ignore */ } }
+          });
+        }
+      }),
+      proposer: bindChoice(form.querySelector('[data-choice="proposer"]'), { value: demand.proposer || null, label: demand.proposer }, {
+        allowCustom: false,
+        onChange: value => {
+          const latest = getRow('demands', demand.id);
+          if (value === optional(latest.proposer)) return;
+          void autoSave({ proposer: value }, {
+            rollback: () => { try { pickers.proposer.setValue(optional(getRow('demands', demand.id).proposer)); } catch { /* ignore */ } }
+          });
+        }
+      })
+    };
+    loadChoices = prepareFormChoices(form, ({ options }) => {
+      for (const [key, picker] of Object.entries(pickers)) {
+        picker.setOptions(catalogChoiceEntries(options[key]));
+      }
+    });
+    const descrField = form.elements.descr;
+    descrField?.addEventListener('blur', () => {
+      let latest;
+      try { latest = getRow('demands', demand.id); } catch { return; }
+      const nextDescr = optional(descrField.value);
+      if (nextDescr === optional(latest.descr)) return;
+      void autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
+    });
+  }
+  form.querySelector('[data-demand-dialog-action="delete"]')?.addEventListener('click', () => {
+    confirmDeleteDemand(getRow('demands', demand.id), () => demandDetail(demand.id));
+  });
+  form.querySelector('[data-demand-dialog-action="dispatch"]')?.addEventListener('click', async () => {
+    const descrField = form.elements.descr;
+    if (descrField) {
+      const latest = getRow('demands', demand.id);
+      const nextDescr = optional(descrField.value);
+      if (nextDescr !== optional(latest.descr)) await autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
+    }
+    await saveQueue;
+    if (!state.user) return;
+    const current = getRow('demands', demand.id);
+    if (canManageDemand(current) && !current.linked_tasks?.length) taskForm(current);
+  });
 }
 
-function demandForm(row = {}) {
-  if (row.id && !canManageDemand(row)) return;
-  const initial = {
-    proj: { value: row.proj || null, label: row.proj },
-    proposer: { value: row.proposer || null, label: row.proposer }
-  };
-  const context = row.id ? '需求编码 ' + row.code : '需求编码将在保存后自动生成。';
-  const form = modalForm(row.id ? '编辑需求' : '新建需求', context,
-    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${choiceField('需求提出方', 'proposer')}</div>` + area('需求说明', 'descr', row.descr) +
+function demandForm() {
+  const initial = { proj: { value: null, label: '' }, proposer: { value: null, label: '' } };
+  const form = modalForm('新建需求', '需求编码将在保存后自动生成。',
+    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${choiceField('需求提出方', 'proposer')}</div>` + area('需求说明', 'descr', '') +
     choiceStatus, async values => {
     const patch = { descr: optional(values.descr) };
-    for (const [key, picker] of Object.entries(pickers)) {
-      const value = picker.value();
-      if (!row.id || value !== initial[key].value) patch[key] = value;
-    }
+    for (const [key, picker] of Object.entries(pickers)) patch[key] = picker.value();
     try {
-      const saved = await saveRow('demands', patch, row.id);
+      const saved = await saveRow('demands', patch);
       updateRow('demands', saved);
-      if (saved.linked_tasks?.length) await refresh();
     } catch (error) {
       if (error.status === 409) await loadChoices().catch(() => {});
       throw error;
@@ -2420,23 +2508,10 @@ const actions = {
   'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-upload-history': openTaskUploadHistory, 'task-history': openTaskHistory, 'task-list': () => navigate('tasks'),
   'task-display-options': taskDisplayOptions,
   'task-transfer': id => taskTransferForm(id),
-  'demand-new': () => demandForm(), 'demand-edit': id => demandForm(getRow('demands', id)), 'demand-detail': demandDetail,
-  'demand-dispatch': id => {
-    const demand = getRow('demands', id);
-    if (canManageDemand(demand) && !demand.linked_tasks?.length) taskForm(demand);
-  },
+  'demand-new': () => demandForm(), 'demand-detail': demandDetail,
   'demand-task': async id => {
     await refresh();
     if (state.user) taskDetail(id);
-  },
-  'demand-delete': id => {
-    const row = getRow('demands', id);
-    if (!canDeleteDemand(row)) return;
-    const description = '确定删除「' + row.code + '」？' + (row.linked_tasks?.length ? ' 关联任务及其进度和附件会保留。' : '');
-    confirmDelete('删除需求', description, async () => {
-      await removeRow('demands', row, '需求已删除。');
-      if (state.user) await refresh();
-    });
   },
   'project-load': loadProjects,
   'project-detail-load': loadProjectDetail,

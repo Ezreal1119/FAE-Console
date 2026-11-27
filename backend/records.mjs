@@ -206,7 +206,7 @@ function directoryProfile({ id, display_name, emp_no, team, role, status }) {
 
 function publicDemand(db, user, row, linkedTasks) {
   const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
-  return { ...row, responsible: assigned?.display_name || row.responsible || null, linked_tasks: linkedTasks.map(task => {
+  return { ...row, project_stage: projectStage(db, row.proj), responsible: assigned?.display_name || row.responsible || null, linked_tasks: linkedTasks.map(task => {
     const summary = { owner_name: taskOwnerName(db, task), initial_receiver_name: task.initial_receiver_name, status: task.status };
     return visibleTask(user, task) ? { ...summary, id: task.id, code: task.code } : summary;
   }) };
