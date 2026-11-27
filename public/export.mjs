@@ -1,7 +1,7 @@
 const utf8 = new TextEncoder();
 const csvHeader = [
   '任务', '项目', '状态', '负责人', '计划完成', '开始时间', '完成时间', '工时(h)', '完成结果', '附件',
-  '工单分类', '设备类型', '项目阶段', '优先级', '合作者', '来源需求', '派发时间', '计划工时(h)', '前置依赖', '任务描述'
+  '工单分类', '设备类型', '项目阶段', '优先级', '来源需求', '派发时间', '计划工时(h)', '前置依赖', '任务描述'
 ];
 const maxAttachmentBytes = 180 * 1024 * 1024;
 const crcTable = Array.from({ length: 256 }, (_, value) => {
@@ -26,7 +26,7 @@ function csvBytes(tasks) {
   const records = tasks.map(task => [
     '#' + task.id + ' ' + task.title, task.proj, task.status, task.owner_name, task.dueTime || task.dueDate,
     task.startTime || task.startDate, task.endDate, task.hours, task.result, task.fileName,
-    task.category, task.device_type, task.project_stage, task.pri, task.collaboratorNames,
+    task.category, task.device_type, task.project_stage, task.pri,
     task.sourceDemandCode, task.dispatchTime, task.planned_hours, task.deps, task.desc
   ]);
   return utf8.encode('\ufeff' + [csvHeader, ...records].map(record => record.map(csvCell).join(',')).join('\r\n'));

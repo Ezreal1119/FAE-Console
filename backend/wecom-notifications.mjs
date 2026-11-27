@@ -2,8 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 const messages = {
   dispatch: id => '【任务派发】任务 #' + id + ' 已派发，请查看详情。',
-  owner: id => '【任务转交】你已成为任务 #' + id + ' 的负责人。',
-  collaborators: id => '【新增合作者】你已被加入任务 #' + id + ' 的协作。'
+  owner: id => '【任务转交】你已成为任务 #' + id + ' 的负责人。'
 };
 const retryDelays = [15_000, 60_000, 300_000];
 const notificationLifetime = 24 * 60 * 60 * 1000;
@@ -22,24 +21,12 @@ export function openWecomNotifications(store, webhook) {
   }
 
   function recordTaskChange(db, task, before) {
-    const collaborators = (task.collaborators || []).map(person => person.id)
-      .filter(id => !before.collaborators.has(id));
-    const events = [];
-    if (before.creating && task.demand_id != null) {
-      events.push(['dispatch', task.assignee_id, collaborators]);
-    } else {
-      if (!before.creating && task.assignee_id != null && task.assignee_id !== before.owner) {
-        events.push(['owner', task.assignee_id, []]);
-      }
-      if (collaborators.length) events.push(['collaborators', null, collaborators]);
-    }
-    if (!events.length) return;
+    if (task.assignee_id == null || (before.creating ? task.demand_id == null : task.assignee_id === before.owner)) return;
+    const kind = before.creating ? 'dispatch' : 'owner';
     const timestamp = Date.now();
     const pending = db.wecomNotifications ??= [];
-    for (const [kind, owner, collaborators] of events) {
-      pending.push({ id: randomUUID(), taskId: task.id, kind, owner, collaborators, attempts: 0,
-        availableAt: timestamp, createdAt: timestamp });
-    }
+    pending.push({ id: randomUUID(), taskId: task.id, kind, owner: task.assignee_id, attempts: 0,
+      availableAt: timestamp, createdAt: timestamp });
   }
 
   let sending = false;
@@ -54,14 +41,11 @@ export function openWecomNotifications(store, webhook) {
     try {
       const task = db.tasks.find(item => item.id === event.taskId);
       const mentioned = [];
-      if (task && now - event.createdAt < notificationLifetime) {
-        const ids = new Set(event.collaborators.filter(id => task.collaborators?.some(person => person.id === id)));
-        if (event.owner != null && task.assignee_id === event.owner) ids.add(event.owner);
-        for (const id of ids) {
-          const user = db.users.find(item => item.id === id);
-          const profile = db.profiles.find(item => item.owner_id === id);
-          if (user?.wecom_userid && profile && profile.status !== '已离职') mentioned.push(user.wecom_userid);
-        }
+      if (Object.hasOwn(messages, event.kind) && event.owner != null && task?.assignee_id === event.owner &&
+          now - event.createdAt < notificationLifetime) {
+        const user = db.users.find(item => item.id === event.owner);
+        const profile = db.profiles.find(item => item.owner_id === event.owner);
+        if (user?.wecom_userid && profile && profile.status !== '已离职') mentioned.push(user.wecom_userid);
       }
 
       let retry = false;

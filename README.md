@@ -94,7 +94,7 @@ WECOM_BOT_SECRET=你的机器人Secret
 WECOM_GROUP_WEBHOOK_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=替换为实值"
 ```
 
-管理员在「人员管理 → 登录账号」为需要接收提醒的成员绑定企业微信通讯录里的 UserID。需求首次派发时提醒负责人及初始合作者，更换负责人时提醒新负责人，增加合作者时提醒新加入的人。群消息只包含事件、任务编号和任务链接，链接要求登录并按现有任务权限显示详情。没有已绑定接收人时跳过该消息。发送失败可用 `journalctl -u fae-console -n 50 --no-pager` 查看。
+管理员在「人员管理 → 登录账号」为需要接收提醒的成员绑定企业微信通讯录里的 UserID。需求首次派发或任务转交时，系统会提醒接手的负责人。群消息只包含事件、任务编号和任务链接，链接要求登录并按现有任务权限显示详情。没有已绑定接收人时跳过该消息。发送失败可用 `journalctl -u fae-console -n 50 --no-pager` 查看。
 
 ## 行为规范
 

@@ -8,8 +8,8 @@ import { ACTIVE_TASK_STATUSES, plannedCompletion, TASK_PRIORITIES } from '../pub
 const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
-    title: 180, proj: 100, owner_name: 100, assignee_id: 0, collaborator_ids: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
-    add_collaborator_ids: 0, keep_as_collaborator: 0, category: 100, device_type: 100, project_stage: 100,
+    title: 180, proj: 100, owner_name: 100, assignee_id: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
+    category: 100, device_type: 100, project_stage: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
   demands: { proj: 100, descr: 10000, proposer: 100 }
@@ -20,9 +20,8 @@ const defaultPriority = '中';
 const catalogKinds = new Set(['proj', 'proposer', 'category', 'device_type', 'project_stage']);
 const taskProgressFields = new Set(['status', 'hours', 'result', 'attachment_name', 'attachment_path']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at'];
-const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'project_stage']);
 const taskClassificationFields = ['pri', 'category', 'device_type'];
-const taskHandoverFields = ['assignee_id', 'keep_as_collaborator'];
+const retiredCollaboratorFields = ['collaborators', 'collaborator_ids', 'add_collaborator_ids', 'keep_as_collaborator'];
 const demandCodeDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
 });
@@ -49,12 +48,6 @@ function cleanFields(table, payload) {
       patch[key] = value;
     } else if (key === 'assignee_id') {
       if (value !== null && !validId(value)) throw new RequestError(400, '负责人编号无效。');
-      patch[key] = value;
-    } else if (key === 'collaborator_ids' || key === 'add_collaborator_ids') {
-      if (!Array.isArray(value) || !value.every(validId)) throw new RequestError(400, '合作者名单无效。');
-      patch[key] = [...new Set(value)];
-    } else if (key === 'keep_as_collaborator') {
-      if (typeof value !== 'boolean') throw new RequestError(400, '请选择转交方式。');
       patch[key] = value;
     } else if (key === 'pri') {
       const priority = optionalText(value, maximum) || defaultPriority;
@@ -105,17 +98,22 @@ function demandTaskFields(demand) {
   return { title: demand.title || demand.code, proj: demand.proj ?? null };
 }
 
-function publicTask(db, task, demand = db.demands.find(row => row.id === task.demand_id)) {
-  const { dispatch_key, ...row } = task;
+function taskHandledAt(user, task) {
+  const transfer = task.transfer_history?.findLast(entry => entry.from_id === user.id || entry.to_id === user.id);
+  if (transfer) return transfer.at;
+  if (task.assignee_id === user.id || task.initial_receiver_id === user.id) return task.created_at ?? '';
+  return null;
+}
+
+function publicTask(db, user, task, demand = db.demands.find(row => row.id === task.demand_id)) {
+  const { dispatch_key, collaborators, transfer_history, revision, ...row } = task;
   if (demand) Object.assign(row, demandTaskFields(demand));
   if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
     row.dispatched_at = row.created_at ?? null;
   }
-  return { ...row, owner_name: taskOwnerName(db, task),
-    collaborators: (task.collaborators || []).map(person => {
-      const user = db.users.find(item => item.id === person.id);
-      return user ? { id: person.id, name: displayName(db, user) } : person;
-    }) };
+  const handledAt = taskHandledAt(user, task);
+  return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
+    handled_by_me: handledAt !== null, handled_at: handledAt || null };
 }
 
 function directoryProfile({ id, display_name, emp_no, team, role, status }) {
@@ -126,10 +124,6 @@ function publicDemand(db, user, row, linkedTasks) {
   const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
   return { ...row, responsible: assigned?.display_name || row.responsible || null, linked_tasks: linkedTasks.map(task => {
     const summary = { owner_name: taskOwnerName(db, task), initial_receiver_name: task.initial_receiver_name, status: task.status };
-    if (managesRecord(user, row)) {
-      Object.assign(summary, { task_id: task.id, assignee_id: task.assignee_id,
-        collaborator_ids: (task.collaborators || []).map(person => person.id) });
-    }
     return visibleTask(user, task) ? { ...summary, id: task.id, title: row.title || row.code } : summary;
   }) };
 }
@@ -142,62 +136,28 @@ function taskMember(db, id, label) {
   return { id, name: profile.display_name };
 }
 
-function applyTaskPeople(db, task, patch) {
-  const previous = task.assignee_id;
-  if (Object.hasOwn(patch, 'assignee_id')) {
-    if (patch.assignee_id !== task.assignee_id) {
-      const owner = patch.assignee_id === null ? null : taskMember(db, patch.assignee_id, '负责人');
-      task.assignee_id = owner?.id ?? null;
-      task.owner_name = owner?.name ?? null;
-    }
-  } else if (Object.hasOwn(patch, 'owner_name')) {
-    // Older task clients may still submit the original name or account field.
-    if (task.assignee_id == null || taskOwnerName(db, task) !== patch.owner_name) {
-      assignTask(db, task, patch.owner_name);
-      if (task.demand_id != null && task.assignee_id != null && task.assignee_id !== previous) {
-        taskMember(db, task.assignee_id, '负责人');
-      }
-    }
+function applyTaskAssignee(db, task, patch) {
+  if (Object.hasOwn(patch, 'assignee_id') && patch.assignee_id !== task.assignee_id) {
+    const owner = patch.assignee_id === null ? null : taskMember(db, patch.assignee_id, '负责人');
+    task.assignee_id = owner?.id ?? null;
+    task.owner_name = owner?.name ?? null;
+  } else if (!Object.hasOwn(patch, 'assignee_id') && Object.hasOwn(patch, 'owner_name')) {
+    // Older task clients may submit a name or login account when creating a task.
+    assignTask(db, task, patch.owner_name);
+    if (task.demand_id != null && task.assignee_id != null) taskMember(db, task.assignee_id, '负责人');
   }
   if (task.demand_id != null && !task.assignee_id) throw new RequestError(400, '派发任务需要选择负责人。');
-  if (Object.hasOwn(patch, 'collaborator_ids')) {
-    const existing = new Map((task.collaborators || []).map(person => [person.id, person]));
-    task.collaborators = patch.collaborator_ids.map(id => existing.get(id) || taskMember(db, id, '合作者'));
-  }
-  if (task.demand_id != null && previous != null && task.assignee_id !== previous) {
-    task.collaborators = (task.collaborators || []).filter(person => person.id !== task.assignee_id);
-  } else if (task.collaborators?.some(person => person.id === task.assignee_id)) {
-    throw new RequestError(400, '负责人不能同时列为合作者。');
-  }
   delete patch.owner_name;
   delete patch.assignee_id;
-  delete patch.collaborator_ids;
 }
 
-function prepareTaskPeopleUpdate(user, task, patch) {
-  const handover = Object.hasOwn(patch, 'keep_as_collaborator');
-  if (handover) {
-    if (task.assignee_id !== user.id) throw new RequestError(409, '当前负责人已变化，请刷新后重试。');
-    if (patch.assignee_id == null || patch.assignee_id === user.id) throw new RequestError(400, '请选择其他成员接手任务。');
-  } else if (task.demand_id != null && !isAdmin(user) &&
-      (Object.hasOwn(patch, 'assignee_id') || Object.hasOwn(patch, 'owner_name'))) {
-    throw new RequestError(403, '只有管理员或当前负责人可以更换派发任务的负责人。');
+function checkTaskPeople(payload, creating) {
+  if (retiredCollaboratorFields.some(field => Object.hasOwn(payload, field))) {
+    throw new RequestError(400, '任务已停用合作者。');
   }
-
-  const additions = patch.add_collaborator_ids;
-  if (handover || additions) {
-    const owner = Object.hasOwn(patch, 'assignee_id') ? patch.assignee_id : task.assignee_id;
-    const previous = patch.collaborator_ids ?? (task.collaborators || []).map(person => person.id);
-    const people = new Set([...previous, ...(additions || [])]);
-    people.delete(owner);
-    if (handover) {
-      people.delete(task.assignee_id);
-      if (patch.keep_as_collaborator) people.add(task.assignee_id);
-    }
-    patch.collaborator_ids = [...people];
+  if (!creating && ['assignee_id', 'owner_name'].some(field => Object.hasOwn(payload, field))) {
+    throw new RequestError(400, '请通过转交负责人变更任务负责人。');
   }
-  delete patch.keep_as_collaborator;
-  delete patch.add_collaborator_ids;
 }
 
 function managesRecord(user, row) {
@@ -205,7 +165,7 @@ function managesRecord(user, row) {
 }
 
 function visibleTask(user, task) {
-  return managesRecord(user, task) || task.assignee_id === user.id || task.collaborators?.some(person => person.id === user.id);
+  return managesRecord(user, task) || taskHandledAt(user, task) !== null;
 }
 
 function changeable(db, user, table, row, op, patch) {
@@ -219,8 +179,7 @@ function changeable(db, user, table, row, op, patch) {
   }
   if (managesRecord(user, row)) return true;
   return table === 'tasks' && op === 'update' && row.assignee_id === user.id &&
-    Object.keys(patch).every(field => taskProgressFields.has(field) || taskAssigneeEditFields.has(field) || taskClassificationFields.includes(field) ||
-      (Object.hasOwn(patch, 'keep_as_collaborator') && taskHandoverFields.includes(field)));
+    Object.keys(patch).every(field => taskProgressFields.has(field) || field === 'project_stage' || taskClassificationFields.includes(field));
 }
 
 function newTaskPatch(patch) {
@@ -263,7 +222,7 @@ function removeFile(directory, id) {
 }
 
 function publicRecord(db, user, table, row) {
-  if (table === 'tasks') return publicTask(db, row);
+  if (table === 'tasks') return publicTask(db, user, row);
   if (table === 'demands') {
     return publicDemand(db, user, row, db.tasks.filter(task => task.demand_id === row.id));
   }
@@ -278,7 +237,7 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
   if (table !== 'profiles') row.creator_id = user.id;
   if (table === 'demands') assignDemandCode(db, row);
   if (table === 'tasks') {
-    Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], pri: defaultPriority, collaborators: [] });
+    Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], pri: defaultPriority });
   }
   const result = applyPatch(db, user, table, row, patch, recordTaskChange, true);
   db[table].unshift(row);
@@ -351,7 +310,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
           const demands = new Map(db.demands.map(demand => [demand.id, demand]));
           return {
             data: db.tasks.filter(task => visibleTask(user, task))
-              .map(task => publicTask(db, task, demands.get(task.demand_id) ?? null)),
+              .map(task => publicTask(db, user, task, demands.get(task.demand_id) ?? null)),
             taskCategories: db.demandOptions.category
           };
         }
@@ -368,7 +327,10 @@ export function openRecords(store, { recordTaskChange } = {}) {
       }
       const id = op === 'insert' ? null : recordId(Array.isArray(eq) && eq[0] === 'id' ? eq[1] : null);
       const patch = op === 'delete' ? {} : cleanFields(table, payload);
-      if (table === 'tasks' && op === 'update') checkTaskSchedule(payload);
+      if (table === 'tasks' && op !== 'delete') {
+        checkTaskPeople(payload, op === 'insert');
+        if (op === 'update') checkTaskSchedule(payload);
+      }
       const { row, removed } = store.update(db => {
         const list = db[table];
         if (id !== null) {
@@ -379,7 +341,9 @@ export function openRecords(store, { recordTaskChange } = {}) {
             if (table === 'demands') {
               const linked = db.tasks.filter(task => task.demand_id === id);
               if (linked.length && !isAdmin(user)) throw new RequestError(403, '已派发的需求只能由管理员删除。');
-              for (const task of linked) Object.assign(task, demandTaskFields(list[index]), { demand_id: null });
+              for (const task of linked) {
+                Object.assign(task, demandTaskFields(list[index]), { demand_id: null, revision: (task.revision ?? 0) + 1 });
+              }
             }
             const [row] = list.splice(index, 1);
             const removed = table === 'tasks' ? db.attachments.filter(file => file.task_id === row.id).map(file => file.id) : [];
@@ -392,7 +356,6 @@ export function openRecords(store, { recordTaskChange } = {}) {
                 !(ACTIVE_TASK_STATUSES.includes(current) && ACTIVE_TASK_STATUSES.includes(patch.status))) {
               throw new RequestError(409, '任务状态只能在开发中和测试中切换。开始任务请使用开始规划。');
             }
-            prepareTaskPeopleUpdate(user, list[index], patch);
           }
           return applyPatch(db, user, table, list[index], patch, recordTaskChange);
         }
@@ -408,7 +371,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
       const task = planningTask(db, user, recordId(taskId));
       const minute = Math.floor(Date.now() / 60_000);
       const startToken = `${minute}.${planningSignature(user, task, minute).toString('hex')}`;
-      return { startToken, startedAt: new Date(minute * 60_000).toISOString(), task: publicTask(db, task) };
+      return { startToken, startedAt: new Date(minute * 60_000).toISOString(), task: publicTask(db, user, task) };
     },
 
     startTask(user, { taskId, startToken, plannedHours, changes = {} }) {
@@ -419,6 +382,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
       const minute = Number(minuteText);
       const patch = cleanFields('tasks', changes);
       checkTaskSchedule(changes);
+      checkTaskPeople(changes, false);
       if (['status', 'hours', 'result'].some(field => Object.hasOwn(patch, field))) {
         throw new RequestError(400, '开始任务时只填写计划投入工时。');
       }
@@ -432,18 +396,18 @@ export function openRecords(store, { recordTaskChange } = {}) {
         const priority = patch.pri ?? task.pri;
         const due = plannedCompletion(startedAt, plannedHours, TASK_PRIORITIES.includes(priority) ? priority : defaultPriority);
         if (!due) throw new RequestError(400, '请填写有效的计划投入工时，至少为 1 分钟。');
-        prepareTaskPeopleUpdate(user, task, patch);
         Object.assign(patch, { status: '开发中', started_at: startedAt, planned_hours: plannedHours, planned_due_at: due });
         return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
       });
       removed.forEach(id => removeFile(store.attachments, id));
-      return { task: publicTask(store.read(), row) };
+      return { task: publicTask(store.read(), user, row) };
     },
 
     dispatchDemand(user, { demandId, dispatchKey, task }) {
       const id = recordId(demandId);
       if (typeof dispatchKey !== 'string' || !/^[a-f0-9-]{36}$/.test(dispatchKey)) throw new RequestError(400, '派发编号无效。');
       const patch = newTaskPatch(cleanFields('tasks', task));
+      checkTaskPeople(task, true);
       if (!patch.assignee_id) throw new RequestError(400, '派发任务需要选择负责人。');
       delete patch.project_stage;
 
@@ -454,7 +418,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
         const existing = db.tasks.find(row => row.demand_id === id);
         if (existing) {
           if (existing.creator_id === user.id && existing.dispatch_key === dispatchKey) return { created: existing, demand: source };
-          throw new RequestError(409, '这条需求已经派发，可在需求列表增加合作者。');
+          throw new RequestError(409, '这条需求已经派发。');
         }
         const details = { desc: source.descr ?? null, ...patch, ...demandTaskFields(source) };
         const row = insertRecord(db, user, 'tasks', details, recordTaskChange, { demand_id: id, dispatch_key: dispatchKey }).row;
@@ -463,34 +427,26 @@ export function openRecords(store, { recordTaskChange } = {}) {
         return { created: row, demand: source };
       });
       const db = store.read();
-      return { task: publicTask(db, created, demand), demand: publicRecord(db, user, 'demands', demand) };
+      return { task: publicTask(db, user, created, demand), demand: publicRecord(db, user, 'demands', demand) };
     },
 
-    changeDemandTaskPeople(user, input) {
-      const id = recordId(input.demandId);
-      const taskId = recordId(input.taskId);
-      const reassign = Object.hasOwn(input, 'assignee_id');
-      const add = Object.hasOwn(input, 'collaborator_ids');
-      if (reassign === add) throw new RequestError(400, '请选择更换负责人或增加合作者。');
-      if (reassign && !isAdmin(user)) throw new RequestError(403, '只有管理员可以更换派发任务的负责人。');
-      const patch = cleanFields('tasks', reassign ? { assignee_id: input.assignee_id } : { collaborator_ids: input.collaborator_ids });
-      if ((reassign && patch.assignee_id == null) || (add && !patch.collaborator_ids.length)) {
-        throw new RequestError(400, reassign ? '请选择负责人。' : '请至少选择一位合作者。');
+    transferTask(user, { taskId, assignee_id: assigneeId, expectedVersion }) {
+      const id = recordId(taskId);
+      if (!validId(assigneeId) || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
+        throw new RequestError(400, '请选择接手人并刷新任务后重试。');
       }
-      const demand = store.update(db => {
-        const source = db.demands.find(row => row.id === id);
-        if (!source) throw new RequestError(404, '未找到此需求。');
-        if (!managesRecord(user, source)) throw new RequestError(403, '只有管理员或需求创建人可以增加合作者。');
-        const task = db.tasks.find(row => row.id === taskId && row.demand_id === id);
-        if (!task) throw new RequestError(409, '关联任务已变化，请刷新后重试。');
-        if (add) {
-          const existing = (task.collaborators || []).map(person => person.id);
-          patch.collaborator_ids = [...new Set([...existing, ...patch.collaborator_ids])].filter(personId => personId !== task.assignee_id);
-        }
-        applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
-        return source;
+      const { row } = store.update(db => {
+        const task = db.tasks.find(item => item.id === id);
+        if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
+        if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请刷新后重新转交。');
+        if (!isAdmin(user) && task.assignee_id !== user.id) throw new RequestError(403, '只有当前负责人或管理员可以转交任务。');
+        if (task.status === '已完成') throw new RequestError(409, '已完成的任务不能转交。');
+        if (task.assignee_id === assigneeId) throw new RequestError(400, '请选择其他成员接手任务。');
+        task.transfer_history ??= [];
+        task.transfer_history.push({ from_id: task.assignee_id ?? null, to_id: assigneeId, at: now() });
+        return applyPatch(db, user, 'tasks', task, { assignee_id: assigneeId }, recordTaskChange);
       });
-      return { demand: publicRecord(store.read(), user, 'demands', demand) };
+      return { task: publicTask(store.read(), user, row) };
     },
 
     demandChoices() {
@@ -562,14 +518,12 @@ export function openRecords(store, { recordTaskChange } = {}) {
 
 function applyPatch(db, user, table, row, patch, recordTaskChange, creating = false) {
   const before = table === 'tasks' && recordTaskChange ? {
-    creating, owner: row.assignee_id, collaborators: new Set(row.collaborators?.map(person => person.id))
+    creating, owner: row.assignee_id
   } : null;
   let removed = [];
   if (table === 'tasks') {
-    if (creating && (Object.hasOwn(patch, 'keep_as_collaborator') || Object.hasOwn(patch, 'add_collaborator_ids'))) {
-      throw new RequestError(400, '请在任务创建后转交或添加合作者。');
-    }
-    applyTaskPeople(db, row, patch);
+    applyTaskAssignee(db, row, patch);
+    row.revision = (row.revision ?? 0) + 1;
     removed = changeAttachment(db, user, row, patch);
     delete patch.attachment_path;
     delete patch.attachment_name;

@@ -52,8 +52,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-wecom', 'POST'],
   ['/api/admin/member-role', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
-  ['/api/demands/task-people', 'POST'],
-  ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'],
+  ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/transfer', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
 ]);
 let importingMembers = false;
@@ -194,9 +193,9 @@ function privateApi(path, session, body) {
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
-    case '/api/demands/task-people': return records.changeDemandTaskPeople(session.user, body);
     case '/api/tasks/plan-preview': return records.previewTaskPlan(session.user, body);
     case '/api/tasks/start': return records.startTask(session.user, body);
+    case '/api/tasks/transfer': return records.transferTask(session.user, body);
     case '/api/admin/add-member': return accounts.addMember(body);
     case '/api/admin/reset-account': return accounts.resetMember(body);
     case '/api/admin/delete-account':

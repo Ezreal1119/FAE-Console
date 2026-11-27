@@ -4,7 +4,6 @@ import { ACTIVE_TASK_STATUSES, formatPlanningTime, plannedCompletion, TASK_PRIOR
 const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const dialog = $('#dialog');
-const taskHandoverDialog = $('#task-handover-dialog');
 const taskStartDialog = $('#task-start-dialog');
 const guidelinesDialog = $('#guidelines-dialog');
 const guidelinesBody = $('#guidelines-dialog-body');
@@ -23,7 +22,7 @@ const defaultFilters = {
   demandQuery: '', peopleQuery: '', peopleTeam: ''
 };
 const listPageSize = 10;
-const firstListPages = { tasks: 1, demands: 1 };
+const firstListPages = { home: 1, tasks: 1, demands: 1 };
 const state = {
   user: null, tasks: [], demands: [], profiles: [], accounts: [], page: 'home', mode: 'login',
   registrationEnabled: false,
@@ -151,12 +150,9 @@ function overdue(task) {
   return Number.isFinite(deadline) ? Date.now() > deadline : task.dueDate < isoDate();
 }
 function assignedToMe(task) { return same(task.assignee_id, state.user.id); }
-function collaboratingOn(task) { return (task.collaborators || []).some(person => same(person.id, state.user.id)); }
-function ownTask(task) {
-  return assignedToMe(task) || collaboratingOn(task);
-}
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
-function canUpdateTaskProgress(task) { return canEditTask(task) || same(task.assignee_id, state.user.id); }
+function canUpdateTaskProgress(task) { return canEditTask(task) || assignedToMe(task); }
+function canTransferTask(task) { return task.status !== '已完成' && (admin() || assignedToMe(task)); }
 function canEditProfile(person) {
   return same(person.owner_id, state.user.id) ||
     (admin() && !state.accounts.some(account => account.is_primary_admin && same(account.id, person.owner_id)));
@@ -167,7 +163,6 @@ function canEditTaskClassification(task) {
   return source ? canManageDemand(source) : canEditTask(task);
 }
 function canDeleteDemand(demand) { return admin() || (canManageDemand(demand) && !demand.linked_tasks?.length); }
-const collaboratorNames = task => (task.collaborators || []).map(person => person.name).join('、');
 
 function loadCatalog() {
   try {
@@ -198,7 +193,6 @@ function showAuth(error = '') {
   state.listPages = { ...firstListPages };
   state.taskSort = null;
   document.title = '工程小管家';
-  if (taskHandoverDialog.open) taskHandoverDialog.close('cancel');
   if (taskStartDialog.open) taskStartDialog.close('cancel');
   dialog.close();
   guidelinesDialog.close();
@@ -374,14 +368,16 @@ function distribution(rows) {
 }
 
 function workspacePage() {
-  const tasks = state.tasks.filter(ownTask);
+  const tasks = state.tasks.filter(assignedToMe);
   const active = tasks.filter(task => task.status !== '已完成');
-  const weekly = tasks.filter(task => assignedToMe(task) && inWeek(task.endDate, weekRange()));
+  const week = weekRange();
+  const weekly = tasks.filter(task => inWeek(task.endDate, week));
   const queue = [...active].sort((a, b) => (a.dueTime || '9999').localeCompare(b.dueTime || '9999')).slice(0, 8);
   const rows = queue.map(task => `<tr><td>${action(task.title, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueTime)}</td></tr>`).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(overdue).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
-    `<div class="grid-two">${panel('我的待办', table(['任务', '项目', '状态', '计划完成'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>`;
+    `<div class="grid-two">${panel('我的待办', table(['任务', '项目', '状态', '计划完成'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>` +
+    pagedListPanel('home');
 }
 
 const taskHeaders = [
@@ -390,13 +386,8 @@ const taskHeaders = [
   { label: '完成日期', sortKey: 'endDate' }, { label: '工时', sortKey: 'hours' }, '操作'
 ];
 const taskSortDefaults = { pri: 'descending', dueTime: 'ascending', startTime: 'ascending', endDate: 'ascending', hours: 'descending' };
-const personalTaskScopes = [['mine', '我的全部任务'], ['assigned', '我是责任人'], ['collaborating', '我是合作者']];
-
 function matchesTaskScope(task, scope) {
-  if (scope === 'all' && admin()) return true;
-  if (scope === 'assigned') return assignedToMe(task);
-  if (scope === 'collaborating') return collaboratingOn(task);
-  return ownTask(task);
+  return (scope === 'all' && admin()) || assignedToMe(task);
 }
 
 function taskCategoryLabel(task) {
@@ -408,7 +399,7 @@ function filteredTasks() {
   return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
     (!taskCategory || taskCategoryLabel(task) === taskCategory) && (!priority || taskPriority(task.pri) === priority) &&
     hasText(taskQuery, task.title, task.id, task.proj, task.category, task.device_type, task.project_stage,
-      task.owner_name, task.desc, task.result, collaboratorNames(task)));
+      task.owner_name, task.desc, task.result));
 }
 function taskSortValue(task, key) {
   if (key === 'pri') return PRIORITY.indexOf(taskPriority(task.pri));
@@ -443,6 +434,7 @@ function taskEditActions(task, className) {
 function taskRows(tasks) {
   return tasks.map(task => {
     const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
+    const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
     const ownerBadge = assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
     return `<tr>
     <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
@@ -450,12 +442,11 @@ function taskRows(tasks) {
     <td>${priorityBadge(task.pri)}</td><td>${shown(task.owner_name)}</td>
     <td class="task-date${overdue(task) ? ' text-red' : ''}">${shown(task.dueTime)}</td>
     <td class="task-date">${shown(task.startTime)}</td><td class="task-date">${shown(task.endDate)}</td><td>${text(withHours(task.hours))}</td>
-    <td><div class="row-actions">${taskEditActions(task, 'link') + remove || '—'}${ownerBadge}</div></td></tr>`;
+    <td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}${ownerBadge}</div></td></tr>`;
   }).join('');
 }
 function tasksPage() {
-  const scopes = admin() ? [['all', '所有任务'], ...personalTaskScopes] : personalTaskScopes;
-  const scope = `<select aria-label="任务范围" data-filter="taskScope">${scopes.map(([value, label]) => option(value, state.filters.taskScope, label)).join('')}</select>`;
+  const scope = admin() ? `<select aria-label="任务范围" data-filter="taskScope">${option('all', state.filters.taskScope, '所有任务')}${option('mine', state.filters.taskScope, '我负责的任务')}</select>` : '';
   const category = filterSelect('taskCategory', '按工单分类筛选', [...state.taskCategories, otherTaskCategory], '全部分类');
   const priority = filterSelect('taskPriority', '按优先级筛选', PRIORITY, '全部优先级');
   const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目、分类、设备类型、项目阶段或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
@@ -464,13 +455,13 @@ function tasksPage() {
 }
 
 const demandHeaders = ['需求编码', '项目', '需求说明', '任务进度', '初始接收人', '当前负责人', '提出方', '创建人', '操作'];
-function demandOwner(demand, task) {
-  return task?.task_id && admin() ? action(task.owner_name || '设置负责人', 'demand-owner', demand.id, 'link') : shown(task?.owner_name);
+function demandOwner(task) {
+  return task?.id && admin() && canTransferTask(task)
+    ? action(task.owner_name || '设置负责人', 'task-transfer', task.id, 'link') : shown(task?.owner_name);
 }
 function demandAssignmentAction(demand, className) {
-  if (!canManageDemand(demand)) return '';
-  return demand.linked_tasks?.length ? action('增加合作者', 'demand-collaborators', demand.id, className)
-    : action('派发任务', 'demand-dispatch', demand.id, className);
+  return canManageDemand(demand) && !demand.linked_tasks?.length
+    ? action('派发任务', 'demand-dispatch', demand.id, className) : '';
 }
 function filteredDemands() {
   return state.demands.filter(row => hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.descr, row.proposer,
@@ -484,7 +475,7 @@ function demandRows(demands) {
     return `<tr>
     <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td><td>${shown(demand.descr)}</td>
     <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td><td>${shown(task?.initial_receiver_name)}</td>
-    <td>${demandOwner(demand, task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
+    <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
     <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td></tr>`;
   }).join('');
 }
@@ -494,7 +485,17 @@ function demandsPage() {
     pagedListPanel('demands', toolbar);
 }
 
+function handledTasks() {
+  return state.tasks.filter(task => task.handled_by_me)
+    .sort((a, b) => (b.handled_at || '').localeCompare(a.handled_at || '') || b.id - a.id);
+}
+function handledTaskRows(tasks) {
+  return tasks.map(task => `<tr>
+    <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span></td>
+    <td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td></tr>`).join('');
+}
 const pagedLists = {
+  home: { id: 'handled', title: '我经手的任务', headers: ['任务', '项目', '状态', '当前负责人'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
   tasks: { id: 'task', title: '任务列表', headers: taskHeaders, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
   demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
 };
@@ -511,7 +512,7 @@ function listPage(key) {
     rows: rows(matches.slice(start, start + listPageSize))
   };
 }
-function pagedListPanel(key, toolbar) {
+function pagedListPanel(key, toolbar = '') {
   const { id, title, headers, empty } = pagedLists[key];
   const page = listPage(key);
   const pagination = `<nav id="${id}-pagination" class="pagination" aria-label="${title}分页"${page.paginationHidden ? ' hidden' : ''}>
@@ -594,7 +595,7 @@ async function changeDemandOption(kind, operation, name) {
 }
 
 function boardPage() {
-  const { tasks } = state;
+  const tasks = state.tasks.filter(canUpdateTaskProgress);
   const done = tasks.filter(task => task.status === '已完成');
   const due = done.filter(task => task.dueDate && task.endDate);
   const onTime = due.filter(task => task.endDate <= task.dueDate);
@@ -797,7 +798,7 @@ function navigate(page) {
   else {
     render();
     if (page === 'guidelines') void loadGuidelines();
-    if (page === 'tasks' || page === 'demands' || page === 'people') void refresh();
+    if (page === 'home' || page === 'tasks' || page === 'demands' || page === 'people') void refresh();
   }
 }
 
@@ -882,7 +883,7 @@ function taskDetails(task) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
   const info = details([['项目', task.proj], ['工单分类', task.category],
     ['设备类型', task.device_type], ['项目阶段', task.project_stage],
-    ['负责人', task.owner_name], ['合作者', collaboratorNames(task)],
+    ['负责人', task.owner_name],
     ...(source ? [['来源需求', action(source.code, 'demand-detail', source.id, 'link'), true]] : []),
     ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', taskDispatchTime(task)]] : []),
     ['状态', statusBadge(task.status), true], ['优先级', priorityBadge(task.pri), true],
@@ -919,25 +920,33 @@ async function taskAttachmentPatch(file) {
 }
 async function applySavedTask(row) {
   const saved = normalizeTask(row);
-  if (canEditTask(saved) || ownTask(saved)) {
-    updateRow('tasks', saved);
-  } else {
-    state.tasks = state.tasks.filter(task => !same(task.id, saved.id));
-    render();
-  }
+  updateRow('tasks', saved);
   if (saved.demand_id != null) await refresh();
 }
-function confirmTaskHandover(form) {
-  $('#task-handover-recipient').textContent = '接手人：' + form.querySelector('#choice-assignee_id').value;
-  taskHandoverDialog.returnValue = 'cancel';
-  return new Promise(resolve => {
-    taskHandoverDialog.addEventListener('close', () => {
-      const choice = taskHandoverDialog.returnValue;
-      resolve(choice === 'keep' ? true : choice === 'leave' ? false : null);
-    }, { once: true });
-    taskHandoverDialog.showModal();
-  });
+
+function taskTransferForm(id) {
+  const task = getRow('tasks', id);
+  if (!canTransferTask(task)) return;
+  let recipient, loadChoices;
+  const fields = details([['当前负责人', task.owner_name]], 'task-form-facts') + choiceField('接手人（必填）', 'assignee_id') + choiceStatus;
+  const form = modalForm('转交负责人', '#' + task.id + ' ' + task.title, fields, async () => {
+    const assigneeId = recipient.value();
+    if (!Number.isSafeInteger(assigneeId)) throw new Error('请选择接手人。');
+    try {
+      const result = await post('/api/tasks/transfer', { taskId: task.id, assignee_id: assigneeId, expectedVersion: task.version });
+      await applySavedTask(result.task);
+    } catch (error) {
+      if (error.status === 403 || error.status === 409) await refresh();
+      if (error.status === 409) await loadChoices().catch(() => {});
+      throw error;
+    }
+    toast('负责人已转交。');
+  }, { submit: '确认转交' });
+  recipient = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: null, label: '' }, { clearable: false });
+  loadChoices = prepareFormChoices(form, ({ people }) => recipient.setOptions(peopleChoices(people)
+    .filter(person => !same(person.id, task.assignee_id)).map(({ id, label }) => ({ value: id, label }))));
 }
+
 function confirmTaskStart() {
   taskStartDialog.returnValue = 'cancel';
   return new Promise(resolve => {
@@ -1005,28 +1014,20 @@ function taskForm(task = {}, demand, plan) {
   const isUpdate = Boolean(task.id);
   if (isUpdate && !canUpdateTaskProgress(task)) return;
   const canEditDetails = !isUpdate || canEditTask(task);
-  const currentOwner = isUpdate && assignedToMe(task);
-  const canChooseOwner = task.demand_id == null || admin() || currentOwner;
   const canEditClassification = !isUpdate || canEditTaskClassification(task);
   const priority = taskPriority(task.pri);
   const optionKinds = canEditClassification ? ['category', 'device_type'] : [];
   if (!demand) optionKinds.push('project_stage');
   const canEditNameAndProject = canEditDetails && !demand && task.demand_id == null;
   const dispatchKey = demand && crypto.randomUUID();
-  const currentAssignee = task.assignee_id ?? (isUpdate ? (task.owner_name ? 'legacy' : null) : demand ? null : state.user.id);
-  const initialPeople = task.collaborators || [];
-  const existingPeople = new Set(initialPeople.map(person => person.id));
-  const ownerField = canChooseOwner ? choiceField(demand ? '负责人（必填）' : '负责人', 'assignee_id')
-    : details([['负责人', task.owner_name]], 'task-form-facts');
+  const ownerField = isUpdate ? '' : choiceField(demand ? '负责人（必填）' : '负责人', 'assignee_id');
   const identityFields = canEditNameAndProject
     ? field('任务名称', 'title', task.title, 'required maxlength="180"') +
       `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
     : ownerField;
-  const peopleFields = canEditDetails ? collaboratorField()
-    : `<p class="muted text-small">当前合作者：${shown(collaboratorNames(task))}</p>` + collaboratorField(false, '添加合作者');
   const priorityField = canEditClassification ? selectField('优先级', 'pri', PRIORITY, priority, plan ? 'form="dialog-form"' : '') : '';
   const headingAside = plan ? `<div class="dialog-priority">${priorityField || `<span>优先级</span>${priorityBadge(priority)}`}</div>` : '';
-  const setupFields = identityFields + peopleFields +
+  const setupFields = identityFields +
     `<div class="form-grid">${plan ? '' : priorityField}${optionKinds.map(taskOptionField).join('')}</div>` +
     (canEditDetails ? area('任务描述', 'desc', task.desc ?? demand?.descr) : '');
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
@@ -1040,7 +1041,7 @@ function taskForm(task = {}, demand, plan) {
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
   const context = demand?.code || (isUpdate ? '#' + task.id + ' ' + task.title : '');
   const submit = demand ? '派发任务' : plan ? '开始任务' : '保存';
-  let project, owner, collaborators, loadChoices;
+  let project, owner, loadChoices;
   const form = modalForm(formTitle, context, fields, async values => {
     const formUser = state.user;
     const patch = taskOptions.changes();
@@ -1063,23 +1064,12 @@ function taskForm(task = {}, demand, plan) {
     if (plan && !plannedCompletion(plan.startedAt, plannedHours, patch.pri ?? priority)) {
       throw new Error('请填写有效的计划投入工时，至少为 1 分钟。');
     }
-    const assignee = owner?.value() ?? currentAssignee;
-    if (!isUpdate && !Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
-    const transferring = currentOwner && assignee !== currentAssignee;
-    if (transferring) {
-      const keep = await confirmTaskHandover(form);
-      if (keep === null) return false;
-      patch.keep_as_collaborator = keep;
+    if (!isUpdate) {
+      const assignee = owner.value();
+      if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
+      patch.assignee_id = assignee;
     }
     if (plan && !(await confirmTaskStart())) return false;
-    if (canChooseOwner && (!isUpdate || assignee !== currentAssignee)) patch.assignee_id = assignee;
-    const people = collaborators.ids();
-    if (canEditDetails) {
-      const previousPeople = initialPeople.filter(person => person.id !== assignee);
-      if (people.length !== previousPeople.length || previousPeople.some(person => !people.includes(person.id))) patch.collaborator_ids = people;
-    } else if (people.length) {
-      patch.add_collaborator_ids = people;
-    }
     if (!formUser || state.user !== formUser) return false;
     Object.assign(patch, await taskAttachmentPatch(values.file));
     if (!formUser || state.user !== formUser) return false;
@@ -1099,7 +1089,7 @@ function taskForm(task = {}, demand, plan) {
       if ((demand || plan) && error.status === 409 && state.user) await refresh();
       throw error;
     }
-    toast(demand ? '任务已派发。' : plan ? '任务已开始。' : transferring ? '任务已转交。' : isUpdate ? '任务已更新。' : '任务已创建。');
+    toast(demand ? '任务已派发。' : plan ? '任务已开始。' : isUpdate ? '任务已更新。' : '任务已创建。');
   }, { submit, headingAside });
   if (plan) {
     const dueDisplay = form.querySelector('[data-plan-due]');
@@ -1115,18 +1105,15 @@ function taskForm(task = {}, demand, plan) {
   if (canEditNameAndProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
   }
-  collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), canEditDetails ? initialPeople : [], currentAssignee);
-  if (canChooseOwner) {
+  if (!isUpdate) {
     owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), {
-      value: currentAssignee, label: task.owner_name || (!demand && !isUpdate ? myName() : '')
-    }, { clearable: false, onChange: collaborators.setOwner });
+      value: demand ? null : state.user.id, label: demand ? '' : myName()
+    }, { clearable: false });
   }
   loadChoices = prepareFormChoices(form, ({ people, options }) => {
     project?.setOptions(catalogChoiceEntries(options.proj));
     taskOptions.setOptions(options);
-    const entries = peopleChoices(people);
-    owner?.setOptions(entries.map(({ id, label }) => ({ value: id, label })));
-    collaborators.setPeople(canEditDetails ? entries : entries.filter(person => person.id !== currentAssignee && !existingPeople.has(person.id)));
+    owner?.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
   });
 }
 
@@ -1142,7 +1129,7 @@ function choiceField(label, key, { allowCustom = false } = {}) {
   </div>`;
 }
 
-function bindChoice(field, initial, { clearable = true, allowCustom = false, onChange } = {}) {
+function bindChoice(field, initial, { clearable = true, allowCustom = false } = {}) {
   const input = field.querySelector('input');
   const list = field.querySelector('ul');
   let options = [];
@@ -1194,7 +1181,6 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false, onC
     selected = results[index];
     close();
     input.select();
-    onChange?.(selected.value);
   }
 
   input.addEventListener('focus', () => { show(); input.select(); });
@@ -1287,77 +1273,8 @@ function bindTaskOptions(form, task, kinds) {
 }
 
 function peopleChoices(people) {
-  return people.map(({ id, name, emp_no, is_admin }) => ({ id, name, label: `${name} · ${emp_no}`, searchOnly: is_admin }))
+  return people.map(({ id, name, emp_no }) => ({ id, label: `${name} · ${emp_no}` }))
     .sort((a, b) => sortZh(a.label, b.label));
-}
-
-function collaboratorField(open = false, label = '合作者') {
-  return `<details class="collaborators" data-collaborators${open ? ' open' : ''}><summary>${label} <span data-collaborator-names class="muted">未选择</span></summary>
-    <input type="search" placeholder="搜索姓名或工号" aria-label="搜索合作者">
-    <div class="collaborator-options" role="group" aria-label="合作者选项"></div></details>`;
-}
-
-function bindCollaborators(field, initial, owner) {
-  const selected = new Map(initial.map(person => [person.id, person.name]));
-  const label = field.querySelector('[data-collaborator-names]');
-  const search = field.querySelector('input');
-  const list = field.querySelector('.collaborator-options');
-  let people = [];
-
-  function filterPeople() {
-    const query = search.value.trim();
-    const options = list.querySelectorAll('label');
-    let matches = 0;
-    for (const option of options) {
-      option.hidden = query ? !hasText(query, option.textContent)
-        : option.hasAttribute('data-search-only') && !option.querySelector('input').checked;
-      if (!option.hidden) matches++;
-    }
-    const empty = list.querySelector('[data-collaborator-empty]');
-    empty.hidden = matches > 0;
-    empty.textContent = query ? '没有匹配的成员。' : options.length ? '输入姓名或工号搜索成员。' : '没有可选的成员。';
-  }
-  function showSelected() {
-    label.textContent = [...selected].filter(([id]) => id !== owner).map(([, name]) => name).join('、') || '未选择';
-  }
-  function renderPeople() {
-    const available = new Map(people.map(person => [person.id, person]));
-    for (const [id, name] of selected) {
-      if (!available.has(id)) available.set(id, { label: name + '（不可选）' });
-    }
-    available.delete(owner);
-    list.innerHTML = [...available].map(([id, person]) => `<label class="collaborator-option"${person.searchOnly ? ' data-search-only' : ''}>
-      <input type="checkbox" value="${id}" ${selected.has(id) ? 'checked' : ''}>
-      <span>${text(person.label)}</span></label>`).join('') + '<p class="muted text-small" data-collaborator-empty></p>';
-    filterPeople();
-    showSelected();
-  }
-  search.addEventListener('input', filterPeople);
-  search.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) event.preventDefault(); });
-  list.addEventListener('change', event => {
-    const id = Number(event.target.value);
-    if (event.target.checked) {
-      const person = people.find(item => item.id === id);
-      if (person) selected.set(id, person.name);
-    } else {
-      selected.delete(id);
-      if (!people.some(person => person.id === id)) return renderPeople();
-    }
-    filterPeople();
-    showSelected();
-  });
-  renderPeople();
-  return {
-    ids: () => [...selected.keys()].filter(id => id !== owner),
-    setOwner(id) {
-      owner = id;
-      renderPeople();
-    },
-    setPeople(entries) {
-      people = entries;
-      renderPeople();
-    }
-  };
 }
 
 const choiceStatus = '<p class="muted text-small" data-choice-loading role="status">正在加载可选项…</p>' +
@@ -1401,60 +1318,10 @@ function demandDetail(id) {
     <p class="muted text-small">${shown(task.owner_name)}</p></div>${statusBadge(task.status)}</div>`).join('');
   modal(demand.code, demand.title, details([['项目', demand.proj], ['需求提出方', demand.proposer], ['创建人', demand.owner_name],
     ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
-    ['初始接收人', task?.initial_receiver_name], ['当前负责人', demandOwner(demand, task), true]]) +
+    ['初始接收人', task?.initial_receiver_name], ['当前负责人', demandOwner(task), true]]) +
     `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div>
       <div class="detail-item"><strong>关联任务</strong>${items || '<p class="muted">待派发</p>'}</div></div>
     <div class="dialog-actions">${action('关闭', 'close')}${demandAssignmentAction(demand, 'button primary')}</div>`);
-}
-
-async function saveDemandTaskPeople(demand, task, change) {
-  const result = await post('/api/demands/task-people', { demandId: demand.id, taskId: task.task_id, ...change });
-  updateRow('demands', result.demand);
-  await refresh();
-}
-
-function demandOwnerForm(id) {
-  if (!admin()) return;
-  const demand = getRow('demands', id);
-  const task = demand.linked_tasks?.[0];
-  if (!task?.task_id) throw new Error('未找到关联任务，请刷新后重试。');
-  let owner, loadChoices;
-  const form = modalForm('更换负责人', demand.code, choiceField('当前负责人', 'assignee_id') + choiceStatus, async () => {
-    const assignee = owner.value();
-    if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
-    if (assignee === task.assignee_id) return;
-    try {
-      await saveDemandTaskPeople(demand, task, { assignee_id: assignee });
-    } catch (error) {
-      if (error.status === 409) await loadChoices().catch(() => {});
-      throw error;
-    }
-    toast('负责人已更新。');
-  });
-  owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: task.assignee_id ?? null, label: task.owner_name }, { clearable: false });
-  loadChoices = prepareFormChoices(form, ({ people }) => owner.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label }))));
-}
-
-function demandCollaboratorsForm(id) {
-  const demand = getRow('demands', id);
-  if (!canManageDemand(demand)) return;
-  const task = demand.linked_tasks?.[0];
-  if (!task?.task_id) throw new Error('未找到关联任务，请刷新后重试。');
-  let collaborators, loadChoices;
-  const form = modalForm('增加合作者', demand.code, collaboratorField(true) + choiceStatus, async () => {
-    const people = collaborators.ids();
-    if (!people.length) throw new Error('请至少选择一位合作者。');
-    try {
-      await saveDemandTaskPeople(demand, task, { collaborator_ids: people });
-    } catch (error) {
-      if (error.status === 409) await loadChoices().catch(() => {});
-      throw error;
-    }
-    toast('合作者已加入任务。');
-  }, { submit: '添加' });
-  collaborators = bindCollaborators(form.querySelector('[data-collaborators]'), [], task.assignee_id);
-  const existing = new Set(task.collaborator_ids || []);
-  loadChoices = prepareFormChoices(form, ({ people }) => collaborators.setPeople(peopleChoices(people).filter(person => !existing.has(person.id))));
 }
 
 function demandForm(row = {}) {
@@ -1710,7 +1577,7 @@ async function downloadTask(id) {
 }
 async function exportTasks() {
   const [from, to] = weekRange();
-  const selected = state.page === 'tasks' ? filteredTasks() : state.tasks.filter(ownTask);
+  const selected = state.page === 'tasks' ? filteredTasks() : state.tasks.filter(assignedToMe);
   const teamScope = state.page === 'tasks' && admin() && state.filters.taskScope === 'all';
   let rows = selected.filter(task => inWeek(task.startDate, [from, to]) || inWeek(task.endDate, [from, to]));
   if (!rows.length) rows = selected.filter(task => inWeek(task.dueDate, [from, to]) || ['开发中', '测试中'].includes(task.status));
@@ -1719,7 +1586,6 @@ async function exportTasks() {
   const exportRows = rows.map(task => ({
     ...task,
     pri: taskPriority(task.pri),
-    collaboratorNames: collaboratorNames(task),
     sourceDemandCode: demandCodes.get(task.demand_id),
     dispatchTime: taskDispatchTime(task)
   }));
@@ -1742,7 +1608,7 @@ const actions = {
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
   'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
-  'task-update': openTaskUpdate,
+  'task-update': openTaskUpdate, 'task-transfer': taskTransferForm,
   'task-delete': id => {
     const row = getRow('tasks', id);
     confirmDelete('删除任务', '确定删除「' + row.title + '」？', async () => {
@@ -1755,8 +1621,6 @@ const actions = {
     const demand = getRow('demands', id);
     if (canManageDemand(demand) && !demand.linked_tasks?.length) taskForm({}, demand);
   },
-  'demand-owner': demandOwnerForm,
-  'demand-collaborators': demandCollaboratorsForm,
   'demand-task': async id => {
     await refresh();
     if (state.user) taskDetail(id);
