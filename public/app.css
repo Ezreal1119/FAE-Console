@@ -245,7 +245,19 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .import-results code { white-space: nowrap; user-select: all; }
 .config-strip { display: flex; gap: 7px; flex-wrap: wrap; }
 .catalog-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
-.catalog-tabs [aria-pressed="true"] { background: #edf2ff; border-color: #9bb0ef; color: var(--brand-dark); }
+.catalog-tabs :is([aria-pressed="true"], [aria-selected="true"]) { background: #edf2ff; border-color: #9bb0ef; color: var(--brand-dark); }
+.project-stage-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; }
+.project-stage-controls label { width: min(100%, 240px); }
+#project-stage-form .form-error { margin-top: 8px; }
+.project-stage-table table { min-width: 620px; table-layout: fixed; }
+.project-stage-table th:first-child { width: 108px; }
+.project-stage-table th:nth-child(3) { width: 29%; }
+.project-stage-table th:last-child { width: 122px; }
+.project-stage-table :is(th, td):last-child { text-align: right; }
+.project-stage-table td:first-child { font-weight: 650; }
+.project-stage-table td:nth-child(2) { white-space: pre-line; }
+.project-stage-table td:last-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-stage-table td.empty { text-align: center; font-weight: 400; }
 .choice-field { min-width: 0; }
 .choice-field > label { margin-bottom: 6px; }
 .choice-control { position: relative; }

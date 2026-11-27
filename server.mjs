@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { isAdmin, openAccounts, sessionSeconds } from './backend/accounts.mjs';
 import { openAttachments } from './backend/attachments.mjs';
 import { MEMBER_IMPORT_LIMIT_BYTES, readMemberWorkbook } from './backend/member-import.mjs';
+import { readNpiStages } from './backend/npi-stages.mjs';
 import { openRecords } from './backend/records.mjs';
 import { openSftpStorage } from './backend/sftp-storage.mjs';
 import { openStore, RequestError } from './backend/store.mjs';
@@ -18,6 +19,10 @@ const trustProxy = process.env.TRUST_PROXY === '1';
 const sessionCookie = 'fae_console_session';
 const dataDirectory = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : fileURLToPath(new URL('./data/', import.meta.url));
 const store = openStore(dataDirectory);
+const npiRequirements = await readNpiStages(resolve(dataDirectory, 'npi-stages.xlsx')).catch(error => {
+  if (error.code !== 'ENOENT') console.error('NPI 阶段清单加载失败：', error.code || error.message);
+  return null;
+});
 const guidelinesFile = process.env.CREDENTIALS_DIRECTORY
   ? resolve(process.env.CREDENTIALS_DIRECTORY, 'guidelines.json')
   : new URL('./private/guidelines.json', import.meta.url);
@@ -204,7 +209,7 @@ function privateApi(path, session, body) {
     case '/api/admin/accounts': return accounts.list();
     case '/api/admin/member-wecom': return accounts.setWecomUserId(session.user, body);
     case '/api/admin/member-role': return accounts.setAdminRole(session.user, body);
-    case '/api/admin/projects': return records.projectCatalog();
+    case '/api/admin/projects': return { ...records.projectCatalog(), npiRequirements };
     case '/api/admin/projects/change': return records.changeProject(body);
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
