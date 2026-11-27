@@ -1201,8 +1201,8 @@ function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
   const isCompleted = task.status === '已完成';
   const info = details([
     ['任务类型', TASK_KINDS[task.task_kind]],
-    ...(!editable.deviceType ? [['设备类型', task.device_type]] : []),
-    ...(!editable.proj ? [['项目', task.proj]] : []),
+    ['设备类型', editable.deviceType ? inlineChoiceControl('设备类型', 'device_type') : task.device_type, Boolean(editable.deviceType)],
+    ['项目', editable.proj ? inlineChoiceControl('项目', 'proj') : task.proj, Boolean(editable.proj)],
     ['项目阶段', `<span data-task-project-stage>${shown(task.project_stage)}</span>`, true],
     ...(!hideOwner ? [['负责人', task.owner_name]] : []),
     ...(!editable.status ? [['状态', statusBadge(task.status), true]] : []),
@@ -1266,15 +1266,10 @@ function taskDetail(id) {
     ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
     : statusBadge(task.status);
   const headingAside = `<div class="dialog-task-meta">${priorityControl}${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>`;
-  const optionFields = optionKinds.map(kind => taskOptionField(kind, false)).join('');
-  const editableRow = (canEditProject && optionFields)
-    ? `<div class="form-grid">${optionFields}${choiceField('项目', 'proj', { allowCustom: true })}</div>`
-    : (canEditProject ? choiceField('项目', 'proj', { allowCustom: true }) : '') + optionFields;
   const fields = taskDetails(task, {
     editable: { proj: canEditProject, deviceType: canEditClassification, pri: true, status: true, desc: canEditDetails },
     hideOwner
   }) +
-    editableRow +
     (canEditDetails ? area('任务描述', 'desc', task.desc, false) : '') +
     (canChangeStatus ? taskFileField('delivery') + uploadProgress : '') +
     taskUploadHistorySection(task) +
@@ -1891,6 +1886,18 @@ function taskForm(demand) {
     taskOptions.setOptions(options);
     owner.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
   });
+}
+
+function inlineChoiceControl(label, key, { allowCustom = true } = {}) {
+  const list = `<ul id="choices-${key}" class="choice-list" role="listbox" aria-label="${label}" hidden></ul>`;
+  return `<div class="choice-field choice-field-inline" data-choice="${key}">
+    <div class="choice-control">
+      <input id="choice-${key}" role="combobox" aria-label="${label}" aria-autocomplete="list" aria-expanded="false" aria-controls="choices-${key}"
+        autocomplete="off" ${allowCustom ? `maxlength="100" placeholder="请选择或输入${label}"` : 'placeholder="请选择或输入关键词"'} disabled>
+      <span aria-hidden="true" class="choice-arrow"></span>
+      ${list}
+    </div>
+  </div>`;
 }
 
 function choiceField(label, key, { allowCustom = false, inlineList = false, required = false } = {}) {

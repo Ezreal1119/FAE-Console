@@ -275,6 +275,8 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .project-stage-table td.empty { text-align: center; font-weight: 400; }
 .choice-field { min-width: 0; }
 .choice-field > label { margin-bottom: 6px; }
+.choice-field-inline .choice-control input { min-height: 34px; padding: 5px 30px 5px 10px; font-size: .92rem; }
+.choice-field-inline .choice-arrow { right: 12px; }
 .choice-control { position: relative; }
 .choice-control input { padding-right: 34px; }
 .choice-arrow {
