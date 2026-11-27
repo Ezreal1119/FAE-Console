@@ -202,6 +202,13 @@ tr:last-child td { border-bottom: 0; }
 dt { color: var(--muted); font-size: .85rem; }
 dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .task-form-facts { margin: 0; }
+.task-demand-section { display: grid; gap: 10px; margin-block: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--page); }
+.stack > .task-demand-section { margin-block: 0; }
+.details-list + .task-upload-history-bar, .task-demand-section + .task-upload-history-bar { margin-top: 14px; }
+.stack > .task-upload-history-bar { margin-top: 0; }
+.task-demand-section h3 { font-size: .9rem; color: var(--ink); }
+.task-demand-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 13px; margin: 0; }
+.task-demand-files { padding-top: 8px; border-top: 1px solid var(--line); }
 .task-schedule-summary { padding: 12px 14px; border-radius: 8px; background: var(--page); }
 .task-schedule-summary dd { font-variant-numeric: tabular-nums; }
 .plan-hours-field { display: grid; gap: 6px; }
@@ -385,5 +392,6 @@ dialog::backdrop { background: #0f183677; }
   .guidelines-toc ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 460px) {
+  .task-demand-grid { grid-template-columns: minmax(0, 1fr); }
   .guidelines-highlights ul { grid-template-columns: minmax(0, 1fr); }
 }

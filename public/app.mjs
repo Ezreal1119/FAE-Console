@@ -1153,35 +1153,49 @@ function taskDispatchTime(task) {
   const dispatchedAt = Date.parse(task.dispatched_at ?? '');
   return Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null;
 }
+function taskDemandSection(task, source) {
+  if (!source && !Object.hasOwn(task, 'dispatched_at')) return '';
+  const code = source ? action(source.code, 'demand-detail', source.id, 'link') : '—';
+  const meta = details([
+    ['需求编号', code, true],
+    ['派发人', task.dispatched_by_name],
+    ['派发时间', taskDispatchTime(task)]
+  ], 'task-demand-grid');
+  return `<section class="task-demand-section" aria-label="需求信息">
+    <h3>需求信息</h3>
+    ${meta}
+    <div class="task-demand-files">
+      <dt>需求文件</dt>
+      <dd>${taskFiles(task, 'requirement')}</dd>
+    </div>
+  </section>`;
+}
 function taskDetails(task, { editable = {} } = {}) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
   const isCompleted = task.status === '已完成';
   const info = details([
     ['任务类型', TASK_KINDS[task.task_kind]],
-    ...(!editable.proj ? [['项目', task.proj]] : []),
     ...(!editable.deviceType ? [['设备类型', task.device_type]] : []),
+    ...(!editable.proj ? [['项目', task.proj]] : []),
     ['项目阶段', task.project_stage],
     ['负责人', task.owner_name],
-    ...(source ? [['来源需求', action(source.code, 'demand-detail', source.id, 'link'), true]] : []),
-    ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', taskDispatchTime(task)]] : []),
     ...(!editable.status ? [['状态', statusBadge(task.status), true]] : []),
     ...(!editable.pri ? [['优先级', priorityBadge(task.pri), true]] : []),
+    ['开始时间', task.startTime],
     ['计划完成时间', task.dueTime],
     ...(!editable.status ? [['计划投入工时', plannedHoursBadge(task), true]] : []),
     ...(isCompleted ? [['投入工时', withHours(task.hours)]] : []),
-    ['开始时间', task.startTime],
     ...(isCompleted ? [['完成日期', task.endDate]] : []),
-    ['需求文件', taskFiles(task, 'requirement'), true],
     ...(isCompleted ? [['交付文件', taskFiles(task, 'delivery'), true]] : []),
-    ...(task.attachments.some(file => file.kind === 'legacy') ? [['历史附件', taskFiles(task, 'legacy'), true]] : []),
-    ['前置依赖', task.deps]
+    ...(task.attachments.some(file => file.kind === 'legacy') ? [['历史附件', taskFiles(task, 'legacy'), true]] : [])
   ]);
+  const demandSection = taskDemandSection(task, source);
   const remarkItems = [
     ...(editable.desc ? [] : [`<div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>`]),
     ...(isCompleted ? [`<div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div>`] : [])
   ].join('');
   const remarks = remarkItems ? `<div class="details-list">${remarkItems}</div>` : '';
-  return info + remarks;
+  return info + demandSection + remarks;
 }
 function taskDialogLeadingActions(task) {
   const canDelete = task.status === '已完成' ? admin() : canEditTask(task);

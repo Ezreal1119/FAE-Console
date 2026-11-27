@@ -149,11 +149,15 @@ function taskHandledAt(user, task) {
 
 function publicTask(db, user, task, demand = db.demands.find(row => row.id === task.demand_id),
   files = db.attachments.filter(file => file.task_id === task.id && file.state === 'bound')) {
-  const { title, dispatch_key, collaborators, transfer_history, revision, requirement_owner_id, category, ...row } = task;
+  const { title, dispatch_key, collaborators, transfer_history, revision, requirement_owner_id, category, deps, ...row } = task;
   if (Object.hasOwn(row, 'pri')) row.pri = normalizeTaskPriority(row.pri);
   if (demand) row.proj = demand.proj ?? null;
   if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
     row.dispatched_at = row.created_at ?? null;
+    const dispatcherId = task.creator_id ?? task.owner_id;
+    const dispatcher = db.users.find(account => account.id === dispatcherId);
+    row.dispatched_by_name = dispatcher ? displayName(db, dispatcher)
+      : db.profiles.find(profile => profile.owner_id === dispatcherId)?.display_name || null;
   }
   const handledAt = taskHandledAt(user, task);
   return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
