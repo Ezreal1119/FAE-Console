@@ -31,6 +31,7 @@ const state = {
   filters: { ...defaultFilters },
   listPages: { ...firstListPages },
   taskSort: null,
+  hiddenTaskFields: new Set(),
   catalog: { teams: [], roles: [] },
   taskCategories: new Set(),
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proposer',
@@ -198,6 +199,7 @@ function showAuth(error = '') {
   state.filters = { ...defaultFilters };
   state.listPages = { ...firstListPages };
   state.taskSort = null;
+  state.hiddenTaskFields.clear();
   document.title = '工程小管家';
   if (taskStartDialog.open) taskStartDialog.close('cancel');
   if (taskTransferDialog.open) taskTransferDialog.close('cancel');
@@ -268,6 +270,7 @@ async function enter(user, guidelinesPending) {
   state.filters.taskScope = admin() ? 'all' : 'mine';
   state.guidelinesPending = guidelinesPending === true;
   state.catalog = loadCatalog();
+  state.hiddenTaskFields = loadHiddenTaskFields();
   if (user.must_change_pwd) {
     $('#loading-view').hidden = true;
     $('#auth-view').hidden = true;
@@ -329,8 +332,8 @@ function stats(items) {
   return `<div class="stats">${items.map(([label, value, detail]) => `<div class="stat"><div class="stat-label">${text(label)}</div><div class="stat-value">${text(value)}</div>${detail ? '<div class="stat-detail">' + text(detail) + '</div>' : ''}</div>`).join('')}</div>`;
 }
 function tableHeader(header) {
-  if (typeof header === 'string') return `<th scope="col">${text(header)}</th>`;
-  const { label, sortKey } = header;
+  const { label, sortKey } = typeof header === 'string' ? { label: header } : header;
+  if (!sortKey) return `<th scope="col">${text(label)}</th>`;
   const direction = state.taskSort?.key === sortKey ? state.taskSort.direction : null;
   return `<th scope="col"${direction ? ' aria-sort="' + direction + '"' : ''}>
     <button type="button" class="task-sort-button" data-task-sort="${sortKey}">${text(label)}<span class="sort-indicator" aria-hidden="true"></span></button></th>`;
@@ -388,12 +391,56 @@ function workspacePage() {
     pagedListPanel('home');
 }
 
-const taskHeaders = [
-  '任务编号', '项目', '工单分类', '状态', { label: '优先级', sortKey: 'pri' }, '负责人',
-  { label: '计划完成时间', sortKey: 'dueTime' }, { label: '开始时间', sortKey: 'startTime' },
-  { label: '完成日期', sortKey: 'endDate' }, { label: '工时', sortKey: 'hours' }, '操作'
+const taskColumns = [
+  { key: 'code', label: '任务编号', cell: task => `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>` },
+  { key: 'proj', label: '项目', cell: task => `<td>${shown(task.proj)}</td>` },
+  { key: 'category', label: '工单分类', cell: task => `<td>${text(taskCategoryLabel(task))}</td>` },
+  { key: 'status', label: '状态', cell: task => `<td>${statusBadge(task.status)}</td>` },
+  { key: 'pri', label: '优先级', sortKey: 'pri', cell: task => `<td>${priorityBadge(task.pri)}</td>` },
+  { key: 'owner_name', label: '负责人', cell: task => `<td>${shown(task.owner_name)}</td>` },
+  { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: task => `<td class="task-date${overdue(task) ? ' text-red' : ''}">${shown(task.dueTime)}</td>` },
+  { key: 'startTime', label: '开始时间', sortKey: 'startTime', cell: task => `<td class="task-date">${shown(task.startTime)}</td>` },
+  { key: 'endDate', label: '完成日期', sortKey: 'endDate', cell: task => `<td class="task-date">${shown(task.endDate)}</td>` },
+  { key: 'hours', label: '工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
+  { key: 'actions', label: '操作', cell: taskActionsCell }
 ];
+const taskDisplayFields = [...taskColumns.filter(column => column.key !== 'actions'), { key: 'desc', label: '任务描述' }];
+const taskDisplayStorageKey = () => 'yxt-web-task-display-' + state.user.id;
 const taskSortDefaults = { pri: 'descending', dueTime: 'ascending', startTime: 'ascending', endDate: 'ascending', hours: 'descending' };
+
+function loadHiddenTaskFields() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(taskDisplayStorageKey()));
+    if (Array.isArray(saved)) {
+      return new Set(taskDisplayFields.filter(({ key }) => key !== 'code' && saved.includes(key)).map(({ key }) => key));
+    }
+  } catch { /* The list can still be configured for this session. */ }
+  return new Set();
+}
+
+function visibleTaskColumns() {
+  return taskColumns.filter(column => !state.hiddenTaskFields.has(column.key));
+}
+
+function taskDisplayOptions() {
+  const fields = taskDisplayFields.map(({ key, label }) => `<label>
+    <input type="checkbox" name="${key}"${state.hiddenTaskFields.has(key) ? '' : ' checked'}${key === 'code' ? ' disabled' : ''}>
+    <span>${text(label)}${key === 'code' ? ' <small class="muted">始终显示</small>' : ''}</span>
+  </label>`).join('');
+  modalForm('显示选项', '', `<div class="form-grid task-display-options">${fields}</div>`, values => {
+    state.hiddenTaskFields = new Set(taskDisplayFields.filter(({ key }) => key !== 'code' && !Object.hasOwn(values, key)).map(({ key }) => key));
+    try { localStorage.setItem(taskDisplayStorageKey(), JSON.stringify([...state.hiddenTaskFields])); }
+    catch { /* Keep the selected fields for this session. */ }
+    const columns = visibleTaskColumns();
+    if (state.taskSort && !columns.some(column => column.sortKey === state.taskSort.key)) {
+      state.taskSort = null;
+      state.listPages.tasks = 1;
+    }
+    $('#task-rows').closest('table').tHead.rows[0].innerHTML = columns.map(tableHeader).join('');
+    updatePagedList('tasks');
+  }, { submit: '应用' });
+}
+
 function matchesTaskScope(task, scope) {
   return (scope === 'all' && admin()) || assignedToMe(task);
 }
@@ -439,19 +486,19 @@ function taskEditActions(task, className) {
   return canUpdateTaskProgress(task)
     ? action(task.status === '待规划' ? '开始规划' : '更新任务', 'task-update', task.id, className) : '';
 }
+function taskActionsCell(task) {
+  const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
+  const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
+  const ownerBadge = assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
+  return `<td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}${ownerBadge}</div></td>`;
+}
 function taskRows(tasks) {
+  const columns = visibleTaskColumns();
+  const showDescription = !state.hiddenTaskFields.has('desc');
   return tasks.map(task => {
-    const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
-    const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
-    const ownerBadge = assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
-    const summary = task.desc ? `<tr class="task-summary"><td colspan="${taskHeaders.length}"><p>${text(task.desc)}</p></td></tr>` : '';
-    return `<tr${summary ? ' class="task-with-summary"' : ''}>
-    <td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
-    <td>${shown(task.proj)}</td><td>${text(taskCategoryLabel(task))}</td><td>${statusBadge(task.status)}</td>
-    <td>${priorityBadge(task.pri)}</td><td>${shown(task.owner_name)}</td>
-    <td class="task-date${overdue(task) ? ' text-red' : ''}">${shown(task.dueTime)}</td>
-    <td class="task-date">${shown(task.startTime)}</td><td class="task-date">${shown(task.endDate)}</td><td>${text(withHours(task.hours))}</td>
-    <td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}${ownerBadge}</div></td></tr>${summary}`;
+    const summary = showDescription && task.desc
+      ? `<tr class="task-summary"><td colspan="${columns.length}"><p>${text(task.desc)}</p></td></tr>` : '';
+    return `<tr${summary ? ' class="task-with-summary"' : ''}>${columns.map(column => column.cell(task)).join('')}</tr>${summary}`;
   }).join('');
 }
 function tasksPage() {
@@ -459,7 +506,8 @@ function tasksPage() {
   const category = filterSelect('taskCategory', '按工单分类筛选', [...state.taskCategories, otherTaskCategory], '全部分类');
   const priority = filterSelect('taskPriority', '按优先级筛选', PRIORITY, '全部优先级');
   const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务编号、描述、项目、分类、设备类型、项目阶段或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
-  return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
+  return heading('任务中心', '跟进任务分工、进度和交付记录。', action('显示选项', 'task-display-options') + action('刷新', 'refresh') +
+    action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     pagedListPanel('tasks', toolbar);
 }
 
@@ -505,7 +553,7 @@ function handledTaskRows(tasks) {
 }
 const pagedLists = {
   home: { id: 'handled', title: '我经手的任务', headers: ['任务编号', '项目', '状态', '当前负责人'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
-  tasks: { id: 'task', title: '任务列表', headers: taskHeaders, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
+  tasks: { id: 'task', title: '任务列表', get headers() { return visibleTaskColumns(); }, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
   demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
 };
 function listPage(key) {
@@ -1106,7 +1154,6 @@ function taskForm(task = {}, demand, plan) {
   const canEditClassification = !isUpdate || canEditTaskClassification(task);
   const priority = taskPriority(task.pri);
   const optionKinds = canEditClassification ? ['category', 'device_type'] : [];
-  if (!demand) optionKinds.push('project_stage');
   const canEditProject = canEditDetails && !demand && task.demand_id == null;
   const isDispatch = Boolean(demand);
   const descriptionRequired = !isUpdate && !isDispatch;
@@ -1121,8 +1168,9 @@ function taskForm(task = {}, demand, plan) {
   const priorityField = canEditClassification ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
     plan ? 'form="dialog-form"' : isDispatch ? 'required' : '') : '';
   const headingAside = plan ? `<div class="dialog-priority">${priorityField || `<span>优先级</span>${priorityBadge(priority)}`}</div>` : '';
+  const taskOptionsFields = kindField + (plan ? '' : priorityField) + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
   const setupFields = identityFields +
-    `<div class="form-grid">${kindField}${plan ? '' : priorityField}${optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('')}</div>` +
+    (taskOptionsFields ? `<div class="form-grid">${taskOptionsFields}</div>` : '') +
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
   const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status)
@@ -1715,6 +1763,7 @@ const actions = {
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
   'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
+  'task-display-options': taskDisplayOptions,
   'task-update': openTaskUpdate, 'task-transfer': taskTransferForm,
   'task-delete': id => {
     const row = getRow('tasks', id);
@@ -1768,7 +1817,7 @@ const actions = {
   },
   'demand-option-remove': id => {
     const [kind, name] = JSON.parse(id);
-    const records = kind === 'proposer' ? '需求' : kind === 'project_stage' ? '项目和任务' : '任务';
+    const records = kind === 'proposer' ? '需求' : kind === 'project_stage' ? '项目' : '任务';
     confirmDelete('删除' + catalogLabels[kind], '确定删除「' + name + '」？已有' + records + '会保留原值。',
       () => changeDemandOption(kind, 'remove', name));
   },

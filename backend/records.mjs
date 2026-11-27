@@ -9,7 +9,7 @@ const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
     proj: 100, owner_name: 100, assignee_id: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
-    category: 100, device_type: 100, project_stage: 100,
+    category: 100, device_type: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
   demands: { proj: 100, descr: 10000, proposer: 100 }
@@ -117,10 +117,14 @@ export function backfillTaskCodes(db) {
   }
 }
 
-function projectCatalog(db) {
+function projectStage(db, name) {
   const assignedStages = db.projectStages ?? {};
+  return name != null && Object.hasOwn(assignedStages, name) ? assignedStages[name] : null;
+}
+
+function projectCatalog(db) {
   return {
-    projects: db.demandOptions.proj.map(name => ({ name, stage: Object.hasOwn(assignedStages, name) ? assignedStages[name] : null })),
+    projects: db.demandOptions.proj.map(name => ({ name, stage: projectStage(db, name) })),
     stages: db.demandOptions.project_stage
   };
 }
@@ -140,7 +144,7 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
   }
   const handledAt = taskHandledAt(user, task);
   return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
-    handled_by_me: handledAt !== null, handled_at: handledAt || null };
+    project_stage: projectStage(db, row.proj), handled_by_me: handledAt !== null, handled_at: handledAt || null };
 }
 
 function directoryProfile({ id, display_name, emp_no, team, role, status }) {
@@ -206,7 +210,7 @@ function changeable(db, user, table, row, op, patch) {
   }
   if (managesRecord(user, row)) return true;
   return table === 'tasks' && op === 'update' && row.assignee_id === user.id &&
-    Object.keys(patch).every(field => taskProgressFields.has(field) || field === 'project_stage' || taskClassificationFields.includes(field));
+    Object.keys(patch).every(field => taskProgressFields.has(field) || taskClassificationFields.includes(field));
 }
 
 function newTaskPatch(patch) {
@@ -274,8 +278,8 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
 
 export function insertHistoricalTask(db, admin, member, fields) {
   // Keep the full workbook log, including cells longer than the web form limit.
-  const { desc, ...attributes } = fields;
-  const patch = { ...cleanFields('tasks', attributes), desc };
+  const { desc, project_stage, ...attributes } = fields;
+  const patch = { ...cleanFields('tasks', attributes), desc, project_stage: optionalText(project_stage) };
   const { row } = insertRecord(db, admin, 'tasks', patch, undefined, { task_kind: 'W' });
   // Match the existing account even when the member has since left the team.
   row.assignee_id = member.id;
@@ -453,7 +457,6 @@ export function openRecords(store, { recordTaskChange } = {}) {
       if (!patch.category) throw new RequestError(400, '请填写工单分类。');
       if (!patch.device_type) throw new RequestError(400, '请填写设备类型。');
       const kind = taskKind(task);
-      delete patch.project_stage;
 
       const { created, demand } = store.update(db => {
         const source = db.demands.find(row => row.id === id);
