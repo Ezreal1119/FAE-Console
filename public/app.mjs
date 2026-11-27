@@ -18,7 +18,7 @@ const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
 const TASK_KINDS = { L: '临时任务', W: '工作任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态' };
 const npiStages = ['EVT', 'DVT', 'PVT', 'MP'];
@@ -273,9 +273,9 @@ function showWorkspace() {
   $('[data-page="projects"]').hidden = !admin();
   $('[data-page="demandCatalog"]').hidden = !admin();
   const label = myName() || state.user.account;
-  $('#avatar').textContent = label.slice(0, 1);
   $('#user-name').textContent = label;
-  $('#user-role').textContent = accountRole(state.user);
+  $('#user-account').textContent = state.user.account || '';
+  $('#sidebar-password').hidden = primaryAdmin();
   $('#today').dateTime = isoDate();
   $('#today').textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'full' }).format(new Date());
 }
@@ -894,6 +894,7 @@ function catalogOptions(kind) {
   return unique([...state.catalog[kind], ...state.profiles.map(person => person[field])]);
 }
 const peopleHeaders = ['姓名 / 工号', '团队', '岗位', '状态', '进行中任务', '操作'];
+const visiblePeopleHeaders = () => admin() ? peopleHeaders : peopleHeaders.slice(0, -1);
 const accountHeaders = ['登录账号', '姓名', '权限', '密码状态', '操作'];
 function adminRoleAction(account) {
   if (!primaryAdmin() || !account || account.is_primary_admin) return '';
@@ -902,6 +903,7 @@ function adminRoleAction(account) {
 function peopleRows() {
   const { peopleQuery, peopleTeam } = state.filters;
   const accounts = new Map(state.accounts.map(account => [account.id, account]));
+  const showActions = admin();
   return state.profiles.filter(person => (!peopleTeam || person.team === peopleTeam) &&
     hasText(peopleQuery, person.display_name, person.emp_no, person.team, person.role, person.duty)).map(person => {
     const self = same(person.owner_id, state.user.id);
@@ -909,14 +911,15 @@ function peopleRows() {
     const active = editable ? state.tasks.filter(task => task.status !== '已完成' &&
       (task.assignee_id == null ? task.owner_name === person.display_name : same(task.assignee_id, person.owner_id))) : null;
     const edit = editable ? action('编辑', 'person-edit', person.id, 'link') : '';
-    const management = editable && admin() && !self ? action(person.status === '已离职' ? '恢复在职' : '标记离职', 'person-status', person.id, 'link') +
+    const management = editable && showActions && !self ? action(person.status === '已离职' ? '恢复在职' : '标记离职', 'person-status', person.id, 'link') +
       action('删档案', 'person-delete', person.id, 'link danger') : '';
     const authorization = adminRoleAction(accounts.get(person.owner_id));
+    const actionsCell = showActions ? `<td><div class="row-actions">${edit + authorization + management || '—'}</div></td>` : '';
     return `<tr>
       <td>${action(person.display_name || '未填写姓名', 'person-detail', person.id, 'link')}<small class="muted">${shown(person.emp_no)}</small></td>
       <td>${shown(person.team)}</td><td>${shown(person.role)}</td><td>${statusBadge(person.status)}</td>
       <td>${active ? `${active.length} 项 <small class="muted">${sumHours(active)}h</small>` : '—'}</td>
-      <td><div class="row-actions">${edit + authorization + management || '—'}</div></td>
+      ${actionsCell}
     </tr>`;
   }).join('');
 }
@@ -937,16 +940,10 @@ function peoplePage() {
   const buttons = action(person ? '编辑我的档案' : '建立我的档案', person ? 'person-edit' : 'person-new', person?.id) +
     (admin() ? action('Excel 导入', 'account-import') + action('＋ 添加成员', 'account-add', '', 'button primary') : '');
   const toolbar = `<div class="toolbar">${search('peopleQuery', admin() ? '搜索姓名、工号、团队、岗位或技能' : '搜索姓名、工号、团队或岗位')}${filterSelect('peopleTeam', '按团队过滤', catalogOptions('teams'), '全部团队')}</div>`;
-  return heading('人员管理', admin() ? '维护成员档案、在岗状态和登录账号。' : '查阅团队成员信息，维护个人档案。', buttons) +
-    panel(admin() ? '成员档案' : '团队通讯录', toolbar + table(peopleHeaders, peopleRows(), '暂无人员档案。', 'people-rows'),
+  return heading('人员中心', admin() ? '维护成员档案、在岗状态和登录账号。' : '查阅团队成员信息，维护个人档案。', buttons) +
+    panel(admin() ? '成员档案' : '团队通讯录', toolbar + table(visiblePeopleHeaders(), peopleRows(), '暂无人员档案。', 'people-rows'),
       admin() ? '<div class="actions">' + action('团队选项', 'catalog', 'teams', 'link') + action('岗位选项', 'catalog', 'roles', 'link') + '</div>' : '') +
     (admin() ? panel('登录账号', table(accountHeaders, accountsRows(), '暂无账号。')) : '');
-}
-function accountPage() {
-  const description = primaryAdmin() ? '超级管理员密码由服务器环境文件管理。' : '查看登录信息和修改密码。';
-  const actions = primaryAdmin() ? '' : action('修改密码', 'password', '', 'button primary');
-  return heading('我的账号', description, actions) +
-    panel('账号信息', details([['账号', state.user.account], ['姓名', myName()], ['系统权限', accountRole(state.user)]]));
 }
 
 function guidelinesTable({ caption, rows, form }, label) {
@@ -1050,7 +1047,7 @@ function openGuidelinesNotice() {
 }
 
 const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, projects: projectsPage, projectDetail: projectDetailPage, demandCatalog: demandCatalogPage,
-  people: peoplePage, board: boardPage, account: accountPage, guidelines: guidelinesPage };
+  people: peoplePage, board: boardPage, guidelines: guidelinesPage };
 function render() {
   if (!state.user) return;
   const navPage = state.page === 'taskLink' ? 'tasks' : state.page === 'projectDetail' ? 'projects' : state.page;
@@ -2692,7 +2689,7 @@ function updateFilter(event) {
     state.listPages[state.page] = 1;
     updatePagedList(state.page);
   } else {
-    $('#people-rows').innerHTML = peopleRows() || emptyRow(peopleHeaders.length, '没有匹配的人员档案。');
+    $('#people-rows').innerHTML = peopleRows() || emptyRow(visiblePeopleHeaders().length, '没有匹配的人员档案。');
   }
 }
 content.addEventListener('input', updateFilter);
