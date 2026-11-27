@@ -157,7 +157,7 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
   }
   const handledAt = taskHandledAt(user, task);
   return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
-    attachments: files.map(({ id, kind, name, size }) => ({ id, kind, name, size })),
+    attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
     canAppendRequirement: canAppendAttachment(user, task, 'requirement'),
     canAppendDelivery: canAppendAttachment(user, task, 'delivery'),
     project_stage: projectStage(db, row.proj), handled_by_me: handledAt !== null, handled_at: handledAt || null };

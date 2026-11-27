@@ -6,6 +6,7 @@ const content = $('#content');
 const dialog = $('#dialog');
 const taskStartDialog = $('#task-start-dialog');
 const taskCompleteDialog = $('#task-complete-dialog');
+const taskUploadHistoryDialog = $('#task-upload-history-dialog');
 const taskTransferDialog = $('#task-transfer-dialog');
 const guidelinesDialog = $('#guidelines-dialog');
 const guidelinesBody = $('#guidelines-dialog-body');
@@ -214,6 +215,7 @@ function showAuth(error = '') {
   document.title = '工程小管家';
   if (taskStartDialog.open) taskStartDialog.close('cancel');
   if (taskCompleteDialog.open) taskCompleteDialog.close('cancel');
+  if (taskUploadHistoryDialog.open) taskUploadHistoryDialog.close();
   if (taskTransferDialog.open) taskTransferDialog.close('cancel');
   dialog.close();
   guidelinesDialog.close();
@@ -1035,7 +1037,6 @@ function render() {
   const warnings = state.loadWarnings.length && !['projects', 'projectDetail'].includes(state.page)
     ? `<div class="panel actions" role="status"><span class="text-red">${text(state.loadWarnings.join('、'))}加载失败。</span>${action('重新加载', 'refresh', '', 'link')}</div>` : '';
   content.innerHTML = warnings + pages[state.page]();
-  if (state.page === 'taskLink') bindTaskComments(content);
 }
 function navigate(page) {
   if (!Object.hasOwn(pages, page) || (['demandCatalog', 'projects', 'projectDetail'].includes(page) && !admin())) return;
@@ -1154,6 +1155,7 @@ function taskDispatchTime(task) {
 }
 function taskDetails(task, { editable = {} } = {}) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
+  const isCompleted = task.status === '已完成';
   const info = details([
     ['任务类型', TASK_KINDS[task.task_kind]],
     ...(!editable.proj ? [['项目', task.proj]] : []),
@@ -1166,16 +1168,19 @@ function taskDetails(task, { editable = {} } = {}) {
     ...(!editable.pri ? [['优先级', priorityBadge(task.pri), true]] : []),
     ['计划完成时间', task.dueTime],
     ...(!editable.status ? [['计划投入工时', plannedHoursBadge(task), true]] : []),
-    ['投入工时', withHours(task.hours)],
+    ...(isCompleted ? [['投入工时', withHours(task.hours)]] : []),
     ['开始时间', task.startTime],
-    ['完成日期', task.endDate],
+    ...(isCompleted ? [['完成日期', task.endDate]] : []),
     ['需求文件', taskFiles(task, 'requirement'), true],
-    ['交付文件', taskFiles(task, 'delivery', { allowAppend: !editable.delivery }), true],
+    ...(isCompleted ? [['交付文件', taskFiles(task, 'delivery'), true]] : []),
     ...(task.attachments.some(file => file.kind === 'legacy') ? [['历史附件', taskFiles(task, 'legacy'), true]] : []),
     ['前置依赖', task.deps]
   ]);
-  const remarks = `<div class="details-list">${editable.desc ? '' : `<div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>`}
-    <div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div></div>`;
+  const remarkItems = [
+    ...(editable.desc ? [] : [`<div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>`]),
+    ...(isCompleted ? [`<div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div>`] : [])
+  ].join('');
+  const remarks = remarkItems ? `<div class="details-list">${remarkItems}</div>` : '';
   return info + remarks;
 }
 function taskDialogLeadingActions(task) {
@@ -1190,8 +1195,7 @@ function taskDetail(id) {
   const canOperate = task.status !== '已完成' && canUpdateTaskProgress(task);
   if (!canOperate) {
     const leading = leadingActions ? `<div class="dialog-actions-start">${leadingActions}</div>` : '';
-    modal(task.code, '', taskDetails(task) + taskCommentSection(task) + `<div class="dialog-actions">${leading}${action('关闭', 'close')}</div>`, false, '', true);
-    bindTaskComments(dialog);
+    modal(task.code, '', taskDetails(task) + taskUploadHistorySection(task) + `<div class="dialog-actions">${leading}${action('关闭', 'close')}</div>`, false, '', true);
     dialog.querySelector('[data-task-dialog-action="delete"]')?.addEventListener('click', () => {
       confirmDeleteTask(task, () => taskDetail(task.id));
     });
@@ -1215,13 +1219,13 @@ function taskDetail(id) {
   const optionFields = optionKinds.map(kind => taskOptionField(kind, false)).join('');
   const editableRow = (priorityField || optionFields) ? `<div class="form-grid">${priorityField}${optionFields}</div>` : '';
   const fields = taskDetails(task, {
-    editable: { proj: canEditProject, deviceType: canEditClassification, pri: canEditPriority, status: true, desc: canEditDetails, delivery: canChangeStatus }
+    editable: { proj: canEditProject, deviceType: canEditClassification, pri: canEditPriority, status: true, desc: canEditDetails }
   }) +
     (canEditProject ? choiceField('项目', 'proj', { allowCustom: true }) : '') +
     editableRow +
     (canEditDetails ? area('任务描述', 'desc', task.desc, false) : '') +
     (canChangeStatus ? taskFileField('delivery') + uploadProgress : '') +
-    taskCommentSection(task) +
+    taskUploadHistorySection(task) +
     (needsChoices ? choiceStatus : '');
   const formOptions = isPlanning
     ? hasEditableFields
@@ -1282,7 +1286,7 @@ function taskDetail(id) {
       if (Object.keys(patch).length) {
         await applySavedTask(await saveRow('tasks', patch, task.id));
       }
-      if (canChangeStatus && form.elements.files?.files?.length) {
+      if (canChangeStatus && filePicker.files().length) {
         const files = await upload('delivery');
         if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
         const attached = await post('/api/tasks/attachments', { taskId: task.id, kind: 'delivery', files });
@@ -1295,8 +1299,8 @@ function taskDetail(id) {
       throw error;
     }
   }, formOptions);
-  const upload = canChangeStatus ? bindFileUploads(form, () => form.elements.files?.files) : null;
-  bindTaskComments(form);
+  const filePicker = canChangeStatus ? bindTaskFilePicker(form) : null;
+  const upload = canChangeStatus ? bindFileUploads(form, () => filePicker.files()) : null;
   const taskOptions = bindTaskOptions(form, task, optionKinds);
   if (canEditProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
@@ -1311,7 +1315,7 @@ function taskDetail(id) {
     confirmDeleteTask(task, () => taskDetail(task.id));
   });
   form.querySelector('[data-task-dialog-action="transfer"]')?.addEventListener('click', () => {
-    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0 || Boolean(form.elements.files?.files?.length);
+    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0 || Boolean(filePicker?.files().length);
     if (dirty && !window.confirm('当前有未保存的修改，转交负责人将放弃这些修改，是否继续？')) return;
     taskTransferForm(task.id, { returnToDetail: true });
   });
@@ -1326,148 +1330,125 @@ function taskLinkPage() {
   const manage = task.status !== '已完成' && canUpdateTaskProgress(task)
     ? action(task.status === '待规划' ? '开始规划' : '更新任务', 'task-detail', task.id, 'button primary')
     : '';
-  return heading(task.code, '', back + manage) + panel('任务详情', taskDetails(task) + taskCommentSection(task));
+  return heading(task.code, '', back + manage) + panel('任务详情', taskDetails(task) + taskUploadHistorySection(task));
 }
 
-function commentButton(label, name, { className = 'link', hidden = false } = {}) {
-  return `<button type="button" class="${className}" data-comment-action="${name}"${hidden ? ' hidden' : ''}>${label}</button>`;
+function attachmentUploadTime(value) {
+  const ms = typeof value === 'number' ? value : Date.parse(value ?? '');
+  return Number.isFinite(ms) ? formatPlanningTime(new Date(ms).toISOString()) : '—';
 }
 
-function taskCommentSection(task) {
-  return `<details class="task-comments" data-task-comments="${text(task.id)}">
-    <summary>评论</summary>
-    <div class="task-comment-compose" data-comment-compose hidden>
-      <textarea rows="2" maxlength="2000" aria-label="新增评论" placeholder="写一条评论"></textarea>
-      ${commentButton('发表评论', 'create', { className: 'button' })}
-    </div>
-    <div class="task-comment-list" data-comment-list tabindex="0" aria-label="任务评论"></div>
-    <div class="task-comment-nav">
-      <p class="muted text-small" role="status" data-comment-message></p>
-      ${commentButton('重试', 'reload', { hidden: true })}
-      ${commentButton('较新', 'newer', { hidden: true })}
-      ${commentButton('较早', 'older', { hidden: true })}
-    </div>
-  </details>`;
+function taskUploadHistorySection(task) {
+  const count = task.attachments.filter(file => file.kind === 'delivery').length;
+  return `<div class="task-upload-history-bar">
+    <button type="button" class="button" data-action="task-upload-history" data-id="${text(task.id)}">上传记录${count ? '（' + count + '）' : ''}</button>
+  </div>`;
 }
 
-function commentTime(value) {
-  return `<time datetime="${text(value)}">${text(formatPlanningTime(value))}</time>`;
+function openTaskUploadHistory(id) {
+  const task = getRow('tasks', id);
+  const deliveries = task.attachments
+    .filter(file => file.kind === 'delivery')
+    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
+  $('#task-upload-history-code').textContent = task.code;
+  $('#task-upload-history-body').innerHTML = deliveries.length
+    ? deliveries.map(file => {
+      const name = file.id
+        ? `<a class="link" href="${attachmentUrl(task.id, file.id)}" download>${text(file.name)}</a>`
+        : `<strong>${text(file.name)}</strong> <small class="muted">桌面本地附件</small>`;
+      const download = file.id
+        ? `<a class="button" href="${attachmentUrl(task.id, file.id)}" download>下载</a>`
+        : '';
+      return `<div class="upload-history-item">
+        <div class="upload-history-meta">${name}<time class="muted text-small">${text(attachmentUploadTime(file.created_at))}</time></div>
+        ${download}
+      </div>`;
+    }).join('')
+    : '<p class="empty">暂无交付文件上传记录。</p>';
+  taskUploadHistoryDialog.showModal();
 }
 
-function taskCommentMarkup(comment, editing) {
-  const controls = editing
-    ? commentButton('保存', 'update') + commentButton('取消', 'cancel')
-    : (comment.canEdit ? commentButton('编辑', 'edit') : '') +
-      (comment.canDelete ? commentButton('删除', 'delete', { className: 'link danger' }) : '');
-  return `<article class="task-comment" data-comment-id="${text(comment.id)}">
-    <header><strong>${shown(comment.author_name)}</strong>
-      <span class="muted text-small">${commentTime(comment.created_at)}${comment.edited_at ? ' · 已编辑 ' + commentTime(comment.edited_at) : ''}</span>
-      <div class="task-comment-actions">${controls}</div>
-    </header>
-    ${editing ? `<textarea rows="3" maxlength="2000" aria-label="编辑评论">${text(comment.body)}</textarea>`
-      : `<p>${text(comment.body)}</p>`}
-  </article>`;
-}
-
-function bindTaskComments(container) {
-  const section = container.querySelector('[data-task-comments]');
-  if (!section) return;
-  const taskId = Number(section.dataset.taskComments);
-  const list = section.querySelector('[data-comment-list]');
-  const compose = section.querySelector('[data-comment-compose]');
-  const input = compose.querySelector('textarea');
-  const message = section.querySelector('[data-comment-message]');
-  const button = name => section.querySelector(`[data-comment-action="${name}"]`);
-  let cursors = [null], next = null, comments = [], editing = null;
-  let busy = false;
-
-  function renderComments() {
-    const scrollTop = list.scrollTop;
-    list.innerHTML = comments.length ? comments.map(comment => taskCommentMarkup(comment, comment.id === editing)).join('')
-      : '<p class="muted text-small">暂无评论。</p>';
-    list.scrollTop = scrollTop;
-  }
-
-  async function load(page = cursors) {
-    const before = page.at(-1);
-    const response = await post('/api/tasks/comments', { taskId, before });
-    if (!section.isConnected) return;
-    const pageChanged = before !== cursors.at(-1);
-    cursors = page;
-    next = response.before;
-    comments = response.comments;
-    editing = null;
-    renderComments();
-    if (pageChanged) list.scrollTop = 0;
-    compose.hidden = !response.canComment;
-    button('newer').hidden = page.length === 1;
-    button('older').hidden = next === null;
-  }
-
-  async function run(work) {
-    if (busy) return;
-    busy = true;
-    message.textContent = '';
-    message.classList.remove('text-red');
-    button('reload').hidden = true;
-    section.setAttribute('aria-busy', 'true');
-    try {
-      await work();
-    } catch (error) {
-      message.textContent = error.message;
-      message.classList.add('text-red');
-      button('reload').hidden = false;
-    } finally {
-      busy = false;
-      section.removeAttribute('aria-busy');
-    }
-  }
-
-  section.addEventListener('toggle', () => {
-    if (section.open) void run(async () => {
-      message.textContent = '正在加载评论…';
-      await load();
-      if (section.isConnected) message.textContent = '';
-    });
-  });
-  section.addEventListener('click', event => {
-    const target = event.target.closest('[data-comment-action]');
-    if (!target || busy) return;
-    const name = target.dataset.commentAction;
-    if (name === 'reload') return void run(() => load());
-    if (name === 'newer') return void run(() => load(cursors.slice(0, -1)));
-    if (name === 'older') return void run(() => load([...cursors, next]));
-    const article = target.closest('[data-comment-id]');
-    const comment = comments.find(item => same(item.id, article?.dataset.commentId));
-    if (name === 'edit' || name === 'cancel') {
-      editing = name === 'edit' ? comment?.id : null;
-      renderComments();
-      list.querySelector(editing ? 'textarea' : `[data-comment-id="${comment?.id}"] [data-comment-action="edit"]`)?.focus();
-      return;
-    }
-    const field = name === 'create' ? input : article?.querySelector('textarea');
-    const body = trimmed(field?.value);
-    if (name !== 'delete' && !body) {
-      message.textContent = '请填写评论。';
-      message.classList.add('text-red');
-      field?.focus();
-      return;
-    }
-    if (name === 'delete' && !window.confirm('删除这条评论？')) return;
-    void run(async () => {
-      await post('/api/tasks/comments/change', { taskId, action: name, commentId: comment?.id,
-        expectedVersion: comment?.version, body });
-      if (name === 'create' && trimmed(input.value) === body) input.value = '';
-      if (!section.isConnected) return;
-      await load(name === 'create' ? [null] : cursors);
-      if (name === 'create') list.scrollTop = 0;
-    });
-  });
-}
 const uploadProgress = '<p class="muted text-small" data-upload-progress role="status" hidden></p>';
 function taskFileField(kind, required = false) {
-  const label = attachmentLabels[kind] + '（' + (required ? '' : '选填，') + '每次最多 12 个，每个最多 50 MB）';
-  return field(label, 'files', '', 'type="file" multiple' + (required ? ' required' : ''));
+  const title = attachmentLabels[kind] + '（' + (required ? '必填，' : '选填，') + '每次最多 12 个，每个最多 50 MB）';
+  return `<div class="file-upload-field" data-file-upload>
+    <p class="file-upload-title">${text(title)}</p>
+    <input name="files" type="file" multiple hidden>
+    <button type="button" class="import-drop file-drop">
+      <strong>点击选择文件，或拖拽文件到这里</strong>
+      <span>支持多选，每次最多 12 个，单个不超过 50 MB</span>
+    </button>
+    <ul class="file-selected-list" data-selected-files hidden></ul>
+  </div>`;
+}
+
+function bindTaskFilePicker(form) {
+  const field = form.querySelector('[data-file-upload]');
+  if (!field) return { files: () => [] };
+  const input = field.querySelector('input[type="file"]');
+  const drop = field.querySelector('.file-drop');
+  const list = field.querySelector('[data-selected-files]');
+  const message = form.querySelector('.form-error');
+  let selected = [];
+
+  function renderSelected() {
+    list.hidden = !selected.length;
+    list.innerHTML = selected.map((file, index) => `<li>
+      <span>${text(file.name)}</span>
+      <button type="button" class="link danger" data-file-remove="${index}">移除</button>
+    </li>`).join('');
+  }
+
+  function addFiles(incoming) {
+    const additions = [...incoming].filter(file => file?.name);
+    if (!additions.length) return;
+    const next = [...selected];
+    for (const file of additions) {
+      if (next.length >= 12) {
+        formError(message, '每次最多上传 12 个文件。');
+        break;
+      }
+      if (!file.size || file.size > 50 * 1024 * 1024) {
+        formError(message, '请选择不超过 50 MB 的非空文件。');
+        continue;
+      }
+      if (!file.name.trim() || file.name.length > 255 || /[\x00-\x1f\x7f/\\]/.test(file.name)) {
+        formError(message, '文件名称无效，请重新命名后上传。');
+        continue;
+      }
+      next.push(file);
+    }
+    selected = next;
+    renderSelected();
+  }
+
+  drop.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    formError(message, '');
+    addFiles(input.files);
+    input.value = '';
+  });
+  drop.addEventListener('dragover', event => {
+    event.preventDefault();
+    drop.classList.add('dragging');
+  });
+  drop.addEventListener('dragleave', event => {
+    if (!drop.contains(event.relatedTarget)) drop.classList.remove('dragging');
+  });
+  drop.addEventListener('drop', event => {
+    event.preventDefault();
+    drop.classList.remove('dragging');
+    formError(message, '');
+    addFiles(event.dataTransfer?.files || []);
+  });
+  list.addEventListener('click', event => {
+    const remove = event.target.closest('[data-file-remove]');
+    if (!remove) return;
+    selected.splice(Number(remove.dataset.fileRemove), 1);
+    renderSelected();
+  });
+
+  return { files: () => selected };
 }
 
 function bindFileUploads(form, getFiles) {
@@ -1517,6 +1498,7 @@ function appendTaskFiles([taskId, kind]) {
   const task = getRow('tasks', taskId);
   const form = modalForm('补传' + attachmentLabels[kind], task.code, taskFileField(kind, true) + uploadProgress, async () => {
     const session = state.user;
+    if (!filePicker.files().length) throw new Error('请至少选择一个文件。');
     const files = await upload(kind);
     if (state.user !== session || !dialog.open || !dialog.contains(form)) return false;
     const result = await post('/api/tasks/attachments', { taskId, kind, files });
@@ -1525,7 +1507,8 @@ function appendTaskFiles([taskId, kind]) {
     if (dialog.open && dialog.contains(form)) taskDetail(taskId);
     return false;
   }, { submit: '确认上传' });
-  const upload = bindFileUploads(form, () => form.elements.files.files);
+  const filePicker = bindTaskFilePicker(form);
+  const upload = bindFileUploads(form, () => filePicker.files());
 }
 
 async function applySavedTask(row) {
@@ -1695,7 +1678,8 @@ function taskForm(demand) {
     }
     toast(demand ? '任务已派发。' : '任务已创建。');
   }, { submit: demand ? '派发任务' : '保存' });
-  const upload = isDispatch ? bindFileUploads(form, () => form.elements.files.files) : null;
+  const filePicker = isDispatch ? bindTaskFilePicker(form) : null;
+  const upload = isDispatch ? bindFileUploads(form, () => filePicker.files()) : null;
   const taskOptions = bindTaskOptions(form, {}, ['device_type']);
   if (!isDispatch) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: null, label: '' }, { allowCustom: true });
@@ -2205,7 +2189,7 @@ const actions = {
     section.scrollIntoView({ block: 'start' });
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
-  'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
+  'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-upload-history': openTaskUploadHistory, 'task-list': () => navigate('tasks'),
   'task-display-options': taskDisplayOptions,
   'task-transfer': id => taskTransferForm(id),
   'demand-new': () => demandForm(), 'demand-edit': id => demandForm(getRow('demands', id)), 'demand-detail': demandDetail,
@@ -2377,6 +2361,9 @@ taskStartDialog.addEventListener('submit', event => {
   input.reportValidity();
 });
 taskStartDialog.querySelector('[name=plan_hours]').addEventListener('input', event => event.target.setCustomValidity(''));
+for (const button of taskUploadHistoryDialog.querySelectorAll('[data-upload-history-close]')) {
+  button.addEventListener('click', () => taskUploadHistoryDialog.close());
+}
 taskCompleteDialog.querySelector('[data-completion-cancel]').addEventListener('click', () => taskCompleteDialog.close('cancel'));
 taskCompleteDialog.addEventListener('submit', event => {
   const result = event.target.elements.result;
