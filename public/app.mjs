@@ -1203,7 +1203,7 @@ function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
     ['任务类型', TASK_KINDS[task.task_kind]],
     ...(!editable.deviceType ? [['设备类型', task.device_type]] : []),
     ...(!editable.proj ? [['项目', task.proj]] : []),
-    ['项目阶段', task.project_stage],
+    ['项目阶段', `<span data-task-project-stage>${shown(task.project_stage)}</span>`, true],
     ...(!hideOwner ? [['负责人', task.owner_name]] : []),
     ...(!editable.status ? [['状态', statusBadge(task.status), true]] : []),
     ...(!editable.pri ? [['优先级', priorityBadge(task.pri), true]] : []),
@@ -1223,12 +1223,11 @@ function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
   const remarks = remarkItems ? `<div class="details-list">${remarkItems}</div>` : '';
   return info + demandSection + remarks;
 }
-function taskDialogLeadingActions(task, { showSave = false } = {}) {
+function taskDialogLeadingActions(task) {
   const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
   const remove = canDelete ? '<button type="button" class="button danger" data-task-dialog-action="delete">删除</button>' : '';
-  const save = showSave ? '<button type="submit" class="button primary" value="save">保存</button>' : '';
   const transfer = canTransferTask(task) ? '<button type="button" class="button" data-task-dialog-action="transfer">转交负责人</button>' : '';
-  return remove + save + transfer;
+  return remove + transfer;
 }
 function updateTaskUploadHistoryCount(task) {
   const count = task.attachments.filter(file => file.kind === 'delivery').length;
@@ -1241,8 +1240,8 @@ function taskDetail(id) {
   const priority = taskPriority(task.pri);
   const hideOwner = state.page === 'tasks' && assignedToMe(task);
   const canOperate = task.status !== '已完成' && canUpdateTaskProgress(task);
+  const leadingActions = taskDialogLeadingActions(task);
   if (!canOperate) {
-    const leadingActions = taskDialogLeadingActions(task);
     const footer = leadingActions ? `<div class="dialog-actions"><div class="dialog-actions-start">${leadingActions}</div></div>` : '';
     const headingAside = `<div class="dialog-task-meta">${priorityBadge(priority)}${plannedHoursBadge(task, '计划投入工时 ')}${statusBadge(task.status)}</div>`;
     modal(task.code, '', taskDetails(task, { editable: { pri: true, status: true }, hideOwner }) + taskUploadHistorySection(task) + footer,
@@ -1258,8 +1257,6 @@ function taskDetail(id) {
   const canEditProject = canEditDetails && task.demand_id == null;
   const canEditPriority = canEditClassification && !isPlanning;
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
-  const hasEditableProps = canEditProject || canEditDetails || canEditClassification;
-  const leadingActions = taskDialogLeadingActions(task, { showSave: hasEditableProps });
   const optionKinds = canEditClassification ? ['device_type'] : [];
   const needsChoices = canEditProject || optionKinds.length > 0;
   const priorityControl = canEditPriority
@@ -1286,28 +1283,33 @@ function taskDetail(id) {
     ? { submit: '开始规划', submitClass: 'primary', hideCancel: true, leadingActions, headingAside, focusTitle: true }
     : { submit: '完成任务', submitClass: 'success', hideCancel: true, leadingActions, headingAside, focusTitle: true };
   let project, loadChoices, completionDraft, planDraftHours;
-  function collectTaskPatch(values) {
-    const patch = taskOptions.changes();
+  let saveQueue = Promise.resolve();
+  function collectPendingPatch(values) {
+    const latest = getRow('tasks', task.id);
+    const patch = {};
     if (canEditProject) {
       const proj = project.value();
-      if (proj !== optional(task.proj)) patch.proj = proj;
+      if (proj !== optional(latest.proj)) patch.proj = proj;
+    }
+    for (const kind of optionKinds) {
+      const value = taskOptions.value(kind);
+      if (value !== optional(latest[kind])) patch[kind] = value;
     }
     if (canEditDetails) {
       const desc = optional(values.desc);
-      if (desc !== optional(task.desc)) patch.desc = desc;
+      if (desc !== optional(latest.desc)) patch.desc = desc;
     }
-    if (canEditPriority && values.pri !== priority) patch.pri = values.pri;
+    if (canEditPriority && values.pri !== taskPriority(latest.pri)) patch.pri = values.pri;
     return patch;
   }
-  const form = modalForm(task.code, '', fields, async (values, _isSecondary, submitValue) => {
+  const form = modalForm(task.code, '', fields, async values => {
     const formUser = state.user;
-    const saving = submitValue === 'save';
-    const starting = isPlanning && !saving;
-    const completing = canChangeStatus && !saving;
-    const patch = collectTaskPatch(values);
+    await saveQueue;
+    if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+    const patch = collectPendingPatch(values);
 
     try {
-      if (starting) {
+      if (isPlanning) {
         const plan = await post('/api/tasks/plan-preview', { taskId: task.id });
         if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
         const start = await confirmTaskStart(plan, getRow('tasks', task.id), planDraftHours);
@@ -1321,41 +1323,57 @@ function taskDetail(id) {
         toast('任务已开始。');
         return;
       }
-      if (completing) {
-        const latest = getRow('tasks', task.id);
-        const hasDeliveryFiles = latest.attachments.some(file => file.kind === 'delivery');
-        const completion = await confirmTaskCompletion(completionDraft ?? latest, hasDeliveryFiles);
-        if (!completion) return false;
-        completionDraft = completion;
-        if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
-        const current = getRow('tasks', task.id);
-        const result = await post('/api/tasks/complete', {
-          taskId: task.id, expectedVersion: current.version, hours: completion.hours, files: [],
-          changes: { ...patch, result: completion.result }
-        });
-        await applySavedTask(result.task);
-        toast('任务已完成。');
-        return;
-      }
-      if (Object.keys(patch).length) {
-        await applySavedTask(await saveRow('tasks', patch, task.id));
-      }
-      toast('任务已更新。');
+      const latest = getRow('tasks', task.id);
+      const hasDeliveryFiles = latest.attachments.some(file => file.kind === 'delivery');
+      const completion = await confirmTaskCompletion(completionDraft ?? latest, hasDeliveryFiles);
+      if (!completion) return false;
+      completionDraft = completion;
+      if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+      const current = getRow('tasks', task.id);
+      const result = await post('/api/tasks/complete', {
+        taskId: task.id, expectedVersion: current.version, hours: completion.hours, files: [],
+        changes: { ...patch, result: completion.result }
+      });
+      await applySavedTask(result.task);
+      toast('任务已完成。');
     } catch (error) {
       if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
       if (error.status === 409 && state.user) await refresh();
       throw error;
     }
   }, formOptions);
+  const formMessage = form.querySelector('.form-error');
+  function autoSave(patch, { rollback, message: toastText = '已保存。' } = {}) {
+    const run = async () => {
+      const session = state.user;
+      if (dialog.contains(form)) formError(formMessage, '');
+      try {
+        const saved = await saveRow('tasks', patch, task.id);
+        if (state.user !== session) return;
+        await applySavedTask(saved);
+        const updated = normalizeTask(saved);
+        const stageEl = dialog.querySelector('[data-task-project-stage]');
+        if (stageEl) stageEl.textContent = updated.project_stage || '—';
+        toast(toastText);
+      } catch (error) {
+        rollback?.();
+        if (dialog.contains(form)) formError(formMessage, error.message);
+        else toast(error.message);
+        if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
+        if (error.status === 409 && state.user) await refresh();
+      }
+    };
+    saveQueue = saveQueue.then(run, run);
+    return saveQueue;
+  }
   const upload = canChangeStatus ? bindFileUploads(form, () => []) : null;
   if (canChangeStatus) {
     const drop = form.querySelector('.file-drop');
-    const message = form.querySelector('.form-error');
     bindTaskFilePicker(form, {
       onFiles: async chosen => {
         const session = state.user;
         drop.disabled = true;
-        formError(message, '');
+        formError(formMessage, '');
         try {
           const uploaded = await upload('delivery', chosen);
           if (!uploaded.length || state.user !== session || !dialog.open || !dialog.contains(form)) return;
@@ -1364,7 +1382,7 @@ function taskDetail(id) {
           updateTaskUploadHistoryCount(normalizeTask(attached.task));
           toast('已上传交付文件。');
         } catch (error) {
-          formError(message, error.message);
+          formError(formMessage, error.message);
           if (error.status === 409 && state.user) await refresh();
         } finally {
           drop.disabled = false;
@@ -1372,30 +1390,60 @@ function taskDetail(id) {
       }
     });
     const statusSelect = dialog.querySelector('select[name="status"]');
-    statusSelect?.addEventListener('change', async () => {
+    statusSelect?.addEventListener('change', () => {
       const latest = getRow('tasks', task.id);
       const nextStatus = statusSelect.value;
       if (nextStatus === latest.status) return;
-      const session = state.user;
       statusSelect.disabled = true;
-      formError(message, '');
-      try {
-        const saved = await saveRow('tasks', { status: nextStatus }, task.id);
-        if (state.user !== session) return;
-        await applySavedTask(saved);
-        toast('任务状态已更新。');
-      } catch (error) {
-        try { statusSelect.value = getRow('tasks', task.id).status; } catch { /* ignore */ }
-        formError(message, error.message);
-        if (error.status === 409 && state.user) await refresh();
-      } finally {
-        statusSelect.disabled = false;
-      }
+      void autoSave({ status: nextStatus }, {
+        rollback: () => { try { statusSelect.value = getRow('tasks', task.id).status; } catch { /* ignore */ } },
+        message: '任务状态已更新。'
+      }).finally(() => { statusSelect.disabled = false; });
     });
   }
-  const taskOptions = bindTaskOptions(form, task, optionKinds);
+  if (canEditPriority) {
+    const priSelect = dialog.querySelector('select[name="pri"]');
+    priSelect?.addEventListener('change', () => {
+      const latest = getRow('tasks', task.id);
+      const nextPri = priSelect.value;
+      if (nextPri === taskPriority(latest.pri)) return;
+      priSelect.disabled = true;
+      void autoSave({ pri: nextPri }, {
+        rollback: () => { try { priSelect.value = taskPriority(getRow('tasks', task.id).pri); } catch { /* ignore */ } },
+        message: '优先级已更新。'
+      }).finally(() => { priSelect.disabled = false; });
+    });
+  }
+  if (canEditDetails) {
+    const descField = form.elements.desc;
+    descField?.addEventListener('blur', () => {
+      let latest;
+      try { latest = getRow('tasks', task.id); } catch { return; }
+      const nextDesc = optional(descField.value);
+      if (nextDesc === optional(latest.desc)) return;
+      void autoSave({ desc: nextDesc }, { message: '任务描述已保存。' });
+    });
+  }
+  const taskOptions = bindTaskOptions(form, task, optionKinds, {
+    onChange: (kind, value) => {
+      const latest = getRow('tasks', task.id);
+      if (value === optional(latest[kind])) return;
+      void autoSave({ [kind]: value }, {
+        rollback: () => { try { taskOptions.setValue(kind, optional(getRow('tasks', task.id)[kind])); } catch { /* ignore */ } }
+      });
+    }
+  });
   if (canEditProject) {
-    project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
+    project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, {
+      allowCustom: true,
+      onChange: value => {
+        const latest = getRow('tasks', task.id);
+        if (value === optional(latest.proj)) return;
+        void autoSave({ proj: value }, {
+          rollback: () => { try { project.setValue(optional(getRow('tasks', task.id).proj)); } catch { /* ignore */ } }
+        });
+      }
+    });
   }
   if (needsChoices) {
     loadChoices = prepareFormChoices(form, ({ options }) => {
@@ -1406,10 +1454,9 @@ function taskDetail(id) {
   form.querySelector('[data-task-dialog-action="delete"]')?.addEventListener('click', () => {
     confirmDeleteTask(getRow('tasks', task.id), () => taskDetail(task.id));
   });
-  form.querySelector('[data-task-dialog-action="transfer"]')?.addEventListener('click', () => {
-    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0;
-    if (dirty && !window.confirm('当前有未保存的修改，转交负责人将放弃这些修改，是否继续？')) return;
-    taskTransferForm(task.id, { returnToDetail: true });
+  form.querySelector('[data-task-dialog-action="transfer"]')?.addEventListener('click', async () => {
+    await saveQueue;
+    if (state.user) taskTransferForm(task.id, { returnToDetail: true });
   });
 }
 function taskLinkPage() {
@@ -1859,7 +1906,7 @@ function choiceField(label, key, { allowCustom = false, inlineList = false, requ
   </div>`;
 }
 
-function bindChoice(field, initial, { clearable = true, allowCustom = false, closeOnBlur = true } = {}) {
+function bindChoice(field, initial, { clearable = true, allowCustom = false, closeOnBlur = true, onChange } = {}) {
   const input = field.querySelector('input');
   const list = field.querySelector('ul');
   let options = [];
@@ -1908,9 +1955,11 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false, clo
     restore();
   }
   function choose(index) {
+    const prev = selected.value;
     selected = results[index];
     close();
     input.select();
+    if (selected.value !== prev) onChange?.(selected.value);
   }
 
   input.addEventListener('focus', () => { show(); input.select(); });
@@ -1928,11 +1977,13 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false, clo
   });
   input.addEventListener('blur', () => {
     if (!closeOnBlur) return;
+    const prev = selected.value;
     if (allowCustom && query !== null) {
       const value = optional(query);
       selected = { value, label: value };
     }
     close();
+    if (selected.value !== prev) onChange?.(selected.value);
   });
   input.addEventListener('keydown', event => {
     if (event.isComposing || event.keyCode === 229) return;
@@ -1964,6 +2015,11 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false, clo
     value: () => allowCustom && query !== null ? optional(query) : selected.value,
     selection: () => selected,
     close,
+    setValue(value) {
+      selected = { value: value ?? null, label: value ?? null };
+      query = null;
+      restore();
+    },
     setOptions(next) {
       options = next;
       input.disabled = false;
@@ -1990,10 +2046,13 @@ function taskOptionField(kind, required) {
   return choiceField(catalogLabels[kind], kind, { allowCustom: true, required });
 }
 
-function bindTaskOptions(form, task, kinds) {
+function bindTaskOptions(form, task, kinds, { onChange } = {}) {
   const fields = kinds.map(kind => {
     const initial = task[kind] ?? null;
-    const picker = bindChoice(form.querySelector(`[data-choice=${kind}]`), { value: initial, label: initial }, { allowCustom: true });
+    const picker = bindChoice(form.querySelector(`[data-choice=${kind}]`), { value: initial, label: initial }, {
+      allowCustom: true,
+      onChange: value => onChange?.(kind, value)
+    });
     return { kind, initial, picker };
   });
   return {
@@ -2004,6 +2063,12 @@ function bindTaskOptions(form, task, kinds) {
         if (value !== initial) patch[kind] = value;
       }
       return patch;
+    },
+    value(kind) {
+      return fields.find(field => field.kind === kind)?.picker.value() ?? null;
+    },
+    setValue(kind, value) {
+      fields.find(field => field.kind === kind)?.picker.setValue(value);
     },
     setOptions(options) {
       for (const { kind, picker } of fields) picker.setOptions(catalogChoiceEntries(options[kind], kind));
