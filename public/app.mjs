@@ -410,14 +410,15 @@ function workspacePage() {
   const week = weekRange();
   const weekly = tasks.filter(task => inWeek(task.endDate, week));
   const queue = [...active].sort((a, b) => (a.dueTime || '9999').localeCompare(b.dueTime || '9999')).slice(0, 8);
-  const headers = ['任务编号', '项目', '状态', '计划完成', '计划工时', '任务描述'];
+  const headers = ['任务编号', '项目', '项目阶段', '状态', '优先级', '计划完成', '计划工时', '任务描述'];
   const at = Date.now();
   const rows = queue.map(task => `<tr>
       <td>${action(task.code, 'task-detail', task.id, 'link task-code')}</td><td>${shown(task.proj)}</td>
-      <td>${statusBadge(task.status)}</td>${taskDeadlineCell(task, overdue(task, at))}<td>${plannedHoursBadge(task)}</td>
+      <td>${shown(task.project_stage)}</td><td>${statusBadge(task.status)}</td><td>${priorityBadge(task.pri)}</td>
+      ${taskDeadlineCell(task, overdue(task, at))}<td>${plannedHoursBadge(task)}</td>
       ${descCell(task.desc)}
     </tr>`).join('');
-  return heading('工作台', myName() ? '你好，' + myName() : '', /* action('导出本周任务', 'export-week') + */ action('＋ 新建任务', 'task-new', '', 'button primary')) +
+  return heading('工作台', myName() ? '你好，' + myName() : '', '' /* action('导出本周任务', 'export-week') */) +
     stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task, at)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
     panel('我的待办', table(headers, rows, '暂无待办任务', 'todo-rows'), action('任务中心', 'go', 'tasks', 'link')) +
     pagedListPanel('home');
@@ -605,12 +606,15 @@ function handledTasks() {
     .sort((a, b) => (b.handled_at || '').localeCompare(a.handled_at || '') || b.id - a.id);
 }
 function handledTaskRows(tasks) {
+  const at = Date.now();
   return tasks.map(task => `<tr>
-    <td>${action(task.code, 'task-detail', task.id, 'link')}</td>
-    <td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td></tr>`).join('');
+    <td>${action(task.code, 'task-detail', task.id, 'link task-code')}</td><td>${shown(task.proj)}</td>
+    <td>${shown(task.project_stage)}</td><td>${statusBadge(task.status)}</td><td>${priorityBadge(task.pri)}</td>
+    ${taskDeadlineCell(task, overdue(task, at))}<td>${shown(task.owner_name)}</td>
+    ${descCell(task.desc)}</tr>`).join('');
 }
 const pagedLists = {
-  home: { id: 'handled', title: '我经手的任务', headers: ['任务编号', '项目', '状态', '当前负责人'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
+  home: { id: 'handled', title: '我经手的任务', headers: ['任务编号', '项目', '项目阶段', '状态', '优先级', '计划完成', '当前负责人', '任务描述'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
   tasks: { id: 'task', title: '任务列表', get headers() { return visibleTaskColumns(); }, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
   demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
 };
