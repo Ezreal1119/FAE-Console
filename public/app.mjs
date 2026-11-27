@@ -14,6 +14,7 @@ const guidelinesBody = $('#guidelines-dialog-body');
 const guidelinesConfirm = $('#confirm-guidelines');
 const guidelinesScrollHint = $('#guidelines-scroll-hint');
 const STATUS = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
+const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
 const TASK_KINDS = { L: '临时任务', W: '工作任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
@@ -23,7 +24,7 @@ const catalogLabels = { proposer: '需求提出方', device_type: '设备类型'
 const npiStages = ['EVT', 'DVT', 'PVT', 'MP'];
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
-  taskQuery: '', taskStatus: '', taskPriority: '', taskScope: 'mine',
+  taskQuery: '', taskStatus: '未完成', taskPriority: '', taskStage: '', taskTeam: '', taskScope: 'mine',
   demandQuery: '', peopleQuery: '', peopleTeam: ''
 };
 const listPageSize = 10;
@@ -416,7 +417,7 @@ function workspacePage() {
       <td>${statusBadge(task.status)}</td>${taskDeadlineCell(task, overdue(task, at))}<td>${plannedHoursBadge(task)}</td>
       ${descCell(task.desc)}
     </tr>`).join('');
-  return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
+  return heading('工作台', myName() ? '你好，' + myName() : '', /* action('导出本周任务', 'export-week') + */ action('＋ 新建任务', 'task-new', '', 'button primary')) +
     stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task, at)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
     panel('我的待办', table(headers, rows, '暂无待办任务', 'todo-rows'), action('任务中心', 'go', 'tasks', 'link')) +
     pagedListPanel('home');
@@ -485,12 +486,24 @@ function matchesTaskScope(task, scope) {
   return (scope === 'all' && admin()) || assignedToMe(task);
 }
 
+function taskOwnerProfile(task) {
+  return task.assignee_id == null ? null : state.profiles.find(person => same(person.owner_id, task.assignee_id));
+}
+
 function filteredTasks() {
-  const { taskQuery, taskStatus, taskPriority: priority, taskScope } = state.filters;
-  return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
-    (!priority || taskPriority(task.pri) === priority) &&
-    hasText(taskQuery, task.code, task.id, task.proj, task.device_type, task.project_stage,
-      task.owner_name, task.desc, task.result));
+  const { taskQuery, taskStatus, taskPriority: priority, taskStage, taskTeam, taskScope } = state.filters;
+  const isAdmin = admin();
+  return state.tasks.filter(task => {
+    if (!matchesTaskScope(task, taskScope)) return false;
+    if (taskStatus === '未完成' ? task.status === '已完成' : taskStatus && task.status !== taskStatus) return false;
+    if (priority && taskPriority(task.pri) !== priority) return false;
+    if (taskStage && task.project_stage !== taskStage) return false;
+    const ownerProfile = isAdmin ? taskOwnerProfile(task) : null;
+    if (isAdmin && taskTeam && ownerProfile?.team !== taskTeam) return false;
+    return isAdmin
+      ? hasText(taskQuery, task.code, task.desc, task.proj, task.device_type, task.owner_name, ownerProfile?.emp_no)
+      : hasText(taskQuery, task.code, task.desc, task.proj, task.device_type);
+  });
 }
 function taskSortValue(task, key) {
   if (key === 'pri') return PRIORITY.indexOf(taskPriority(task.pri));
@@ -546,9 +559,12 @@ function updateTaskOverdueIndicators() {
 function tasksPage() {
   const scope = admin() ? `<select aria-label="任务范围" data-filter="taskScope">${option('all', state.filters.taskScope, '所有任务')}${option('mine', state.filters.taskScope, '我负责的任务')}</select>` : '';
   const priority = filterSelect('taskPriority', '按优先级筛选', PRIORITY, '全部优先级');
-  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务编号、描述、项目、设备类型、项目阶段或负责人')}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
-  return heading('任务中心', '跟进任务分工、进度和交付记录。', action('显示选项', 'task-display-options') + action('刷新', 'refresh') +
-    action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
+  const stage = filterSelect('taskStage', '按项目阶段筛选', unique(state.tasks.map(task => task.project_stage)), '全部阶段');
+  const team = admin() ? filterSelect('taskTeam', '按负责人团队筛选', unique(state.profiles.map(person => person.team)), '全部团队') : '';
+  const placeholder = admin() ? '搜索任务编号、描述、项目、设备类型、负责人或工号' : '搜索任务编号、描述、项目或设备类型';
+  const toolbar = `<div class="toolbar">${search('taskQuery', placeholder)}${filterSelect('taskStatus', '按任务状态过滤', TASK_STATUS_FILTERS, '全部状态')}${priority}${stage}${team}${scope}</div>`;
+  return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('显示选项', 'task-display-options') +
+    /* action('导出本周任务', 'export-week') + */ action('＋ 新建任务', 'task-new', '', 'button primary')) +
     pagedListPanel('tasks', toolbar);
 }
 
