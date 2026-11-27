@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node --env-file=.env server.mjs",
     "wecom:bridge": "node --env-file-if-exists=.env integrations/fae-wecom-bridge/index.mjs",
-    "check": "node --check server.mjs && node --check backend/store.mjs && node --check backend/accounts.mjs && node --check backend/member-import.mjs && node --check backend/import-wbs.mjs && node --check backend/records.mjs && node --check backend/wecom-notifications.mjs && node --check public/app.mjs && node --check public/export.mjs && node --check integrations/fae-wecom-bridge/bridge.mjs && node --check integrations/fae-wecom-bridge/index.mjs && npm --prefix desktop run check"
+    "check": "node --check server.mjs && node --check backend/store.mjs && node --check backend/accounts.mjs && node --check backend/member-import.mjs && node --check backend/import-wbs.mjs && node --check backend/records.mjs && node --check backend/wecom-notifications.mjs && node --check public/app.mjs && node --check public/export.mjs && node --check public/task-planning.mjs && node --check integrations/fae-wecom-bridge/bridge.mjs && node --check integrations/fae-wecom-bridge/index.mjs && npm --prefix desktop run check"
   },
   "dependencies": {
     "@wecom/aibot-node-sdk": "1.0.7",

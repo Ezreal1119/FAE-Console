@@ -39,6 +39,7 @@ const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.css', ['app.css', 'text/css; charset=utf-8']],
   ['/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']],
+  ['/task-planning.mjs', ['task-planning.mjs', 'text/javascript; charset=utf-8']],
   ['/export.mjs', ['export.mjs', 'text/javascript; charset=utf-8']]
 ]);
 const apiRoutes = new Map([
@@ -52,6 +53,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-role', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/demands/task-people', 'POST'],
+  ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
 ]);
 let importingMembers = false;
@@ -193,6 +195,8 @@ function privateApi(path, session, body) {
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
     case '/api/demands/task-people': return records.changeDemandTaskPeople(session.user, body);
+    case '/api/tasks/plan-preview': return records.previewTaskPlan(session.user, body);
+    case '/api/tasks/start': return records.startTask(session.user, body);
     case '/api/admin/add-member': return accounts.addMember(body);
     case '/api/admin/reset-account': return accounts.resetMember(body);
     case '/api/admin/delete-account':

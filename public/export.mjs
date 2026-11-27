@@ -24,8 +24,8 @@ function safeFilename(name) {
 }
 function csvBytes(tasks) {
   const records = tasks.map(task => [
-    '#' + task.id + ' ' + task.title, task.proj, task.status, task.owner_name, task.dueDate,
-    task.startDate, task.endDate, task.hours, task.result, task.fileName,
+    '#' + task.id + ' ' + task.title, task.proj, task.status, task.owner_name, task.dueTime || task.dueDate,
+    task.startTime || task.startDate, task.endDate, task.hours, task.result, task.fileName,
     task.category, task.device_type, task.project_stage, task.pri, task.collaboratorNames,
     task.sourceDemandCode, task.dispatchTime, task.planned_hours, task.deps, task.desc
   ]);

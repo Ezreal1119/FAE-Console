@@ -84,6 +84,14 @@
       <button class="button primary" value="keep">转交并保留为合作者</button>
     </form>
   </dialog>
+  <dialog id="task-start-dialog" aria-labelledby="task-start-title">
+    <div class="dialog-heading"><h2 id="task-start-title">确定开始任务？</h2></div>
+    <p>确认后，任务将进入开发中。开始时间、计划投入工时和计划完成时间会锁定。</p>
+    <form method="dialog" class="dialog-actions">
+      <button class="button" value="cancel" autofocus>取消</button>
+      <button class="button primary" value="start">确定开始</button>
+    </form>
+  </dialog>
   <dialog id="guidelines-dialog" class="guidelines-dialog" aria-labelledby="guidelines-dialog-title" closedby="none">
     <header class="guidelines-dialog-header"><h2 id="guidelines-dialog-title" tabindex="-1" autofocus>工程部员工作业流程及行为规范</h2></header>
     <div id="guidelines-dialog-body" class="guidelines-dialog-body" tabindex="0" role="region" aria-label="行为规范正文"></div>

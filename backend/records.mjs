@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { openSync, closeSync, fstatSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
 import { RequestError } from './store.mjs';
+import { ACTIVE_TASK_STATUSES, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
 
 const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
@@ -14,11 +15,11 @@ const fields = {
   demands: { proj: 100, descr: 10000, proposer: 100 }
 };
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
-const statuses = ['待规划', '开发中', '测试中', '已完成'];
-const priorities = ['低', '中', '高', '极高'];
+const statuses = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const defaultPriority = '中';
 const catalogKinds = new Set(['proj', 'proposer', 'category', 'device_type', 'project_stage']);
-const taskProgressFields = new Set(['status', 'start', 'end', 'start_time', 'end_time', 'hours', 'result', 'attachment_name', 'attachment_path']);
+const taskProgressFields = new Set(['status', 'hours', 'result', 'attachment_name', 'attachment_path']);
+const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at'];
 const taskAssigneeEditFields = new Set(['add_collaborator_ids', 'project_stage']);
 const taskClassificationFields = ['pri', 'category', 'device_type'];
 const taskHandoverFields = ['assignee_id', 'keep_as_collaborator'];
@@ -57,7 +58,7 @@ function cleanFields(table, payload) {
       patch[key] = value;
     } else if (key === 'pri') {
       const priority = optionalText(value, maximum) || defaultPriority;
-      if (!priorities.includes(priority)) throw new RequestError(400, '任务优先级无效。');
+      if (!TASK_PRIORITIES.includes(priority)) throw new RequestError(400, '任务优先级无效。');
       patch[key] = priority;
     } else {
       patch[key] = optionalText(value, maximum);
@@ -222,6 +223,17 @@ function changeable(db, user, table, row, op, patch) {
       (Object.hasOwn(patch, 'keep_as_collaborator') && taskHandoverFields.includes(field)));
 }
 
+function newTaskPatch(patch) {
+  for (const field of [...taskScheduleFields, 'status', 'hours', 'result']) delete patch[field];
+  return patch;
+}
+
+function checkTaskSchedule(payload) {
+  if (taskScheduleFields.some(field => Object.hasOwn(payload, field))) {
+    throw new RequestError(400, '任务时间和计划投入工时由任务流程记录。');
+  }
+}
+
 function changeAttachment(db, user, task, patch) {
   if (!Object.hasOwn(patch, 'attachment_path') && !Object.hasOwn(patch, 'attachment_name')) return [];
   const nextId = patch.attachment_path ?? null;
@@ -283,6 +295,20 @@ export function insertHistoricalTask(db, admin, member, fields) {
 }
 
 export function openRecords(store, { recordTaskChange } = {}) {
+  const planningKey = randomBytes(32);
+
+  function planningTask(db, user, id) {
+    const task = db.tasks.find(row => row.id === id);
+    if (!task) throw new RequestError(404, '未找到此任务。');
+    if (!changeable(db, user, 'tasks', task, 'update', {})) throw new RequestError(403, '你没有权限规划此任务。');
+    if (task.status !== '待规划') throw new RequestError(409, '任务已不在待规划状态，请刷新后查看。');
+    return task;
+  }
+
+  function planningSignature(user, task, minute) {
+    return createHmac('sha256', planningKey).update(JSON.stringify([user.id, task, minute])).digest();
+  }
+
   const needsDemandCode = demand => !demand.code;
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
   const { demands, tasks } = store.read();
@@ -342,6 +368,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
       }
       const id = op === 'insert' ? null : recordId(Array.isArray(eq) && eq[0] === 'id' ? eq[1] : null);
       const patch = op === 'delete' ? {} : cleanFields(table, payload);
+      if (table === 'tasks' && op === 'update') checkTaskSchedule(payload);
       const { row, removed } = store.update(db => {
         const list = db[table];
         if (id !== null) {
@@ -359,21 +386,66 @@ export function openRecords(store, { recordTaskChange } = {}) {
             if (removed.length) db.attachments = db.attachments.filter(file => file.task_id !== row.id);
             return { row, removed };
           }
-          if (table === 'tasks') prepareTaskPeopleUpdate(user, list[index], patch);
+          if (table === 'tasks') {
+            const current = list[index].status;
+            if (Object.hasOwn(patch, 'status') && patch.status !== current &&
+                !(ACTIVE_TASK_STATUSES.includes(current) && ACTIVE_TASK_STATUSES.includes(patch.status))) {
+              throw new RequestError(409, '任务状态只能在开发中和测试中切换。开始任务请使用开始规划。');
+            }
+            prepareTaskPeopleUpdate(user, list[index], patch);
+          }
           return applyPatch(db, user, table, list[index], patch, recordTaskChange);
         }
+        if (table === 'tasks') newTaskPatch(patch);
         return insertRecord(db, user, table, patch, recordTaskChange);
       });
       removed.forEach(id => removeFile(store.attachments, id));
       return { data: [publicRecord(store.read(), user, table, row)] };
     },
 
+    previewTaskPlan(user, { taskId }) {
+      const db = store.read();
+      const task = planningTask(db, user, recordId(taskId));
+      const minute = Math.floor(Date.now() / 60_000);
+      const startToken = `${minute}.${planningSignature(user, task, minute).toString('hex')}`;
+      return { startToken, startedAt: new Date(minute * 60_000).toISOString(), task: publicTask(db, task) };
+    },
+
+    startTask(user, { taskId, startToken, plannedHours, changes = {} }) {
+      const id = recordId(taskId);
+      const token = typeof startToken === 'string' && /^(\d{1,10})\.([a-f0-9]{64})$/.exec(startToken);
+      if (!token) throw new RequestError(400, '规划凭证无效，请重新打开开始规划。');
+      const [, minuteText, signature] = token;
+      const minute = Number(minuteText);
+      const patch = cleanFields('tasks', changes);
+      checkTaskSchedule(changes);
+      if (['status', 'hours', 'result'].some(field => Object.hasOwn(patch, field))) {
+        throw new RequestError(400, '开始任务时只填写计划投入工时。');
+      }
+      const { row, removed } = store.update(db => {
+        const task = planningTask(db, user, id);
+        if (!timingSafeEqual(planningSignature(user, task, minute), Buffer.from(signature, 'hex'))) {
+          throw new RequestError(409, '规划凭证已失效，请刷新并重新打开开始规划。');
+        }
+        if (!changeable(db, user, 'tasks', task, 'update', patch)) throw new RequestError(403, '你没有权限修改这些任务信息。');
+        const startedAt = new Date(minute * 60_000).toISOString();
+        const priority = patch.pri ?? task.pri;
+        const due = plannedCompletion(startedAt, plannedHours, TASK_PRIORITIES.includes(priority) ? priority : defaultPriority);
+        if (!due) throw new RequestError(400, '请填写有效的计划投入工时，至少为 1 分钟。');
+        prepareTaskPeopleUpdate(user, task, patch);
+        Object.assign(patch, { status: '开发中', started_at: startedAt, planned_hours: plannedHours, planned_due_at: due });
+        return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
+      });
+      removed.forEach(id => removeFile(store.attachments, id));
+      return { task: publicTask(store.read(), row) };
+    },
+
     dispatchDemand(user, { demandId, dispatchKey, task }) {
       const id = recordId(demandId);
       if (typeof dispatchKey !== 'string' || !/^[a-f0-9-]{36}$/.test(dispatchKey)) throw new RequestError(400, '派发编号无效。');
-      const patch = cleanFields('tasks', task);
+      const patch = newTaskPatch(cleanFields('tasks', task));
       if (!patch.assignee_id) throw new RequestError(400, '派发任务需要选择负责人。');
-      for (const field of ['due', 'planned_hours', 'project_stage']) delete patch[field];
+      delete patch.project_stage;
 
       const { created, demand } = store.update(db => {
         const source = db.demands.find(row => row.id === id);
