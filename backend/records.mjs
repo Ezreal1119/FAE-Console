@@ -204,12 +204,21 @@ function directoryProfile({ id, display_name, emp_no, team, role, status }) {
   return { id, display_name, emp_no, team, role, status };
 }
 
+function demandRequirementAttachments(db, demandId, linkedTasks) {
+  const linkedIds = new Set(linkedTasks.map(task => task.id));
+  return db.attachments.filter(file => file.state === 'bound' && file.kind === 'requirement' &&
+    (file.demand_id === demandId || linkedIds.has(file.task_id)));
+}
+
 function publicDemand(db, user, row, linkedTasks) {
   const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
-  return { ...row, project_stage: projectStage(db, row.proj), responsible: assigned?.display_name || row.responsible || null, linked_tasks: linkedTasks.map(task => {
-    const summary = { owner_name: taskOwnerName(db, task), initial_receiver_name: task.initial_receiver_name, status: task.status };
-    return visibleTask(user, task) ? { ...summary, id: task.id, code: task.code } : summary;
-  }) };
+  const files = demandRequirementAttachments(db, row.id, linkedTasks);
+  return { ...row, project_stage: projectStage(db, row.proj), responsible: assigned?.display_name || row.responsible || null,
+    attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
+    linked_tasks: linkedTasks.map(task => {
+      const summary = { owner_name: taskOwnerName(db, task), initial_receiver_name: task.initial_receiver_name, status: task.status };
+      return visibleTask(user, task) ? { ...summary, id: task.id, code: task.code } : summary;
+    }) };
 }
 
 function taskMember(db, id, label) {
@@ -453,6 +462,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
               for (const task of linked) {
                 Object.assign(task, { proj: list[index].proj ?? null, demand_id: null, revision: (task.revision ?? 0) + 1 });
               }
+              for (const file of db.attachments) {
+                if (file.demand_id === id && file.task_id == null) file.state = 'deleting';
+              }
             }
             const [row] = list.splice(index, 1);
             if (table === 'tasks') {
@@ -486,7 +498,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         }
         return inserted;
       });
-      if (table === 'tasks' && op === 'delete') void cleanupAttachments?.();
+      if ((table === 'tasks' || table === 'demands') && op === 'delete') void cleanupAttachments?.();
       return { data: [publicRecord(store.read(), user, table, row)] };
     },
 
@@ -649,7 +661,12 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           demand_id: id, dispatch_key: dispatchKey, task_kind: kind,
           requirement_owner_id: source.creator_id ?? source.owner_id
         }).row;
-        bindAttachments(db, user, row, 'requirement', files);
+        bindAttachments(db, user, row, 'requirement', files, { extra: { demand_id: id } });
+        for (const file of db.attachments) {
+          if (file.demand_id === id && file.kind === 'requirement' && file.state === 'bound' && file.task_id == null) {
+            file.task_id = row.id;
+          }
+        }
         row.initial_receiver_id = row.assignee_id;
         row.initial_receiver_name = row.owner_name;
         const filePart = files?.length ? `；上传需求文件：${files.map(file => file.name).join('、')}` : '';
@@ -802,6 +819,63 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       const task = taskForComments(db, user, recordId(taskId));
       const rows = db.taskHistory?.[task.id]?.rows ?? [];
       return { history: [...rows].reverse() };
+    },
+
+    appendDemandAttachments(user, { demandId, files }) {
+      const id = recordId(demandId);
+      if (!Array.isArray(files) || !files.length) throw new RequestError(400, '请至少选择一个文件。');
+      const demand = store.update(db => {
+        const row = db.demands.find(item => item.id === id);
+        if (!row) throw new RequestError(404, '未找到此需求。');
+        if (!managesRecord(user, row)) throw new RequestError(403, '只有管理员或需求创建人可以上传需求文件。');
+        const linkedTask = db.tasks.find(task => task.demand_id === id);
+        bindAttachments(db, user, row, 'requirement', files, {
+          targetKey: 'demand_id',
+          extra: linkedTask ? { task_id: linkedTask.id } : {}
+        });
+        if (linkedTask) {
+          appendTaskHistory(db, user, linkedTask.id, `上传需求文件：${files.map(file => file.name).join('、')}`);
+        }
+        return row;
+      });
+      return { demand: publicRecord(store.read(), user, 'demands', demand) };
+    },
+
+    deleteDemandAttachment(user, { demandId, fileId }) {
+      const id = recordId(demandId);
+      if (typeof fileId !== 'string' || !fileId.trim()) throw new RequestError(400, '文件编号无效。');
+      const demand = store.update(db => {
+        const row = db.demands.find(item => item.id === id);
+        if (!row) throw new RequestError(404, '未找到此需求。');
+        if (!managesRecord(user, row)) throw new RequestError(403, '只有管理员或需求创建人可以删除需求文件。');
+        const linkedTasks = db.tasks.filter(task => task.demand_id === id);
+        const linkedIds = new Set(linkedTasks.map(task => task.id));
+        const file = db.attachments.find(item => item.id === fileId && item.kind === 'requirement' && item.state === 'bound' &&
+          (item.demand_id === id || linkedIds.has(item.task_id)));
+        if (!file) throw new RequestError(404, '未找到这份需求文件。');
+        file.state = 'deleting';
+        for (const task of linkedTasks) {
+          if (file.task_id === task.id) {
+            task.revision = (task.revision ?? 0) + 1;
+            task.updated_at = now();
+            appendTaskHistory(db, user, task.id, `删除需求文件：${file.name}`);
+          }
+        }
+        return row;
+      });
+      void cleanupAttachments?.();
+      return { demand: publicRecord(store.read(), user, 'demands', demand) };
+    },
+
+    demandAttachmentForDownload(user, demandId, fileId) {
+      const id = recordId(demandId);
+      const db = store.read();
+      const demand = db.demands.find(row => row.id === id);
+      if (!demand) throw new RequestError(404, '未找到此需求。');
+      const linkedTasks = db.tasks.filter(task => task.demand_id === id);
+      const file = demandRequirementAttachments(db, id, linkedTasks).find(row => row.id === fileId);
+      if (!file) throw new RequestError(404, '这条需求没有这份可下载的文件。');
+      return file;
     },
 
     attachmentForDownload(user, taskId, fileId) {

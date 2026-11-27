@@ -65,6 +65,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
+  ['/api/demands/attachments', 'POST'], ['/api/demands/attachments/delete', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/complete', 'POST'], ['/api/tasks/transfer', 'POST'],
   ['/api/tasks/attachments', 'POST'], ['/api/tasks/attachments/delete', 'POST'], ['/api/tasks/history', 'POST'], ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST'], ['/api/upload/discard', 'POST']
@@ -186,8 +187,7 @@ async function streamResponse(res, work) {
   finally { res.off('close', abort); }
 }
 
-async function download(res, user, taskId, fileId) {
-  const file = records.attachmentForDownload(user, taskId, fileId);
+async function download(res, file) {
   await streamResponse(res, signal => storage.read(file, async (stream, transferSignal) => {
     res.writeHead(200, {
       'Content-Type': 'application/octet-stream',
@@ -221,6 +221,8 @@ function privateApi(url, session, body) {
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
+    case '/api/demands/attachments': return records.appendDemandAttachments(session.user, body);
+    case '/api/demands/attachments/delete': return records.deleteDemandAttachment(session.user, body);
     case '/api/tasks/plan-preview': return records.previewTaskPlan(session.user, body);
     case '/api/tasks/start': return records.startTask(session.user, body);
     case '/api/tasks/complete': return records.completeTask(session.user, body);
@@ -241,7 +243,7 @@ function privateApi(url, session, body) {
   }
 }
 
-async function handleApi(req, res, url, attachmentRoute) {
+async function handleApi(req, res, url, attachmentRoute, demandAttachmentRoute) {
   const path = url.pathname;
   if (path === '/api/auth-options') {
     return sendJson(res, 200, { ok: true, registrationEnabled: accounts.registrationEnabled });
@@ -261,7 +263,8 @@ async function handleApi(req, res, url, attachmentRoute) {
     accounts.signOut(session);
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionHeader() });
   }
-  if (attachmentRoute) return await download(res, session.user, attachmentRoute[1], attachmentRoute[2]);
+  if (attachmentRoute) return await download(res, records.attachmentForDownload(session.user, attachmentRoute[1], attachmentRoute[2]));
+  if (demandAttachmentRoute) return await download(res, records.demandAttachmentForDownload(session.user, demandAttachmentRoute[1], demandAttachmentRoute[2]));
   if (path === '/api/admin/member-import-template') {
     const template = await readFile(new URL('./backend/templates/member-import.xlsx', import.meta.url));
     res.writeHead(200, {
@@ -321,12 +324,13 @@ const server = createServer(async (req, res) => {
       return res.end(req.method === 'HEAD' ? undefined : content);
     }
     const attachmentRoute = path.match(/^\/api\/attachments\/(\d+)(?:\/([a-f0-9-]{36}))?$/);
-    const method = apiRoutes.get(path) || (attachmentRoute ? 'GET' : undefined);
+    const demandAttachmentRoute = path.match(/^\/api\/demand-attachments\/(\d+)\/([a-f0-9-]{36})$/);
+    const method = apiRoutes.get(path) || (attachmentRoute || demandAttachmentRoute ? 'GET' : undefined);
     if (!method) throw new RequestError(404, '页面或接口不存在。');
     if (req.method !== method) throw new RequestError(405, '请求方法不受支持。');
     if (method === 'POST') checkOrigin(req);
 
-    await handleApi(req, res, url, attachmentRoute);
+    await handleApi(req, res, url, attachmentRoute, demandAttachmentRoute);
   } catch (error) {
     if (res.destroyed) return;
     if (res.headersSent) return res.destroy();

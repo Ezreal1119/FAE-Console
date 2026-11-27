@@ -12,7 +12,7 @@ export function attachmentKind(kind) {
   return kind;
 }
 
-export function bindAttachments(db, user, task, kind, files = []) {
+export function bindAttachments(db, user, target, kind, files = [], { targetKey = 'task_id', extra = {} } = {}) {
   if (!Array.isArray(files) || files.length > batchLimit) {
     throw new RequestError(400, '每次最多添加 12 个文件。');
   }
@@ -28,9 +28,9 @@ export function bindAttachments(db, user, task, kind, files = []) {
     ids.add(id);
     const file = uploaded.get(id);
     if (file?.kind === kind && file.uploaded_by === user.id) {
-      if (file.state === 'bound' && file.task_id === task.id && file.name === name) continue;
+      if (file.state === 'bound' && file[targetKey] === target.id && file.name === name) continue;
       if (file.state === 'pending' && file.created_at > Date.now() - expiry) {
-        Object.assign(file, { state: 'bound', task_id: task.id, name });
+        Object.assign(file, { state: 'bound', [targetKey]: target.id, name, ...extra });
         continue;
       }
     }

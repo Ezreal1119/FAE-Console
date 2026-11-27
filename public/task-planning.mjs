@@ -1,4 +1,5 @@
 const priorityHours = { 低: 8, 中: 6, 高: 4, 很高: 2, 立即: 0 };
+export const PRIORITY_BUFFER_HOURS = priorityHours;
 export const TASK_PRIORITIES = Object.keys(priorityHours);
 export const ACTIVE_TASK_STATUSES = ['开发中', '测试中'];
 export const normalizeTaskPriority = priority => priority === '极高' ? '很高' : priority;

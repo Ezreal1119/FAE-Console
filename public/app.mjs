@@ -1,5 +1,5 @@
 import { attachmentLabels, exportWeek } from './export.mjs';
-import { ACTIVE_TASK_STATUSES, formatPlanningTime, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES as PRIORITY } from './task-planning.mjs';
+import { ACTIVE_TASK_STATUSES, formatPlanningTime, normalizeTaskPriority, plannedCompletion, PRIORITY_BUFFER_HOURS, TASK_PRIORITIES as PRIORITY } from './task-planning.mjs';
 
 const $ = selector => document.querySelector(selector);
 const content = $('#content');
@@ -528,6 +528,9 @@ function sortedTaskList() {
 }
 function attachmentUrl(taskId, fileId) {
   return '/api/attachments/' + encodeURIComponent(taskId) + '/' + encodeURIComponent(fileId);
+}
+function demandAttachmentUrl(demandId, fileId) {
+  return '/api/demand-attachments/' + encodeURIComponent(demandId) + '/' + encodeURIComponent(fileId);
 }
 function taskFiles(task, kind, { allowAppend = true } = {}) {
   const links = task.attachments.filter(file => file.kind === kind).map(file => file.id
@@ -1830,13 +1833,13 @@ function taskForm(demand) {
   const kindField = `<label>任务类型（必填）<select name="task_kind" required>
     <option value="" selected disabled>请选择任务类型</option>
     ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, '', label)).join('')}</select></label>`;
-  const priorityField = selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
-    isDispatch ? 'required' : '');
+  const priorityField = isDispatch
+    ? `<label>优先级（必填）<select name="pri" required>${PRIORITY.map(item => option(item, priority, `${item}（${PRIORITY_BUFFER_HOURS[item]}小时余量）`)).join('')}</select></label>`
+    : selectField('优先级', 'pri', PRIORITY, priority);
   const fields = identityFields +
     `<div class="form-grid">${kindField}${priorityField}${taskOptionField('device_type', isDispatch)}</div>` +
     (isDispatch ? field('预计工时（小时，选填）', 'estimated_hours', '', 'type="number" min="0.01" step="0.01" inputmode="decimal"') : '') +
     area(isDispatch ? '任务描述' : '任务描述（必填）', 'desc', demand?.descr, !isDispatch) +
-    (isDispatch ? taskFileField('requirement') + uploadProgress : '') +
     choiceStatus;
   let project, owner, loadChoices;
   const form = modalForm(demand ? '派发任务' : '新建任务', demand?.code || '', fields, async values => {
@@ -1858,10 +1861,9 @@ function taskForm(demand) {
     if (isDispatch && !patch.device_type) throw new Error('请填写设备类型。');
     try {
       if (demand) {
-        const files = await upload('requirement');
         if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
         const estimatedHours = values.estimated_hours ? Number(values.estimated_hours) : null;
-        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, files, task: patch, estimatedHours });
+        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, files: [], task: patch, estimatedHours });
         updateRow('tasks', normalizeTask(result.task));
         updateRow('demands', result.demand);
       } else {
@@ -1874,8 +1876,6 @@ function taskForm(demand) {
     }
     toast(demand ? '任务已派发。' : '任务已创建。');
   }, { submit: demand ? '派发任务' : '保存' });
-  const filePicker = isDispatch ? bindTaskFilePicker(form) : null;
-  const upload = isDispatch ? bindFileUploads(form, () => filePicker.files()) : null;
   const taskOptions = bindTaskOptions(form, {}, ['device_type']);
   if (!isDispatch) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: null, label: '' }, { allowCustom: true });
@@ -2149,14 +2149,33 @@ function demandDetail(id) {
     ? area('需求说明', 'descr', demand.descr, false)
     : `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div></div>`;
   const linkedBlock = `<div class="details-list"><div class="detail-item"><strong>关联任务</strong>${items || '<p class="muted">待派发</p>'}</div></div>`;
+  const demandFilesList = '<div class="upload-history-list" data-demand-files></div>';
+  const filesSection = canEdit
+    ? taskFileField('requirement') + uploadProgress + demandFilesList
+    : (demand.attachments?.length ? `<div class="details-list"><div class="detail-item"><strong>需求文件</strong>${demandFilesList}</div></div>` : '');
   const leading = canDelete ? '<div class="dialog-actions-start"><button type="button" class="button danger" data-demand-dialog-action="delete">删除</button></div>' : '';
   const dispatchBtn = canDispatch ? '<button type="button" class="button primary" data-demand-dialog-action="dispatch">派发任务</button>' : '';
   const footer = (leading || dispatchBtn) ? `<div class="dialog-actions">${leading}${dispatchBtn}</div>` : '';
-  const body = `<form id="dialog-form"><div class="stack">${info}${descriptionBlock}${linkedBlock}${canEdit ? choiceStatus : ''}</div><p class="form-error" role="alert" hidden></p>${footer}</form>`;
+  const body = `<form id="dialog-form"><div class="stack">${info}${descriptionBlock}${linkedBlock}${filesSection}${canEdit ? choiceStatus : ''}</div><p class="form-error" role="alert" hidden></p>${footer}</form>`;
   modal(demand.code, demand.title, body, false, '', true);
   const form = dialog.querySelector('form');
   form.addEventListener('submit', event => event.preventDefault());
   const formMessage = form.querySelector('.form-error');
+  const filesContainer = form.querySelector('[data-demand-files]');
+  function renderDemandFiles(row) {
+    if (!filesContainer) return;
+    const files = [...(row.attachments || [])].sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
+    filesContainer.hidden = !files.length;
+    filesContainer.innerHTML = files.map(file => {
+      const download = `<a class="button" href="${demandAttachmentUrl(row.id, file.id)}" download>下载</a>`;
+      const remove = canEdit ? `<button type="button" class="button danger" data-demand-file-delete="${text(file.id)}">删除</button>` : '';
+      return `<div class="upload-history-item">
+        <div class="upload-history-meta"><strong>${text(file.name)}</strong><time class="muted text-small">${text(attachmentUploadTime(file.created_at))}</time></div>
+        <div class="upload-history-actions">${download}${remove}</div>
+      </div>`;
+    }).join('');
+  }
+  renderDemandFiles(demand);
   let saveQueue = Promise.resolve();
   let loadChoices;
   function autoSave(patch, { rollback, message: toastText = '已保存。' } = {}) {
@@ -2233,6 +2252,51 @@ function demandDetail(id) {
         return;
       }
       void autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
+    });
+    const upload = bindFileUploads(form, () => []);
+    const drop = form.querySelector('.file-drop');
+    bindTaskFilePicker(form, {
+      onFiles: async chosen => {
+        const session = state.user;
+        drop.disabled = true;
+        formError(formMessage, '');
+        try {
+          const uploaded = await upload('requirement', chosen);
+          if (!uploaded.length || state.user !== session || !dialog.open || !dialog.contains(form)) return;
+          const result = await post('/api/demands/attachments', { demandId: demand.id, files: uploaded });
+          updateRow('demands', result.demand);
+          if (result.demand.linked_tasks?.length) await refresh();
+          renderDemandFiles(result.demand);
+          toast('已上传需求文件。');
+        } catch (error) {
+          formError(formMessage, error.message);
+        } finally {
+          drop.disabled = false;
+        }
+      }
+    });
+    filesContainer?.addEventListener('click', async event => {
+      const button = event.target.closest('[data-demand-file-delete]');
+      if (!button || button.disabled) return;
+      const current = getRow('demands', demand.id);
+      const fileId = button.dataset.demandFileDelete;
+      const file = (current.attachments || []).find(item => item.id === fileId);
+      if (!file || !window.confirm(`确定删除需求文件「${file.name}」？`)) return;
+      const session = state.user;
+      button.disabled = true;
+      formError(formMessage, '');
+      try {
+        const result = await post('/api/demands/attachments/delete', { demandId: demand.id, fileId });
+        if (state.user !== session) return;
+        updateRow('demands', result.demand);
+        if (result.demand.linked_tasks?.length) await refresh();
+        renderDemandFiles(result.demand);
+        toast('需求文件已删除。');
+      } catch (error) {
+        formError(formMessage, error.message);
+      } finally {
+        button.disabled = false;
+      }
     });
   }
   form.querySelector('[data-demand-dialog-action="delete"]')?.addEventListener('click', () => {
