@@ -742,9 +742,9 @@ function projectDetailPage() {
 
   const { project } = state.projectDetail;
   const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
-  const retiredStage = project.stage && !stages.includes(project.stage);
+  const retiredStage = !stages.includes(project.stage);
   const options = (retiredStage ? `<option selected disabled>${text(project.stage)}（已从基础配置移除）</option>` : '') +
-    option('', retiredStage ? null : project.stage ?? '', '未设置') + stages.map(stage => option(stage, project.stage)).join('');
+    stages.map(stage => option(stage, project.stage)).join('');
   const config = `<form id="project-stage-form">
     <div class="project-stage-controls"><label>当前项目阶段<select name="stage">${options}</select></label>
       <button type="submit" class="button primary">保存</button></div>
@@ -768,7 +768,7 @@ function projectRequirementsTable(stage) {
   return table(['编号', '需求说明', '交付内容', '计划投入工时'], rows, '本阶段暂无需求。');
 }
 
-function selectProjectStageTab(tab) {
+function selectProjectStageTab(tab, focus = true) {
   state.projectStageTab = tab.dataset.projectStageTab;
   tab.parentElement.querySelectorAll('[role="tab"]').forEach(item => {
     const selected = item === tab;
@@ -776,7 +776,12 @@ function selectProjectStageTab(tab) {
     item.tabIndex = selected ? 0 : -1;
     document.getElementById(item.getAttribute('aria-controls')).hidden = !selected;
   });
-  tab.focus({ preventScroll: true });
+  if (focus) tab.focus({ preventScroll: true });
+}
+
+function showProjectStageTab(stage) {
+  const tab = document.getElementById('npi-tab-' + stage);
+  if (tab) selectProjectStageTab(tab, false);
 }
 
 async function loadProjects() {
@@ -821,6 +826,7 @@ async function changeProject(action, name, stage) {
   else if (state.page === 'projectDetail' && state.projectDetail?.project.name === name) {
     state.projectDetail.project = result.projects.find(project => project.name === name);
     state.projectDetail.stages = result.stages;
+    state.projectStageTab = null;
     render();
   }
   toast({ create: '项目已新建。', update: '项目阶段已保存。', remove: '项目已删除。' }[action]);
@@ -2290,6 +2296,9 @@ content.addEventListener('keydown', event => {
     Home: 0, End: tabs.length - 1 }[event.key];
   selectProjectStageTab(tabs[destination]);
 });
+content.addEventListener('change', ({ target }) => {
+  if (target.form?.id === 'project-stage-form' && target.name === 'stage') showProjectStageTab(target.value);
+});
 content.addEventListener('submit', async event => {
   const form = event.target;
   if (form.id !== 'project-stage-form') return;
@@ -2298,11 +2307,12 @@ content.addEventListener('submit', async event => {
   if (submit.disabled) return;
   const project = state.projectDetail?.project;
   const stage = new FormData(form).get('stage');
-  if (!project || stage === null || (stage || null) === project.stage) return;
+  if (!project || !stage) return;
+  if (stage === project.stage) return showProjectStageTab(stage);
   const errorMessage = form.querySelector('.form-error');
   submit.disabled = true;
   formError(errorMessage, '');
-  try { await changeProject('update', project.name, stage || null); }
+  try { await changeProject('update', project.name, stage); }
   catch (error) { formError(errorMessage, error.message); }
   finally { submit.disabled = false; }
 });

@@ -17,6 +17,7 @@ const fields = {
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const defaultPriority = '中';
+const defaultProjectStage = '立项';
 const demandCodePrefix = 'REQ';
 const legacyDemandPrefix = /^FAE-/;
 const catalogKinds = new Set(['proposer', 'category', 'device_type', 'project_stage']);
@@ -124,13 +125,18 @@ export function backfillTaskCodes(db) {
 
 function projectStage(db, name) {
   const assignedStages = db.projectStages ?? {};
-  return name != null && Object.hasOwn(assignedStages, name) ? assignedStages[name] : null;
+  const assigned = name != null && Object.hasOwn(assignedStages, name) ? assignedStages[name] : null;
+  return assigned || (db.demandOptions.proj.includes(name) ? defaultProjectStage : null);
+}
+
+function projectStageOptions(db) {
+  return [...new Set([defaultProjectStage, ...db.demandOptions.project_stage])];
 }
 
 function projectCatalog(db) {
   return {
     projects: db.demandOptions.proj.map(name => ({ name, stage: projectStage(db, name) })),
-    stages: db.demandOptions.project_stage
+    stages: projectStageOptions(db)
   };
 }
 
@@ -611,7 +617,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
       return {
         project: { name, stage: projectStage(db, name) },
-        stages: db.demandOptions.project_stage,
+        stages: projectStageOptions(db),
         requirements: projectRequirementRows(db, name)
       };
     },
@@ -622,8 +628,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       if (!['create', 'update', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
       if (action === 'create') name = optionalText(name);
       if (typeof name !== 'string' || !name) throw new RequestError(400, '请填写项目名称。');
-      if (action === 'update' && typeof stage !== 'string' && stage !== null) {
-        throw new RequestError(400, '请选择项目阶段。');
+      if (action === 'update') {
+        if (stage === null) stage = defaultProjectStage;
+        if (typeof stage !== 'string') throw new RequestError(400, '请选择项目阶段。');
       }
       return store.update(db => {
         const names = db.demandOptions.proj;
@@ -634,14 +641,14 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           initializeProjectRequirements(db, name);
         } else {
           if (index === -1) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
-          if (action === 'update' && stage !== null && !db.demandOptions.project_stage.includes(stage)) {
+          if (action === 'update' && !projectStageOptions(db).includes(stage)) {
             throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
           }
           if (action === 'remove') {
             names.splice(index, 1);
             if (db.projectRequirements) delete db.projectRequirements[name];
           }
-          if (action === 'update' && stage !== null) {
+          if (action === 'update') {
             db.projectStages = { ...db.projectStages, [name]: stage };
           } else if (db.projectStages) {
             delete db.projectStages[name];
