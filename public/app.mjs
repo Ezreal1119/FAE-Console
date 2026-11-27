@@ -810,9 +810,9 @@ function field(label, name, value = '', attributes = '') {
 function area(label, name, value) {
   return `<label>${label}<textarea name="${name}" rows="3" maxlength="10000">${text(value)}</textarea></label>`;
 }
-function selectField(label, name, values, current) {
+function selectField(label, name, values, current, attributes = '') {
   const options = [...new Set([...values, current])].filter(value => value != null);
-  return `<label>${label}<select name="${name}">${options.map(value => option(value, current)).join('')}</select></label>`;
+  return `<label>${label}<select name="${name}" ${attributes}>${options.map(value => option(value, current)).join('')}</select></label>`;
 }
 function suggestions(label, name, value, values) {
   return field(label, name, value, 'maxlength="100" list="list-' + name + '"') +
@@ -822,16 +822,17 @@ function formError(element, message) {
   element.textContent = message;
   element.hidden = !message;
 }
-function modal(title, description, body, locked = false) {
+function modal(title, description, body, locked = false, headingAside = '') {
+  const close = locked ? '' : '<button type="button" class="dialog-close" data-action="close" aria-label="关闭">×</button>';
   dialog.dataset.locked = String(locked);
-  dialog.innerHTML = `<div class="dialog-heading"><div><h2 id="dialog-title">${text(title)}</h2>${description ? '<p class="muted text-small">' + text(description) + '</p>' : ''}</div>
-    ${locked ? '' : '<button type="button" class="dialog-close" data-action="close" aria-label="关闭">×</button>'}</div>${body}`;
+  dialog.innerHTML = `<div class="dialog-heading"><div class="dialog-heading-text"><h2 id="dialog-title">${text(title)}</h2>${description ? '<p class="muted text-small">' + text(description) + '</p>' : ''}</div>
+    ${headingAside ? `<div class="dialog-heading-actions">${headingAside}${close}</div>` : close}</div>${body}`;
   if (!dialog.open) dialog.showModal();
 }
 function modalForm(title, description, fields, onSave, options = {}) {
   const buttons = options.locked ? action('退出登录', 'logout') : action('取消', 'close');
-  modal(title, description, `<form><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions">${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button></div></form>`, options.locked);
+  modal(title, description, `<form id="dialog-form"><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions">${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button></div></form>`, options.locked, options.headingAside);
   const form = dialog.querySelector('form');
   const message = form.querySelector('.form-error');
   form.addEventListener('submit', async event => {
@@ -947,17 +948,43 @@ function confirmTaskStart() {
 
 const planDueHint = '填写计划投入工时后计算';
 
-function taskScheduleFields(task, plan, priority) {
+function taskScheduleFields(task, plan) {
   const start = plan ? formatPlanningTime(plan.startedAt) : task.startTime;
   const entries = [['开始时间', start]];
   if (plan) {
     entries.push(['计划完成时间', `<span data-plan-due aria-live="polite">${planDueHint}</span>`, true]);
-    if (priority) entries.push(['优先级', priorityBadge(priority), true]);
   } else {
     entries.push(['计划完成时间', task.dueTime], ['计划投入工时', withHours(task.planned_hours)], ['完成日期', task.endDate]);
   }
   const summary = details(entries, 'form-grid task-form-facts task-schedule-summary');
-  return plan ? summary + field('计划投入工时（小时）', 'plan_hours', task.planned_hours, 'type="number" min="0.01" step="0.01" required') : summary;
+  return plan ? summary + `<div class="plan-hours-field">
+    <label for="plan-hours">计划投入工时（小时）</label>
+    <div class="plan-hours-control">
+      <input id="plan-hours" name="plan_hours" value="${text(task.planned_hours)}" type="number" min="0.01" step="0.01" required>
+      <div class="plan-hours-arrows">
+        <button type="button" data-plan-step="1" aria-label="增加 1 小时">▴</button>
+        <button type="button" data-plan-step="-1" aria-label="减少 1 小时">▾</button>
+      </div>
+    </div></div>` : summary;
+}
+
+function bindPlanHours(input, preview) {
+  function adjust(delta) {
+    const current = input.valueAsNumber;
+    if (!Number.isFinite(current) && delta < 0) return;
+    const hundredths = Number.isFinite(current) ? Math.round(current * 100) : 0;
+    input.value = String(Math.max(1, hundredths + delta * 100) / 100);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  input.addEventListener('input', preview);
+  input.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    adjust(event.key === 'ArrowUp' ? 1 : -1);
+  });
+  for (const button of input.parentElement.querySelectorAll('[data-plan-step]')) {
+    button.addEventListener('click', () => adjust(Number(button.dataset.planStep)));
+  }
 }
 
 async function openTaskUpdate(id) {
@@ -997,16 +1024,17 @@ function taskForm(task = {}, demand, plan) {
     : ownerField;
   const peopleFields = canEditDetails ? collaboratorField()
     : `<p class="muted text-small">当前合作者：${shown(collaboratorNames(task))}</p>` + collaboratorField(false, '添加合作者');
-  const priorityField = canEditClassification ? selectField('优先级', 'pri', PRIORITY, priority) : '';
+  const priorityField = canEditClassification ? selectField('优先级', 'pri', PRIORITY, priority, plan ? 'form="dialog-form"' : '') : '';
+  const headingAside = plan ? `<div class="dialog-priority">${priorityField || `<span>优先级</span>${priorityBadge(priority)}`}</div>` : '';
   const setupFields = identityFields + peopleFields +
-    `<div class="form-grid">${priorityField}${optionKinds.map(taskOptionField).join('')}</div>` +
+    `<div class="form-grid">${plan ? '' : priorityField}${optionKinds.map(taskOptionField).join('')}</div>` +
     (canEditDetails ? area('任务描述', 'desc', task.desc ?? demand?.descr) : '');
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
   const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status)
     : details([['状态', statusBadge(task.status), true]], 'task-form-facts');
   const progressFields = isUpdate && !plan ? `<div class="form-grid">${statusField}
     ${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}</div>` + area('完成结果', 'result', task.result) : '';
-  const scheduleFields = isUpdate ? taskScheduleFields(task, plan, canEditClassification ? '' : priority) : '';
+  const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields + progressFields) +
     taskAttachmentFields(task) + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
@@ -1072,14 +1100,14 @@ function taskForm(task = {}, demand, plan) {
       throw error;
     }
     toast(demand ? '任务已派发。' : plan ? '任务已开始。' : transferring ? '任务已转交。' : isUpdate ? '任务已更新。' : '任务已创建。');
-  }, { submit });
+  }, { submit, headingAside });
   if (plan) {
     const dueDisplay = form.querySelector('[data-plan-due]');
     const preview = () => {
       const due = plannedCompletion(plan.startedAt, Number(form.elements.plan_hours.value), form.elements.pri?.value ?? priority);
       dueDisplay.textContent = formatPlanningTime(due) || planDueHint;
     };
-    form.elements.plan_hours.addEventListener('input', preview);
+    bindPlanHours(form.elements.plan_hours, preview);
     form.elements.pri?.addEventListener('input', preview);
     preview();
   }

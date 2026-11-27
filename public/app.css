@@ -179,6 +179,13 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .task-form-facts { margin: 0; }
 .task-schedule-summary { padding: 12px 14px; border-radius: 8px; background: var(--page); }
 .task-schedule-summary dd { font-variant-numeric: tabular-nums; }
+.plan-hours-field { display: grid; gap: 6px; }
+.plan-hours-control { position: relative; }
+.plan-hours-control input { appearance: textfield; padding-right: 42px; font-weight: 600; }
+.plan-hours-control input::-webkit-inner-spin-button { -webkit-appearance: none; }
+.plan-hours-arrows { position: absolute; inset-block: 3px; inset-inline-end: 4px; display: grid; width: 30px; }
+.plan-hours-arrows button { background: transparent; color: var(--muted); border: 0; border-radius: 4px; padding: 0; line-height: 1; }
+.plan-hours-arrows button:hover { background: var(--page); color: var(--ink); }
 .form-error { color: var(--red); font-size: .88rem; }
 .import-template { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .member-import-form .stack { gap: 11px; }
@@ -248,7 +255,12 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 dialog { width: min(calc(100% - 30px), 620px); max-height: min(90dvh, 820px); border: 1px solid var(--line); border-radius: 16px; padding: 22px; color: var(--ink); box-shadow: 0 20px 80px #17244038; }
 dialog::backdrop { background: #0f183677; }
 .dialog-heading { display: flex; gap: 10px; justify-content: space-between; align-items: start; margin-bottom: 13px; }
+.dialog-heading-text { min-width: 0; overflow-wrap: anywhere; }
 .dialog-heading p { margin-top: 5px; }
+.dialog-heading-actions, .dialog-priority, .dialog-priority label { display: flex; align-items: center; gap: 6px; }
+.dialog-heading-actions { flex-shrink: 0; }
+.dialog-priority { color: var(--muted); font-size: .85rem; white-space: nowrap; }
+.dialog-priority select { width: auto; min-height: 32px; padding-block: 4px; }
 .dialog-close { padding: 1px 6px; background: transparent; border: 0; color: var(--muted); font-size: 1.25rem; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px; }
 .guidelines-layout { display: grid; grid-template-columns: minmax(186px, 220px) minmax(0, 1fr); align-items: start; gap: 18px; }
