@@ -149,13 +149,14 @@ td { overflow-wrap: anywhere; }
 td:first-child { min-width: 105px; }
 .task-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .task-code { white-space: nowrap; }
-.table-wrap:has(#task-rows) { container-type: inline-size; }
-#task-rows td { white-space: nowrap; }
+.table-wrap:has(> table > :is(#task-rows, #demand-rows)) { container-type: inline-size; }
+.table-wrap > table:has(> :is(#task-rows, #demand-rows)) { width: max-content; min-width: 100%; }
+:is(#task-rows, #demand-rows) td { white-space: nowrap; overflow-wrap: normal; }
 #task-rows .task-code + small { display: inline; margin-inline-start: 5px; }
 .task-overdue { margin-top: 3px; }
-.task-with-summary td { padding-bottom: 4px; border-bottom: 0; }
-.task-summary td { padding-top: 0; }
-.task-summary p {
+.list-row-with-summary td { padding-bottom: 4px; border-bottom: 0; }
+.list-summary td { padding-top: 0; }
+.list-summary p {
   margin: 0;
   max-width: calc(100cqi - 18px);
   contain: inline-size;
@@ -191,7 +192,6 @@ tr:last-child td { border-bottom: 0; }
 .tag.test { background: #fff2d8; color: #795311; }
 .tag.done { background: #e2f7ef; color: #066448; }
 .tag.danger { background: #fdebf0; color: var(--red); }
-.task-owner-badge { align-self: center; margin-inline-start: auto; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
 .toolbar input { flex: 1 1 182px; }
 .toolbar select { width: auto; max-width: 200px; }

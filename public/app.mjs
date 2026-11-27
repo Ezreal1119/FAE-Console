@@ -344,6 +344,9 @@ function table(headers, rows, empty, bodyId = '') {
   return `<div class="table-wrap"><table><thead><tr>${headers.map(tableHeader).join('')}</tr></thead><tbody${bodyId ? ' id="' + bodyId + '"' : ''}>${rows || emptyRow(headers.length, empty)}</tbody></table></div>`;
 }
 function emptyRow(columns, message) { return `<tr><td colspan="${columns}" class="empty">${text(message)}</td></tr>`; }
+function listSummaryRow(description, columns) {
+  return description ? `<tr class="list-summary"><td colspan="${columns}"><p>${text(description)}</p></td></tr>` : '';
+}
 function statusBadge(status) {
   const variant = { 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
   return `<span class="tag ${variant}">${shown(status)}</span>`;
@@ -505,8 +508,7 @@ function taskActionsCell(task) {
   const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
   const remove = canDelete ? action('删除', 'task-delete', task.id, 'link danger') : '';
   const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
-  const ownerBadge = admin() && assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
-  return `<td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}${ownerBadge}</div></td>`;
+  return `<td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}</div></td>`;
 }
 function taskRows(tasks) {
   const columns = visibleTaskColumns();
@@ -514,9 +516,8 @@ function taskRows(tasks) {
   const at = Date.now();
   return tasks.map(task => {
     const isOverdue = overdue(task, at);
-    const summary = showDescription && task.desc
-      ? `<tr class="task-summary"><td colspan="${columns.length}"><p>${text(task.desc)}</p></td></tr>` : '';
-    return `<tr${summary ? ' class="task-with-summary"' : ''}>${columns.map(column => column.cell(task, isOverdue)).join('')}</tr>${summary}`;
+    const summary = showDescription ? listSummaryRow(task.desc, columns.length) : '';
+    return `<tr${summary ? ' class="list-row-with-summary"' : ''}>${columns.map(column => column.cell(task, isOverdue)).join('')}</tr>${summary}`;
   }).join('');
 }
 function updateTaskOverdueIndicators() {
@@ -540,7 +541,7 @@ function tasksPage() {
     pagedListPanel('tasks', toolbar);
 }
 
-const demandHeaders = ['需求编码', '项目', '需求说明', '任务进度', '初始接收人', '当前负责人', '提出方', '创建人', '操作'];
+const demandHeaders = ['需求编码', '项目', '任务进度', '当前负责人', '提出方', '创建人', '操作'];
 function demandOwner(task) {
   return task?.id && admin() && canTransferTask(task)
     ? action(task.owner_name || '设置负责人', 'task-transfer', task.id, 'link') : shown(task?.owner_name);
@@ -558,11 +559,12 @@ function demandRows(demands) {
     const task = demand.linked_tasks?.[0];
     const edit = canManageDemand(demand) ? action('编辑', 'demand-edit', demand.id, 'link') : '';
     const remove = canDeleteDemand(demand) ? action('删除', 'demand-delete', demand.id, 'link danger') : '';
-    return `<tr>
-    <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td><td>${shown(demand.descr)}</td>
-    <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td><td>${shown(task?.initial_receiver_name)}</td>
+    const summary = listSummaryRow(demand.descr, demandHeaders.length);
+    return `<tr${summary ? ' class="list-row-with-summary"' : ''}>
+    <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td>
+    <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td>
     <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
-    <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td></tr>`;
+    <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td></tr>${summary}`;
   }).join('');
 }
 function demandsPage() {
