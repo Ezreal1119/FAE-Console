@@ -18,7 +18,7 @@ const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
 const TASK_KINDS = { L: '临时任务', W: '工作任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', projects: '项目管理', projectDetail: '项目详情', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态' };
 const npiStages = ['EVT', 'DVT', 'PVT', 'MP'];
@@ -578,6 +578,10 @@ function filteredDemands() {
   return state.demands.filter(row => hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.project_stage, row.descr, row.proposer,
     ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name])));
 }
+function demandCreator(demand) {
+  const mine = same(demand.creator_id ?? demand.owner_id, state.user.id);
+  return mine ? `${shown(demand.owner_name)}<span class="tag start self-tag">我</span>` : shown(demand.owner_name);
+}
 function demandRows(demands) {
   return demands.map(demand => {
     const task = demand.linked_tasks?.[0];
@@ -585,13 +589,13 @@ function demandRows(demands) {
     <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td>
     <td>${shown(demand.project_stage)}</td>
     <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td>
-    <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
+    <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${demandCreator(demand)}</td>
     ${descCell(demand.descr)}</tr>`;
   }).join('');
 }
 function demandsPage() {
   const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求编码、项目或任务负责人')}</div>`;
-  return heading('需求管理', '登记需求、派发任务并跟踪进度。', action('刷新', 'refresh') + action('＋ 新建需求', 'demand-new', '', 'button primary')) +
+  return heading('需求中心', '登记需求、派发任务并跟踪进度。', action('刷新', 'refresh') + action('＋ 新建需求', 'demand-new', '', 'button primary')) +
     pagedListPanel('demands', toolbar);
 }
 
@@ -2141,7 +2145,7 @@ function demandDetail(id) {
     ['项目', canEdit ? inlineChoiceControl('项目', 'proj') : demand.proj, canEdit],
     ['项目阶段', `<span data-demand-project-stage>${shown(demand.project_stage)}</span>`, true],
     ['需求提出方', canEdit ? inlineChoiceControl('需求提出方', 'proposer', { allowCustom: false }) : demand.proposer, canEdit],
-    ['创建人', demand.owner_name],
+    ['创建人', demandCreator(demand), true],
     ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
     ['当前负责人', demandOwner(task), true],
     ...(task?.initial_receiver_name ? [['初始接收人', task.initial_receiver_name]] : [])

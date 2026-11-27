@@ -184,6 +184,7 @@ tr:last-child td { border-bottom: 0; }
 .tag.done { background: #e2f7ef; color: #066448; }
 .tag.danger { background: #fdebf0; color: var(--red); }
 .tag.immediate { background: #991b1b; color: #fff; }
+.self-tag { margin-inline-start: 4px; padding: 1px 6px; font-size: .74rem; vertical-align: 1px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
 .toolbar input { flex: 1 1 182px; }
 .toolbar select { width: auto; max-width: 200px; }
