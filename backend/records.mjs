@@ -196,6 +196,7 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
     attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
     canAppendRequirement: canAppendAttachment(user, task, 'requirement'),
     canAppendDelivery: canAppendAttachment(user, task, 'delivery'),
+    canDeleteDelivery: canDeleteDeliveryAttachment(user, task),
     project_stage: projectStage(db, row.proj), handled_by_me: handledAt !== null, handled_at: handledAt || null };
 }
 
@@ -258,6 +259,11 @@ function canAppendAttachment(user, task, kind) {
   }
   return (task.status === '已完成' || ACTIVE_TASK_STATUSES.includes(task.status)) &&
     (managesRecord(user, task) || task.assignee_id === user.id);
+}
+
+function canDeleteDeliveryAttachment(user, task) {
+  if (task.status === '已完成') return isAdmin(user);
+  return ACTIVE_TASK_STATUSES.includes(task.status) && (managesRecord(user, task) || task.assignee_id === user.id);
 }
 
 function taskForComments(db, user, taskId) {
@@ -757,6 +763,26 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         appendTaskHistory(db, user, row.id, `上传${label}：${files.map(file => file.name).join('、')}`);
         return row;
       });
+      return { task: publicTask(store.read(), user, task) };
+    },
+
+    deleteTaskAttachment(user, { taskId, fileId }) {
+      const id = recordId(taskId);
+      if (typeof fileId !== 'string' || !fileId.trim()) throw new RequestError(400, '文件编号无效。');
+      const task = store.update(db => {
+        const row = db.tasks.find(item => item.id === id && visibleTask(user, item));
+        if (!row) throw new RequestError(404, '未找到此任务。');
+        if (!canDeleteDeliveryAttachment(user, row)) throw new RequestError(403, '你没有权限删除交付文件。');
+        const file = db.attachments.find(item => item.task_id === id && item.id === fileId &&
+          item.kind === 'delivery' && item.state === 'bound');
+        if (!file) throw new RequestError(404, '未找到这份交付文件。');
+        file.state = 'deleting';
+        row.revision = (row.revision ?? 0) + 1;
+        row.updated_at = now();
+        appendTaskHistory(db, user, row.id, `删除交付文件：${file.name}`);
+        return row;
+      });
+      void cleanupAttachments?.();
       return { task: publicTask(store.read(), user, task) };
     },
 

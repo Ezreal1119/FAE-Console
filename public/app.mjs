@@ -1095,15 +1095,18 @@ function modal(title, description, body, locked = false, headingAside = '', focu
 }
 function modalForm(title, description, fields, onSave, options = {}) {
   const leading = options.leadingActions ? `<div class="dialog-actions-start">${options.leadingActions}</div>` : '';
-  const buttons = options.locked ? action('退出登录', 'logout') : options.onCancel
-    ? `<button type="button" class="button" data-dialog-cancel>${text(options.cancel || '取消')}</button>`
-    : action(options.cancel || '取消', 'close');
+  const buttons = options.locked ? action('退出登录', 'logout')
+    : options.hideCancel ? ''
+    : options.onCancel
+      ? `<button type="button" class="button" data-dialog-cancel>${text(options.cancel || '取消')}</button>`
+      : action(options.cancel || '取消', 'close');
+  const submitClass = options.submitClass || (options.danger ? 'danger' : 'primary');
   const secondary = options.secondarySubmit
     ? `<button type="submit" class="button" value="secondary">${text(options.secondarySubmit)}</button>` : '';
   modal(title, description, `<form id="dialog-form"><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions">${leading}${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside, options.focusTitle);
+    <div class="dialog-actions">${leading}${buttons}<button type="submit" class="button ${submitClass}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside, options.focusTitle);
   const form = dialog.querySelector('form');
-  if (options.onCancel) {
+  if (options.onCancel && !options.hideCancel) {
     form.querySelector('[data-dialog-cancel]').addEventListener('click', () => {
       try { options.onCancel(); }
       catch (error) { dialog.close(); toast(error.message); }
@@ -1118,7 +1121,7 @@ function modalForm(title, description, fields, onSave, options = {}) {
     formError(message, '');
     const values = Object.fromEntries(new FormData(form));
     try {
-      const result = await onSave(values, event.submitter?.value === 'secondary');
+      const result = await onSave(values, event.submitter?.value === 'secondary', event.submitter?.value);
       if (result !== false && dialog.contains(form)) dialog.close();
     } catch (error) {
       formError(message, error.message);
@@ -1204,23 +1207,30 @@ function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
   const remarks = remarkItems ? `<div class="details-list">${remarkItems}</div>` : '';
   return info + demandSection + remarks;
 }
-function taskDialogLeadingActions(task) {
+function taskDialogLeadingActions(task, { showSave = false } = {}) {
   const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
   const remove = canDelete ? '<button type="button" class="button danger" data-task-dialog-action="delete">删除</button>' : '';
+  const save = showSave ? '<button type="submit" class="button primary" value="save">保存</button>' : '';
   const transfer = canTransferTask(task) ? '<button type="button" class="button" data-task-dialog-action="transfer">转交负责人</button>' : '';
-  return remove + transfer;
+  return remove + save + transfer;
+}
+function updateTaskUploadHistoryCount(task) {
+  const count = task.attachments.filter(file => file.kind === 'delivery').length;
+  for (const button of document.querySelectorAll(`[data-action="task-upload-history"][data-id="${task.id}"]`)) {
+    button.textContent = '上传记录' + (count ? '（' + count + '）' : '');
+  }
 }
 function taskDetail(id) {
   const task = getRow('tasks', id);
   const priority = taskPriority(task.pri);
   const hideOwner = state.page === 'tasks' && assignedToMe(task);
-  const leadingActions = taskDialogLeadingActions(task);
   const canOperate = task.status !== '已完成' && canUpdateTaskProgress(task);
   if (!canOperate) {
-    const leading = leadingActions ? `<div class="dialog-actions-start">${leadingActions}</div>` : '';
+    const leadingActions = taskDialogLeadingActions(task);
+    const footer = leadingActions ? `<div class="dialog-actions"><div class="dialog-actions-start">${leadingActions}</div></div>` : '';
     const headingAside = `<div class="dialog-task-meta">${priorityBadge(priority)}${plannedHoursBadge(task, '计划投入工时 ')}${statusBadge(task.status)}</div>`;
-    modal(task.code, '', taskDetails(task, { editable: { pri: true, status: true }, hideOwner }) + taskUploadHistorySection(task) +
-      `<div class="dialog-actions">${leading}${action('关闭', 'close')}</div>`, false, headingAside, true);
+    modal(task.code, '', taskDetails(task, { editable: { pri: true, status: true }, hideOwner }) + taskUploadHistorySection(task) + footer,
+      false, headingAside, true);
     dialog.querySelector('[data-task-dialog-action="delete"]')?.addEventListener('click', () => {
       confirmDeleteTask(task, () => taskDetail(task.id));
     });
@@ -1232,7 +1242,8 @@ function taskDetail(id) {
   const canEditProject = canEditDetails && task.demand_id == null;
   const canEditPriority = canEditClassification && !isPlanning;
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
-  const hasEditableFields = canEditProject || canEditDetails || canEditClassification || canChangeStatus;
+  const hasEditableProps = canEditProject || canEditDetails || canEditClassification;
+  const leadingActions = taskDialogLeadingActions(task, { showSave: hasEditableProps });
   const optionKinds = canEditClassification ? ['device_type'] : [];
   const needsChoices = canEditProject || optionKinds.length > 0;
   const priorityControl = canEditPriority
@@ -1256,12 +1267,10 @@ function taskDetail(id) {
     taskUploadHistorySection(task) +
     (needsChoices ? choiceStatus : '');
   const formOptions = isPlanning
-    ? hasEditableFields
-      ? { submit: '保存', secondarySubmit: '开始规划', leadingActions, headingAside, focusTitle: true }
-      : { cancel: '关闭', submit: '开始规划', leadingActions, headingAside, focusTitle: true }
-    : { submit: '保存', secondarySubmit: '完成任务', leadingActions, headingAside, focusTitle: true };
+    ? { submit: '开始规划', submitClass: 'primary', hideCancel: true, leadingActions, headingAside, focusTitle: true }
+    : { submit: '完成任务', submitClass: 'success', hideCancel: true, leadingActions, headingAside, focusTitle: true };
   let project, loadChoices, completionDraft, planDraftHours;
-  function collectTaskPatch(values, { includeStatus = true } = {}) {
+  function collectTaskPatch(values) {
     const patch = taskOptions.changes();
     if (canEditProject) {
       const proj = project.value();
@@ -1272,20 +1281,20 @@ function taskDetail(id) {
       if (desc !== optional(task.desc)) patch.desc = desc;
     }
     if (canEditPriority && values.pri !== priority) patch.pri = values.pri;
-    if (includeStatus && canChangeStatus && values.status !== task.status) patch.status = values.status;
     return patch;
   }
-  const form = modalForm(task.code, '', fields, async (values, isSecondary) => {
+  const form = modalForm(task.code, '', fields, async (values, _isSecondary, submitValue) => {
     const formUser = state.user;
-    const starting = isPlanning && (!hasEditableFields || isSecondary);
-    const completing = canChangeStatus && isSecondary;
-    const patch = collectTaskPatch(values, { includeStatus: !completing });
+    const saving = submitValue === 'save';
+    const starting = isPlanning && !saving;
+    const completing = canChangeStatus && !saving;
+    const patch = collectTaskPatch(values);
 
     try {
       if (starting) {
         const plan = await post('/api/tasks/plan-preview', { taskId: task.id });
         if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
-        const start = await confirmTaskStart(plan, task, planDraftHours);
+        const start = await confirmTaskStart(plan, getRow('tasks', task.id), planDraftHours);
         if (!start) return false;
         planDraftHours = start.plannedHours;
         if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
@@ -1297,14 +1306,15 @@ function taskDetail(id) {
         return;
       }
       if (completing) {
-        const completion = await confirmTaskCompletion(completionDraft ?? task);
+        const latest = getRow('tasks', task.id);
+        const hasDeliveryFiles = latest.attachments.some(file => file.kind === 'delivery');
+        const completion = await confirmTaskCompletion(completionDraft ?? latest, hasDeliveryFiles);
         if (!completion) return false;
         completionDraft = completion;
-        if (!formUser || state.user !== formUser) return false;
-        const files = await upload('delivery');
-        if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+        if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+        const current = getRow('tasks', task.id);
         const result = await post('/api/tasks/complete', {
-          taskId: task.id, expectedVersion: task.version, hours: completion.hours, files,
+          taskId: task.id, expectedVersion: current.version, hours: completion.hours, files: [],
           changes: { ...patch, result: completion.result }
         });
         await applySavedTask(result.task);
@@ -1314,12 +1324,6 @@ function taskDetail(id) {
       if (Object.keys(patch).length) {
         await applySavedTask(await saveRow('tasks', patch, task.id));
       }
-      if (canChangeStatus && filePicker.files().length) {
-        const files = await upload('delivery');
-        if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
-        const attached = await post('/api/tasks/attachments', { taskId: task.id, kind: 'delivery', files });
-        await applySavedTask(attached.task);
-      }
       toast('任务已更新。');
     } catch (error) {
       if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
@@ -1327,8 +1331,52 @@ function taskDetail(id) {
       throw error;
     }
   }, formOptions);
-  const filePicker = canChangeStatus ? bindTaskFilePicker(form) : null;
-  const upload = canChangeStatus ? bindFileUploads(form, () => filePicker.files()) : null;
+  const upload = canChangeStatus ? bindFileUploads(form, () => []) : null;
+  if (canChangeStatus) {
+    const drop = form.querySelector('.file-drop');
+    const message = form.querySelector('.form-error');
+    bindTaskFilePicker(form, {
+      onFiles: async chosen => {
+        const session = state.user;
+        drop.disabled = true;
+        formError(message, '');
+        try {
+          const uploaded = await upload('delivery', chosen);
+          if (!uploaded.length || state.user !== session || !dialog.open || !dialog.contains(form)) return;
+          const attached = await post('/api/tasks/attachments', { taskId: task.id, kind: 'delivery', files: uploaded });
+          await applySavedTask(attached.task);
+          updateTaskUploadHistoryCount(normalizeTask(attached.task));
+          toast('已上传交付文件。');
+        } catch (error) {
+          formError(message, error.message);
+          if (error.status === 409 && state.user) await refresh();
+        } finally {
+          drop.disabled = false;
+        }
+      }
+    });
+    const statusSelect = dialog.querySelector('select[name="status"]');
+    statusSelect?.addEventListener('change', async () => {
+      const latest = getRow('tasks', task.id);
+      const nextStatus = statusSelect.value;
+      if (nextStatus === latest.status) return;
+      const session = state.user;
+      statusSelect.disabled = true;
+      formError(message, '');
+      try {
+        const saved = await saveRow('tasks', { status: nextStatus }, task.id);
+        if (state.user !== session) return;
+        await applySavedTask(saved);
+        toast('任务状态已更新。');
+      } catch (error) {
+        try { statusSelect.value = getRow('tasks', task.id).status; } catch { /* ignore */ }
+        formError(message, error.message);
+        if (error.status === 409 && state.user) await refresh();
+      } finally {
+        statusSelect.disabled = false;
+      }
+    });
+  }
   const taskOptions = bindTaskOptions(form, task, optionKinds);
   if (canEditProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
@@ -1340,10 +1388,10 @@ function taskDetail(id) {
     });
   }
   form.querySelector('[data-task-dialog-action="delete"]')?.addEventListener('click', () => {
-    confirmDeleteTask(task, () => taskDetail(task.id));
+    confirmDeleteTask(getRow('tasks', task.id), () => taskDetail(task.id));
   });
   form.querySelector('[data-task-dialog-action="transfer"]')?.addEventListener('click', () => {
-    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0 || Boolean(filePicker?.files().length);
+    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0;
     if (dirty && !window.confirm('当前有未保存的修改，转交负责人将放弃这些修改，是否继续？')) return;
     taskTransferForm(task.id, { returnToDetail: true });
   });
@@ -1400,8 +1448,11 @@ async function openTaskHistory(id) {
   }
 }
 
-function openTaskUploadHistory(id) {
+let uploadHistoryTaskId = null;
+
+function renderTaskUploadHistory(id) {
   const task = getRow('tasks', id);
+  uploadHistoryTaskId = task.id;
   const deliveries = task.attachments
     .filter(file => file.kind === 'delivery')
     .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
@@ -1409,17 +1460,25 @@ function openTaskUploadHistory(id) {
   $('#task-upload-history-body').innerHTML = deliveries.length
     ? deliveries.map(file => {
       const name = file.id
-        ? `<a class="link" href="${attachmentUrl(task.id, file.id)}" download>${text(file.name)}</a>`
+        ? `<strong>${text(file.name)}</strong>`
         : `<strong>${text(file.name)}</strong> <small class="muted">桌面本地附件</small>`;
       const download = file.id
         ? `<a class="button" href="${attachmentUrl(task.id, file.id)}" download>下载</a>`
         : '';
+      const remove = file.id && task.canDeleteDelivery
+        ? `<button type="button" class="button danger" data-upload-delete="${text(file.id)}">删除</button>`
+        : '';
+      const actionsHtml = (download || remove) ? `<div class="upload-history-actions">${download}${remove}</div>` : '';
       return `<div class="upload-history-item">
         <div class="upload-history-meta">${name}<time class="muted text-small">${text(attachmentUploadTime(file.created_at))}</time></div>
-        ${download}
+        ${actionsHtml}
       </div>`;
     }).join('')
     : '<p class="empty">暂无交付文件上传记录。</p>';
+}
+
+function openTaskUploadHistory(id) {
+  renderTaskUploadHistory(id);
   taskUploadHistoryDialog.showModal();
 }
 
@@ -1437,7 +1496,7 @@ function taskFileField(kind, required = false) {
   </div>`;
 }
 
-function bindTaskFilePicker(form) {
+function bindTaskFilePicker(form, { onFiles } = {}) {
   const field = form.querySelector('[data-file-upload]');
   if (!field) return { files: () => [] };
   const input = field.querySelector('input[type="file"]');
@@ -1457,6 +1516,26 @@ function bindTaskFilePicker(form) {
   function addFiles(incoming) {
     const additions = [...incoming].filter(file => file?.name);
     if (!additions.length) return;
+    if (onFiles) {
+      const valid = [];
+      for (const file of additions) {
+        if (valid.length >= 12) {
+          formError(message, '每次最多上传 12 个文件。');
+          break;
+        }
+        if (!file.size || file.size > 50 * 1024 * 1024) {
+          formError(message, '请选择不超过 50 MB 的非空文件。');
+          continue;
+        }
+        if (!file.name.trim() || file.name.length > 255 || /[\x00-\x1f\x7f/\\]/.test(file.name)) {
+          formError(message, '文件名称无效，请重新命名后上传。');
+          continue;
+        }
+        valid.push(file);
+      }
+      if (valid.length) void onFiles(valid);
+      return;
+    }
     const next = [...selected];
     for (const file of additions) {
       if (next.length >= 12) {
@@ -1477,7 +1556,7 @@ function bindTaskFilePicker(form) {
     renderSelected();
   }
 
-  drop.addEventListener('click', () => input.click());
+  drop.addEventListener('click', () => { if (!drop.disabled) input.click(); });
   input.addEventListener('change', () => {
     formError(message, '');
     addFiles(input.files);
@@ -1485,7 +1564,7 @@ function bindTaskFilePicker(form) {
   });
   drop.addEventListener('dragover', event => {
     event.preventDefault();
-    drop.classList.add('dragging');
+    if (!drop.disabled) drop.classList.add('dragging');
   });
   drop.addEventListener('dragleave', event => {
     if (!drop.contains(event.relatedTarget)) drop.classList.remove('dragging');
@@ -1493,6 +1572,7 @@ function bindTaskFilePicker(form) {
   drop.addEventListener('drop', event => {
     event.preventDefault();
     drop.classList.remove('dragging');
+    if (drop.disabled) return;
     formError(message, '');
     addFiles(event.dataTransfer?.files || []);
   });
@@ -1522,8 +1602,8 @@ function bindFileUploads(form, getFiles) {
     void discard([...uploaded.keys()]).catch(() => {});
   }, { once: true });
 
-  return async kind => {
-    const files = [...(getFiles() ?? [])].filter(file => file.name);
+  return async (kind, overrideFiles) => {
+    const files = [...(overrideFiles ?? getFiles() ?? [])].filter(file => file.name);
     if (files.length > 12) throw new Error('每次最多上传 12 个文件。');
     for (const file of files) {
       if (!file.size || file.size > 50 * 1024 * 1024) throw new Error('请选择不超过 50 MB 的非空文件。');
@@ -1644,11 +1724,12 @@ function confirmTaskStart(plan, task, draftHours) {
   });
 }
 
-function confirmTaskCompletion(draft) {
+function confirmTaskCompletion(draft, hasDeliveryFiles = true) {
   const { result, hours } = taskCompleteDialog.querySelector('form').elements;
   result.value = draft.result ?? '';
   result.setCustomValidity('');
   hours.value = draft.hours ?? '';
+  $('#task-complete-no-files').hidden = hasDeliveryFiles;
   taskCompleteDialog.returnValue = 'cancel';
   return new Promise(resolve => {
     taskCompleteDialog.addEventListener('close', () => {
@@ -2419,6 +2500,35 @@ taskStartDialog.querySelector('[name=plan_hours]').addEventListener('input', eve
 for (const button of taskUploadHistoryDialog.querySelectorAll('[data-upload-history-close]')) {
   button.addEventListener('click', () => taskUploadHistoryDialog.close());
 }
+$('#task-upload-history-body').addEventListener('click', async event => {
+  const button = event.target.closest('[data-upload-delete]');
+  if (!button || button.disabled || uploadHistoryTaskId == null) return;
+  const task = getRow('tasks', uploadHistoryTaskId);
+  const fileId = button.dataset.uploadDelete;
+  const file = task.attachments.find(item => item.id === fileId && item.kind === 'delivery');
+  if (!file || !window.confirm(`确定删除交付文件「${file.name}」？`)) return;
+  const session = state.user;
+  button.disabled = true;
+  try {
+    const result = await post('/api/tasks/attachments/delete', { taskId: task.id, fileId });
+    if (state.user !== session) return;
+    await applySavedTask(result.task);
+    const updated = normalizeTask(result.task);
+    updateTaskUploadHistoryCount(updated);
+    if (taskUploadHistoryDialog.open) renderTaskUploadHistory(task.id);
+    toast('交付文件已删除。');
+  } catch (error) {
+    toast(error.message);
+    if (error.status === 403 || error.status === 404 || error.status === 409) {
+      if (state.user) await refresh();
+      if (taskUploadHistoryDialog.open && state.user) {
+        try { renderTaskUploadHistory(task.id); } catch { taskUploadHistoryDialog.close(); }
+      }
+    }
+  } finally {
+    button.disabled = false;
+  }
+});
 for (const button of taskHistoryDialog.querySelectorAll('[data-task-history-close]')) {
   button.addEventListener('click', () => taskHistoryDialog.close());
 }

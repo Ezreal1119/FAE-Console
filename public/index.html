@@ -115,6 +115,7 @@
     <div class="dialog-heading"><h2 id="task-complete-title">确定完成任务？</h2></div>
     <form method="dialog">
       <p id="task-complete-note">确认后，任务将标记为已完成，任务内容将锁定。</p>
+      <p id="task-complete-no-files" class="text-red text-small" hidden>请注意：当前尚未上传任何交付文件，如有交付物请取消并返回任务详情页上传。</p>
       <label>完成结果（必填）<textarea name="result" rows="3" maxlength="10000" required autofocus></textarea></label>
       <label>投入工时（小时，必填）<input name="hours" type="number" min="0" step="any" required></label>
       <div class="dialog-actions">
