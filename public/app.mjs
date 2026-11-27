@@ -167,7 +167,7 @@ function overdue(task, at = Date.now()) {
 function assignedToMe(task) { return same(task.assignee_id, state.user.id); }
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
 function canUpdateTaskProgress(task) { return canEditTask(task) || assignedToMe(task); }
-function canTransferTask(task) { return task.status !== '已完成' && (admin() || assignedToMe(task)); }
+function canTransferTask(task) { return task.status !== '已完成' && admin(); }
 function canEditProfile(person) {
   return same(person.owner_id, state.user.id) ||
     (admin() && !state.accounts.some(account => account.is_primary_admin && same(account.id, person.owner_id)));
@@ -577,7 +577,7 @@ function tasksPage() {
 
 const demandHeaders = ['需求编码', '项目', '任务进度', '当前负责人', '提出方', '创建人', '操作'];
 function demandOwner(task) {
-  return task?.id && admin() && canTransferTask(task)
+  return task?.id && canTransferTask(task)
     ? action(task.owner_name || '设置负责人', 'task-transfer', task.id, 'link') : shown(task?.owner_name);
 }
 function demandAssignmentAction(demand, className) {

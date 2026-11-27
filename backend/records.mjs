@@ -581,6 +581,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
     },
 
     transferTask(user, { taskId, assignee_id: assigneeId, expectedVersion }) {
+      if (!isAdmin(user)) throw new RequestError(403, '只有管理员可以转交任务。');
       const id = recordId(taskId);
       if (!validId(assigneeId) || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
         throw new RequestError(400, '请选择接手人并刷新任务后重试。');
@@ -589,7 +590,6 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         const task = db.tasks.find(item => item.id === id);
         if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
         if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请刷新后重新转交。');
-        if (!isAdmin(user) && task.assignee_id !== user.id) throw new RequestError(403, '只有当前负责人或管理员可以转交任务。');
         if (task.status === '已完成') throw new RequestError(409, '已完成的任务不能转交。');
         if (task.assignee_id === assigneeId) throw new RequestError(400, '请选择其他成员接手任务。');
         task.transfer_history ??= [];
