@@ -1239,8 +1239,8 @@ function taskDemandSection(task, source) {
     ['派发时间', taskDispatchTime(task)]
   ], 'task-demand-grid');
   const hasRequirementFiles = task.attachments.some(file => file.kind === 'requirement');
-  const filesBlock = (hasRequirementFiles || task.canAppendRequirement)
-    ? `<div class="task-demand-files"><dt>需求文件</dt><dd>${taskFiles(task, 'requirement')}</dd></div>`
+  const filesBlock = hasRequirementFiles
+    ? `<div class="task-demand-files"><dt>需求文件</dt><dd>${taskFiles(task, 'requirement', { allowAppend: false })}</dd></div>`
     : '';
   return `<section class="task-demand-section" aria-label="需求信息">
     <h3>需求信息</h3>
