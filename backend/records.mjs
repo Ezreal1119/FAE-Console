@@ -536,7 +536,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       return { task: publicTask(store.read(), user, row) };
     },
 
-    dispatchDemand(user, { demandId, dispatchKey, task, files }) {
+    dispatchDemand(user, { demandId, dispatchKey, task, files, estimatedHours }) {
       const id = recordId(demandId);
       if (typeof dispatchKey !== 'string' || !/^[a-f0-9-]{36}$/.test(dispatchKey)) throw new RequestError(400, '派发编号无效。');
       const patch = newTaskPatch(cleanFields('tasks', task));
@@ -546,6 +546,10 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       if (!patch.category) throw new RequestError(400, '请填写工单分类。');
       if (!patch.device_type) throw new RequestError(400, '请填写设备类型。');
       const kind = taskKind(task);
+      if (estimatedHours != null && (!Number.isFinite(estimatedHours) || estimatedHours !== Number(estimatedHours.toFixed(2)) ||
+          !plannedCompletion(now(), estimatedHours, patch.pri))) {
+        throw new RequestError(400, '请填写有效的预计工时，最小 0.01 小时，最多两位小数。');
+      }
 
       const { created, demand } = store.update(db => {
         const source = db.demands.find(row => row.id === id);
@@ -556,7 +560,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           if (existing.creator_id === user.id && existing.dispatch_key === dispatchKey) return { created: existing, demand: source };
           throw new RequestError(409, '这条需求已经派发。');
         }
-        const details = { desc: source.descr ?? null, ...patch, proj: source.proj ?? null };
+        const details = { desc: source.descr ?? null, ...patch, proj: source.proj ?? null, estimated_hours: estimatedHours ?? null };
         const row = insertRecord(db, user, 'tasks', details, recordTaskChange, {
           demand_id: id, dispatch_key: dispatchKey, task_kind: kind,
           requirement_owner_id: source.creator_id ?? source.owner_id

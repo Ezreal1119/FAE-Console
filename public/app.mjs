@@ -1475,7 +1475,7 @@ function taskScheduleFields(task, plan) {
   return plan ? summary + `<div class="plan-hours-field">
     <label for="plan-hours">计划投入工时（小时）</label>
     <div class="plan-hours-control">
-      <input id="plan-hours" name="plan_hours" value="${text(task.planned_hours)}" type="number" min="0.01" step="0.01" required>
+      <input id="plan-hours" name="plan_hours" value="${text(task.planned_hours ?? task.estimated_hours)}" type="number" min="0.01" step="0.01" required>
       <div class="plan-hours-arrows">
         <button type="button" data-plan-step="1" aria-label="增加 1 小时">▴</button>
         <button type="button" data-plan-step="-1" aria-label="减少 1 小时">▾</button>
@@ -1545,6 +1545,7 @@ function taskForm(task = {}, demand, plan) {
   const taskOptionsFields = kindField + priorityField + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
   const setupFields = identityFields +
     (taskOptionsFields ? `<div class="form-grid">${taskOptionsFields}</div>` : '') +
+    (isDispatch ? field('预计工时（小时，选填）', 'estimated_hours', '', 'type="number" min="0.01" step="0.01" inputmode="decimal"') : '') +
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields) +
@@ -1601,7 +1602,8 @@ function taskForm(task = {}, demand, plan) {
       } else if (demand) {
         const files = await upload('requirement');
         if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
-        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, files, task: patch });
+        const estimatedHours = values.estimated_hours ? Number(values.estimated_hours) : null;
+        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, files, task: patch, estimatedHours });
         updateRow('tasks', normalizeTask(result.task));
         updateRow('demands', result.demand);
       } else if (plan) {
