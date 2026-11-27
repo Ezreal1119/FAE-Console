@@ -354,9 +354,6 @@ function table(headers, rows, empty, bodyId = '') {
   return `<div class="table-wrap"><table><thead><tr>${headers.map(tableHeader).join('')}</tr></thead><tbody${bodyId ? ' id="' + bodyId + '"' : ''}>${rows || emptyRow(headers.length, empty)}</tbody></table></div>`;
 }
 function emptyRow(columns, message) { return `<tr><td colspan="${columns}" class="empty">${text(message)}</td></tr>`; }
-function listSummaryRow(description, columns) {
-  return description ? `<tr class="list-summary"><td colspan="${columns}"><p>${text(description)}</p></td></tr>` : '';
-}
 function statusBadge(status) {
   const variant = { 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
   return `<span class="tag ${variant}">${shown(status)}</span>`;
@@ -404,15 +401,13 @@ function workspacePage() {
   const week = weekRange();
   const weekly = tasks.filter(task => inWeek(task.endDate, week));
   const queue = [...active].sort((a, b) => (a.dueTime || '9999').localeCompare(b.dueTime || '9999')).slice(0, 8);
-  const headers = ['任务编号', '项目', '状态', '计划完成', '计划工时'];
+  const headers = ['任务编号', '项目', '状态', '计划完成', '计划工时', '任务描述'];
   const at = Date.now();
-  const rows = queue.map(task => {
-    const summary = listSummaryRow(task.desc, headers.length);
-    return `<tr${summary ? ' class="list-row-with-summary"' : ''}>
+  const rows = queue.map(task => `<tr>
       <td>${action(task.code, 'task-detail', task.id, 'link task-code')}</td><td>${shown(task.proj)}</td>
       <td>${statusBadge(task.status)}</td>${taskDeadlineCell(task, overdue(task, at))}<td>${plannedHoursBadge(task)}</td>
-    </tr>${summary}`;
-  }).join('');
+      <td class="list-desc-cell">${shown(task.desc)}</td>
+    </tr>`).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task, at)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
     panel('我的待办', table(headers, rows, '暂无待办任务', 'todo-rows'), action('任务中心', 'go', 'tasks', 'link')) +
@@ -422,6 +417,7 @@ function workspacePage() {
 const taskColumns = [
   { key: 'code', label: '任务编号', cell: task => `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>` },
   { key: 'proj', label: '项目', cell: task => `<td>${shown(task.proj)}</td>` },
+  { key: 'project_stage', label: '项目阶段', sortKey: 'project_stage', cell: task => `<td>${shown(task.project_stage)}</td>` },
   { key: 'status', label: '状态', cell: task => `<td>${statusBadge(task.status)}</td>` },
   { key: 'pri', label: '优先级', sortKey: 'pri', cell: task => `<td>${priorityBadge(task.pri)}</td>` },
   { key: 'owner_name', label: '负责人', adminOnly: true, cell: task => `<td>${shown(task.owner_name)}</td>` },
@@ -429,11 +425,11 @@ const taskColumns = [
   { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: taskDeadlineCell },
   { key: 'endDate', label: '完成日期', sortKey: 'endDate', cell: task => `<td class="task-date">${shown(task.endDate)}</td>` },
   { key: 'hours', label: '投入工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
-  { key: 'actions', label: '操作', cell: taskActionsCell }
+  { key: 'desc', label: '任务描述', cell: task => `<td class="list-desc-cell">${shown(task.desc)}</td>` }
 ];
-const taskDisplayFields = [...taskColumns.filter(column => column.key !== 'actions'), { key: 'desc', label: '任务描述' }];
+const taskDisplayFields = taskColumns;
 const taskDisplayStorageKey = () => 'yxt-web-task-display-' + state.user.id;
-const taskSortDefaults = { pri: 'descending', dueTime: 'ascending', startTime: 'ascending', endDate: 'ascending', hours: 'descending' };
+const taskSortDefaults = { project_stage: 'ascending', pri: 'descending', dueTime: 'ascending', startTime: 'ascending', endDate: 'ascending', hours: 'descending' };
 
 function loadHiddenTaskFields() {
   try {
@@ -505,7 +501,7 @@ function sortedTaskList() {
     const left = taskSortValue(a, key);
     const right = taskSortValue(b, key);
     if (left === null || right === null) return Number(left === null) - Number(right === null);
-    return multiplier * (typeof left === 'number' ? left - right : left.localeCompare(right));
+    return multiplier * (typeof left === 'number' ? left - right : sortZh(left, right));
   });
 }
 function attachmentUrl(taskId, fileId) {
@@ -519,23 +515,15 @@ function taskFiles(task, kind) {
   if (canAppend) links.push(action('补传' + attachmentLabels[kind], 'task-attachment-append', JSON.stringify([task.id, kind]), 'link'));
   return links.join('') || '—';
 }
-function taskActionsCell(task) {
-  const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
-  const remove = canDelete ? action('删除', 'task-delete', task.id, 'link danger') : '';
-  const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
-  return `<td><div class="row-actions">${transfer + remove || '—'}</div></td>`;
-}
 function taskDeadlineCell(task, isOverdue) {
   return `<td data-task-deadline="${text(task.id)}" class="task-date task-due-date${isOverdue ? ' text-red' : ''}">${shown(task.dueTime)}</td>`;
 }
 function taskRows(tasks) {
   const columns = visibleTaskColumns();
-  const showDescription = !state.hiddenTaskFields.has('desc');
   const at = Date.now();
   return tasks.map(task => {
     const isOverdue = overdue(task, at);
-    const summary = showDescription ? listSummaryRow(task.desc, columns.length) : '';
-    return `<tr${summary ? ' class="list-row-with-summary"' : ''}>${columns.map(column => column.cell(task, isOverdue)).join('')}</tr>${summary}`;
+    return `<tr>${columns.map(column => column.cell(task, isOverdue)).join('')}</tr>`;
   }).join('');
 }
 function updateTaskOverdueIndicators() {
@@ -556,7 +544,7 @@ function tasksPage() {
     pagedListPanel('tasks', toolbar);
 }
 
-const demandHeaders = ['需求编码', '项目', '任务进度', '当前负责人', '提出方', '创建人', '操作'];
+const demandHeaders = ['需求编码', '项目', '任务进度', '当前负责人', '提出方', '创建人', '操作', '需求说明'];
 function demandOwner(task) {
   return task?.id && canTransferTask(task)
     ? action(task.owner_name || '设置负责人', 'task-transfer', task.id, 'link') : shown(task?.owner_name);
@@ -574,12 +562,12 @@ function demandRows(demands) {
     const task = demand.linked_tasks?.[0];
     const edit = canManageDemand(demand) ? action('编辑', 'demand-edit', demand.id, 'link') : '';
     const remove = canDeleteDemand(demand) ? action('删除', 'demand-delete', demand.id, 'link danger') : '';
-    const summary = listSummaryRow(demand.descr, demandHeaders.length);
-    return `<tr${summary ? ' class="list-row-with-summary"' : ''}>
+    return `<tr>
     <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td>
     <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td>
     <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
-    <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td></tr>${summary}`;
+    <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td>
+    <td class="list-desc-cell">${shown(demand.descr)}</td></tr>`;
   }).join('');
 }
 function demandsPage() {
@@ -1099,12 +1087,21 @@ function modal(title, description, body, locked = false, headingAside = '', focu
   else if (focusTitle) dialog.querySelector('#dialog-title').focus({ preventScroll: true });
 }
 function modalForm(title, description, fields, onSave, options = {}) {
-  const buttons = options.locked ? action('退出登录', 'logout') : action(options.cancel || '取消', 'close');
+  const leading = options.leadingActions ? `<div class="dialog-actions-start">${options.leadingActions}</div>` : '';
+  const buttons = options.locked ? action('退出登录', 'logout') : options.onCancel
+    ? `<button type="button" class="button" data-dialog-cancel>${text(options.cancel || '取消')}</button>`
+    : action(options.cancel || '取消', 'close');
   const secondary = options.secondarySubmit
     ? `<button type="submit" class="button" value="secondary">${text(options.secondarySubmit)}</button>` : '';
   modal(title, description, `<form id="dialog-form"><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions">${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside, options.focusTitle);
+    <div class="dialog-actions">${leading}${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside, options.focusTitle);
   const form = dialog.querySelector('form');
+  if (options.onCancel) {
+    form.querySelector('[data-dialog-cancel]').addEventListener('click', () => {
+      try { options.onCancel(); }
+      catch (error) { dialog.close(); toast(error.message); }
+    });
+  }
   const message = form.querySelector('.form-error');
   const submitButtons = [...form.querySelectorAll('[type=submit]')];
   form.addEventListener('submit', async event => {
@@ -1124,8 +1121,14 @@ function modalForm(title, description, fields, onSave, options = {}) {
   });
   return form;
 }
-function confirmDelete(title, message, perform) {
-  modalForm(title, message, '', perform, { danger: true, submit: '确认删除' });
+function confirmDelete(title, message, perform, options = {}) {
+  modalForm(title, message, '', perform, { danger: true, submit: '确认删除', ...options });
+}
+function confirmDeleteTask(row, onCancel) {
+  confirmDelete('删除任务', '确定删除「' + row.code + '」？', async () => {
+    await removeRow('tasks', row, '任务已删除。');
+    if (row.demand_id != null && state.user) await refresh();
+  }, onCancel ? { onCancel } : {});
 }
 function getRow(key, id) {
   const row = state[key].find(record => same(record.id, id));
@@ -1175,12 +1178,23 @@ function taskDetails(task, { editable = {} } = {}) {
     <div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div></div>`;
   return info + remarks;
 }
+function taskDialogLeadingActions(task) {
+  const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
+  const remove = canDelete ? '<button type="button" class="button danger" data-task-dialog-action="delete">删除</button>' : '';
+  const transfer = canTransferTask(task) ? '<button type="button" class="button" data-task-dialog-action="transfer">转交负责人</button>' : '';
+  return remove + transfer;
+}
 function taskDetail(id) {
   const task = getRow('tasks', id);
+  const leadingActions = taskDialogLeadingActions(task);
   const canOperate = task.status !== '已完成' && canUpdateTaskProgress(task);
   if (!canOperate) {
-    modal(task.code, '', taskDetails(task) + taskCommentSection(task) + `<div class="dialog-actions">${action('关闭', 'close')}</div>`, false, '', true);
+    const leading = leadingActions ? `<div class="dialog-actions-start">${leadingActions}</div>` : '';
+    modal(task.code, '', taskDetails(task) + taskCommentSection(task) + `<div class="dialog-actions">${leading}${action('关闭', 'close')}</div>`, false, '', true);
     bindTaskComments(dialog);
+    dialog.querySelector('[data-task-dialog-action="delete"]')?.addEventListener('click', () => {
+      confirmDeleteTask(task, () => taskDetail(task.id));
+    });
     return;
   }
   const isPlanning = task.status === '待规划';
@@ -1211,14 +1225,11 @@ function taskDetail(id) {
     (needsChoices ? choiceStatus : '');
   const formOptions = isPlanning
     ? hasEditableFields
-      ? { submit: '保存', secondarySubmit: '开始规划', headingAside, focusTitle: true }
-      : { cancel: '关闭', submit: '开始规划', headingAside, focusTitle: true }
-    : { submit: '保存', secondarySubmit: '完成任务', headingAside, focusTitle: true };
+      ? { submit: '保存', secondarySubmit: '开始规划', leadingActions, headingAside, focusTitle: true }
+      : { cancel: '关闭', submit: '开始规划', leadingActions, headingAside, focusTitle: true }
+    : { submit: '保存', secondarySubmit: '完成任务', leadingActions, headingAside, focusTitle: true };
   let project, loadChoices, completionDraft, planDraftHours;
-  const form = modalForm(task.code, '', fields, async (values, isSecondary) => {
-    const formUser = state.user;
-    const starting = isPlanning && (!hasEditableFields || isSecondary);
-    const completing = canChangeStatus && isSecondary;
+  function collectTaskPatch(values, { includeStatus = true } = {}) {
     const patch = taskOptions.changes();
     if (canEditProject) {
       const proj = project.value();
@@ -1229,7 +1240,14 @@ function taskDetail(id) {
       if (desc !== optional(task.desc)) patch.desc = desc;
     }
     if (canEditPriority && values.pri !== priority) patch.pri = values.pri;
-    if (canChangeStatus && !completing && values.status !== task.status) patch.status = values.status;
+    if (includeStatus && canChangeStatus && values.status !== task.status) patch.status = values.status;
+    return patch;
+  }
+  const form = modalForm(task.code, '', fields, async (values, isSecondary) => {
+    const formUser = state.user;
+    const starting = isPlanning && (!hasEditableFields || isSecondary);
+    const completing = canChangeStatus && isSecondary;
+    const patch = collectTaskPatch(values, { includeStatus: !completing });
 
     try {
       if (starting) {
@@ -1283,6 +1301,14 @@ function taskDetail(id) {
       taskOptions.setOptions(options);
     });
   }
+  form.querySelector('[data-task-dialog-action="delete"]')?.addEventListener('click', () => {
+    confirmDeleteTask(task, () => taskDetail(task.id));
+  });
+  form.querySelector('[data-task-dialog-action="transfer"]')?.addEventListener('click', () => {
+    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0;
+    if (dirty && !window.confirm('当前有未保存的修改，转交负责人将放弃这些修改，是否继续？')) return;
+    taskTransferForm(task.id, { returnToDetail: true });
+  });
 }
 function taskLinkPage() {
   const task = state.tasks.find(row => same(row.id, linkedTaskId()));
@@ -1502,7 +1528,7 @@ async function applySavedTask(row) {
   if (saved.demand_id != null) await refresh();
 }
 
-function taskTransferForm(id) {
+function taskTransferForm(id, { returnToDetail = false } = {}) {
   const task = getRow('tasks', id);
   if (!canTransferTask(task)) return;
   let recipient, loadChoices;
@@ -1523,7 +1549,11 @@ function taskTransferForm(id) {
       throw error;
     }
     toast('负责人已转交。');
-  }, { submit: '确认转交' });
+    if (returnToDetail && state.user) {
+      taskDetail(task.id);
+      return false;
+    }
+  }, { submit: '确认转交', onCancel: returnToDetail ? () => taskDetail(task.id) : null });
   recipient = bindChoice(form.querySelector('[data-choice=assignee_id]'), { value: null, label: '' }, { clearable: false, closeOnBlur: false });
   loadChoices = prepareFormChoices(form, ({ people }) => recipient.setOptions(peopleChoices(people)
     .filter(person => !same(person.id, task.assignee_id)).map(({ id, label }) => ({ value: id, label }))));
@@ -2172,14 +2202,7 @@ const actions = {
   logout: async () => { await post('/api/logout'); showAuth(); },
   'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
   'task-display-options': taskDisplayOptions,
-  'task-transfer': taskTransferForm,
-  'task-delete': id => {
-    const row = getRow('tasks', id);
-    confirmDelete('删除任务', '确定删除「' + row.code + '」？', async () => {
-      await removeRow('tasks', row, '任务已删除。');
-      if (row.demand_id != null && state.user) await refresh();
-    });
-  },
+  'task-transfer': id => taskTransferForm(id),
   'demand-new': () => demandForm(), 'demand-edit': id => demandForm(getRow('demands', id)), 'demand-detail': demandDetail,
   'demand-dispatch': id => {
     const demand = getRow('demands', id);
