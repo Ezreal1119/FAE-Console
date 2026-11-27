@@ -17,6 +17,8 @@ const fields = {
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const defaultPriority = '中';
+const demandCodePrefix = 'REQ';
+const legacyDemandPrefix = /^FAE-/;
 const catalogKinds = new Set(['proposer', 'category', 'device_type', 'project_stage']);
 const taskProgressFields = new Set(['status', 'result']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at', 'completed_at'];
@@ -264,7 +266,7 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
   }
   const row = { id: db.seq[sequence[table]]++, owner_id: user.id, owner_name: displayName(db, user), created_at: now(), ...extra };
   if (table !== 'profiles') row.creator_id = user.id;
-  if (table === 'demands') assignCode(db.demandCodeSequences ??= {}, row, 'FAE', Date.now());
+  if (table === 'demands') assignCode(db.demandCodeSequences ??= {}, row, demandCodePrefix, Date.now());
   if (table === 'tasks') {
     Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], pri: defaultPriority });
     assignCode(db.taskCodeSequences ??= {}, row, row.task_kind, Date.now());
@@ -301,7 +303,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
     return createHmac('sha256', planningKey).update(JSON.stringify([user.id, task, minute])).digest();
   }
 
-  const needsDemandCode = demand => !demand.code;
+  const needsDemandCode = demand => !demand.code || legacyDemandPrefix.test(demand.code);
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
   const needsRequirementOwner = task => task.demand_id != null && !Object.hasOwn(task, 'requirement_owner_id');
   const { demands, tasks } = store.read();
@@ -309,7 +311,8 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
     store.update(db => {
       const fallback = Date.now();
       for (const demand of db.demands.filter(needsDemandCode).sort((a, b) => a.id - b.id)) {
-        assignCode(db.demandCodeSequences ??= {}, demand, 'FAE', fallback);
+        if (demand.code) demand.code = demand.code.replace(legacyDemandPrefix, demandCodePrefix + '-');
+        else assignCode(db.demandCodeSequences ??= {}, demand, demandCodePrefix, fallback);
       }
       backfillTaskCodes(db);
       for (const task of db.tasks.filter(needsReceiver)) {
