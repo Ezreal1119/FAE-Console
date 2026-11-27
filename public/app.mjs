@@ -1395,7 +1395,11 @@ function bindChoice(field, initial, { clearable = true, allowCustom = false, clo
 
 function catalogOptionNames(values, kind) {
   const names = [...new Set(values.filter(Boolean))];
-  return kind === 'project_stage' ? names : names.sort(sortZh);
+  if (kind === 'project_stage') return names;
+  names.sort(sortZh);
+  if (kind !== 'device_type') return names;
+  const first = ['PDA', 'POS'];
+  return [...first.filter(name => names.includes(name)), ...names.filter(name => !first.includes(name))];
 }
 
 function catalogChoiceEntries(values, kind) {
