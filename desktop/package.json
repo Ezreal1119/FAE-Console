@@ -1,6 +1,6 @@
 {
   "name": "fae-console-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "工程小管家桌面客户端",
   "main": "main.cjs",
@@ -13,7 +13,6 @@
   "build": {
     "appId": "cn.patrick.fae-console.desktop",
     "productName": "工程小管家",
-    "artifactName": "FAE-Console-Windows-x64-Portable-${version}.${ext}",
     "files": [
       "main.cjs",
       "classic.css",
@@ -24,7 +23,8 @@
     },
     "win": {
       "target": "portable",
-      "signAndEditExecutable": false
+      "icon": "assets/windows-icon.ico",
+      "signExecutable": false
     },
     "mac": {
       "category": "public.app-category.productivity",
@@ -32,6 +32,7 @@
       "hardenedRuntime": false
     },
     "portable": {
+      "artifactName": "${productName}-${version}.${ext}",
       "requestExecutionLevel": "user",
       "useZip": true
     }

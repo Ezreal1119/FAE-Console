@@ -119,7 +119,7 @@ npm --prefix desktop ci
 npm --prefix desktop run build:win
 ```
 
-在 `desktop/dist/` 取 `FAE-Console-Windows-x64-Portable-<版本>.exe`。在 Windows x64 上双击运行，登录时需联网。桌面源码和锁文件随 Git 维护，生成的二进制单独交付。
+在 `desktop/dist/` 取 `工程小管家-<版本>.exe`。在 Windows x64 上双击运行，登录时需联网。桌面源码和锁文件随 Git 维护，生成的二进制单独交付。
 
 ## macOS 调试版
 
