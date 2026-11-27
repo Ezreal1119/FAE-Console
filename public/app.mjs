@@ -356,6 +356,10 @@ function table(headers, rows, empty, bodyId = '') {
   return `<div class="table-wrap"><table><thead><tr>${headers.map(tableHeader).join('')}</tr></thead><tbody${bodyId ? ' id="' + bodyId + '"' : ''}>${rows || emptyRow(headers.length, empty)}</tbody></table></div>`;
 }
 function emptyRow(columns, message) { return `<tr><td colspan="${columns}" class="empty">${text(message)}</td></tr>`; }
+function descCell(value) {
+  const tooltip = value ? ` title="${text(value)}"` : '';
+  return `<td class="list-desc-cell"><span class="list-desc"${tooltip}>${shown(value)}</span></td>`;
+}
 function statusBadge(status) {
   const variant = { 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
   return `<span class="tag ${variant}">${shown(status)}</span>`;
@@ -408,7 +412,7 @@ function workspacePage() {
   const rows = queue.map(task => `<tr>
       <td>${action(task.code, 'task-detail', task.id, 'link task-code')}</td><td>${shown(task.proj)}</td>
       <td>${statusBadge(task.status)}</td>${taskDeadlineCell(task, overdue(task, at))}<td>${plannedHoursBadge(task)}</td>
-      <td class="list-desc-cell">${shown(task.desc)}</td>
+      ${descCell(task.desc)}
     </tr>`).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task, at)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
@@ -427,7 +431,7 @@ const taskColumns = [
   { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: taskDeadlineCell },
   { key: 'endDate', label: '完成日期', sortKey: 'endDate', cell: task => `<td class="task-date">${shown(task.endDate)}</td>` },
   { key: 'hours', label: '投入工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
-  { key: 'desc', label: '任务描述', cell: task => `<td class="list-desc-cell">${shown(task.desc)}</td>` }
+  { key: 'desc', label: '任务描述', cell: task => descCell(task.desc) }
 ];
 const taskDisplayFields = taskColumns;
 const taskDisplayStorageKey = () => 'yxt-web-task-display-' + state.user.id;
@@ -569,7 +573,7 @@ function demandRows(demands) {
     <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td>
     <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${shown(demand.owner_name)}</td>
     <td><div class="row-actions">${edit + demandAssignmentAction(demand, 'link') + remove || '—'}</div></td>
-    <td class="list-desc-cell">${shown(demand.descr)}</td></tr>`;
+    ${descCell(demand.descr)}</tr>`;
   }).join('');
 }
 function demandsPage() {
