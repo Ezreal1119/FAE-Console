@@ -397,10 +397,18 @@ function workspacePage() {
   const week = weekRange();
   const weekly = tasks.filter(task => inWeek(task.endDate, week));
   const queue = [...active].sort((a, b) => (a.dueTime || '9999').localeCompare(b.dueTime || '9999')).slice(0, 8);
-  const rows = queue.map(task => `<tr><td>${action(task.code, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueTime)}</td><td>${plannedHoursBadge(task)}</td></tr>`).join('');
+  const headers = ['任务编号', '项目', '状态', '计划完成', '计划工时'];
+  const at = Date.now();
+  const rows = queue.map(task => {
+    const summary = listSummaryRow(task.desc, headers.length);
+    return `<tr${summary ? ' class="list-row-with-summary"' : ''}>
+      <td>${action(task.code, 'task-detail', task.id, 'link task-code')}</td><td>${shown(task.proj)}</td>
+      <td>${statusBadge(task.status)}</td>${taskDeadlineCell(task, overdue(task, at))}<td>${plannedHoursBadge(task)}</td>
+    </tr>${summary}`;
+  }).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
-    stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
-    `<div class="grid-two workspace-overview">${panel('我的待办', table(['任务编号', '项目', '状态', '计划完成', '计划工时'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>` +
+    stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task, at)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
+    panel('我的待办', table(headers, rows, '暂无待办任务', 'todo-rows'), action('任务中心', 'go', 'tasks', 'link')) +
     pagedListPanel('home');
 }
 
@@ -412,7 +420,7 @@ const taskColumns = [
   { key: 'pri', label: '优先级', sortKey: 'pri', cell: task => `<td>${priorityBadge(task.pri)}</td>` },
   { key: 'owner_name', label: '负责人', adminOnly: true, cell: task => `<td>${shown(task.owner_name)}</td>` },
   { key: 'startTime', label: '开始时间', sortKey: 'startTime', cell: task => `<td class="task-date">${shown(task.startTime)}</td>` },
-  { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: (task, isOverdue) => `<td data-task-deadline="${text(task.id)}" class="task-date task-due-date${isOverdue ? ' text-red' : ''}">${shown(task.dueTime)}</td>` },
+  { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: taskDeadlineCell },
   { key: 'endDate', label: '完成日期', sortKey: 'endDate', cell: task => `<td class="task-date">${shown(task.endDate)}</td>` },
   { key: 'hours', label: '投入工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
   { key: 'actions', label: '操作', cell: taskActionsCell }
@@ -513,6 +521,9 @@ function taskActionsCell(task) {
   const remove = canDelete ? action('删除', 'task-delete', task.id, 'link danger') : '';
   const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
   return `<td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}</div></td>`;
+}
+function taskDeadlineCell(task, isOverdue) {
+  return `<td data-task-deadline="${text(task.id)}" class="task-date task-due-date${isOverdue ? ' text-red' : ''}">${shown(task.dueTime)}</td>`;
 }
 function taskRows(tasks) {
   const columns = visibleTaskColumns();
