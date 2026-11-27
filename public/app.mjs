@@ -397,14 +397,14 @@ function workspacePage() {
 }
 
 const taskColumns = [
-  { key: 'code', label: '任务编号', cell: taskCodeCell },
+  { key: 'code', label: '任务编号', cell: task => `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>` },
   { key: 'proj', label: '项目', cell: task => `<td>${shown(task.proj)}</td>` },
   { key: 'category', label: '工单分类', cell: task => `<td>${text(taskCategoryLabel(task))}</td>` },
   { key: 'status', label: '状态', cell: task => `<td>${statusBadge(task.status)}</td>` },
   { key: 'pri', label: '优先级', sortKey: 'pri', cell: task => `<td>${priorityBadge(task.pri)}</td>` },
   { key: 'owner_name', label: '负责人', adminOnly: true, cell: task => `<td>${shown(task.owner_name)}</td>` },
   { key: 'startTime', label: '开始时间', sortKey: 'startTime', cell: task => `<td class="task-date">${shown(task.startTime)}</td>` },
-  { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: (task, isOverdue) => `<td class="task-date task-due-date${isOverdue ? ' text-red' : ''}">${shown(task.dueTime)}</td>` },
+  { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: (task, isOverdue) => `<td data-task-deadline="${text(task.id)}" class="task-date task-due-date${isOverdue ? ' text-red' : ''}">${shown(task.dueTime)}</td>` },
   { key: 'endDate', label: '完成日期', sortKey: 'endDate', cell: task => `<td class="task-date">${shown(task.endDate)}</td>` },
   { key: 'hours', label: '投入工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
   { key: 'actions', label: '操作', cell: taskActionsCell }
@@ -500,10 +500,6 @@ function taskEditActions(task, className) {
   return task.status !== '已完成' && canUpdateTaskProgress(task)
     ? action(task.status === '待规划' ? '开始规划' : '更新任务', 'task-update', task.id, className) : '';
 }
-function taskCodeCell(task, isOverdue) {
-  return `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}
-    <div class="task-overdue" data-task-overdue="${text(task.id)}"${isOverdue ? '' : ' hidden'}><span class="tag danger">已逾期</span></div></td>`;
-}
 function taskActionsCell(task) {
   const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
   const remove = canDelete ? action('删除', 'task-delete', task.id, 'link danger') : '';
@@ -523,12 +519,10 @@ function taskRows(tasks) {
 function updateTaskOverdueIndicators() {
   if (state.page !== 'tasks' || !state.user) return;
   const at = Date.now();
-  for (const badge of content.querySelectorAll('[data-task-overdue]')) {
-    const task = state.tasks.find(row => same(row.id, badge.dataset.taskOverdue));
+  for (const cell of content.querySelectorAll('[data-task-deadline]')) {
+    const task = state.tasks.find(row => same(row.id, cell.dataset.taskDeadline));
     if (!task) continue;
-    const isOverdue = overdue(task, at);
-    badge.hidden = !isOverdue;
-    badge.closest('tr').querySelector('.task-due-date')?.classList.toggle('text-red', isOverdue);
+    cell.classList.toggle('text-red', overdue(task, at));
   }
 }
 function tasksPage() {
