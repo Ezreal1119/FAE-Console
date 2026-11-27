@@ -507,11 +507,11 @@ function sortedTaskList() {
 function attachmentUrl(taskId, fileId) {
   return '/api/attachments/' + encodeURIComponent(taskId) + '/' + encodeURIComponent(fileId);
 }
-function taskFiles(task, kind) {
+function taskFiles(task, kind, { allowAppend = true } = {}) {
   const links = task.attachments.filter(file => file.kind === kind).map(file => file.id
     ? `<div><a class="link" href="${attachmentUrl(task.id, file.id)}" download>${text(file.name)}</a></div>`
     : `<div>${text(file.name)} <small class="muted">桌面本地附件</small></div>`);
-  const canAppend = kind === 'requirement' ? task.canAppendRequirement : kind === 'delivery' && task.canAppendDelivery;
+  const canAppend = allowAppend && (kind === 'requirement' ? task.canAppendRequirement : kind === 'delivery' && task.canAppendDelivery);
   if (canAppend) links.push(action('补传' + attachmentLabels[kind], 'task-attachment-append', JSON.stringify([task.id, kind]), 'link'));
   return links.join('') || '—';
 }
@@ -1170,7 +1170,7 @@ function taskDetails(task, { editable = {} } = {}) {
     ['开始时间', task.startTime],
     ['完成日期', task.endDate],
     ['需求文件', taskFiles(task, 'requirement'), true],
-    ['交付文件', taskFiles(task, 'delivery'), true],
+    ['交付文件', taskFiles(task, 'delivery', { allowAppend: !editable.delivery }), true],
     ...(task.attachments.some(file => file.kind === 'legacy') ? [['历史附件', taskFiles(task, 'legacy'), true]] : []),
     ['前置依赖', task.deps]
   ]);
@@ -1215,12 +1215,12 @@ function taskDetail(id) {
   const optionFields = optionKinds.map(kind => taskOptionField(kind, false)).join('');
   const editableRow = (priorityField || optionFields) ? `<div class="form-grid">${priorityField}${optionFields}</div>` : '';
   const fields = taskDetails(task, {
-    editable: { proj: canEditProject, deviceType: canEditClassification, pri: canEditPriority, status: true, desc: canEditDetails }
+    editable: { proj: canEditProject, deviceType: canEditClassification, pri: canEditPriority, status: true, desc: canEditDetails, delivery: canChangeStatus }
   }) +
     (canEditProject ? choiceField('项目', 'proj', { allowCustom: true }) : '') +
     editableRow +
     (canEditDetails ? area('任务描述', 'desc', task.desc, false) : '') +
-    (canChangeStatus ? uploadProgress : '') +
+    (canChangeStatus ? taskFileField('delivery') + uploadProgress : '') +
     taskCommentSection(task) +
     (needsChoices ? choiceStatus : '');
   const formOptions = isPlanning
@@ -1282,6 +1282,12 @@ function taskDetail(id) {
       if (Object.keys(patch).length) {
         await applySavedTask(await saveRow('tasks', patch, task.id));
       }
+      if (canChangeStatus && form.elements.files?.files?.length) {
+        const files = await upload('delivery');
+        if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+        const attached = await post('/api/tasks/attachments', { taskId: task.id, kind: 'delivery', files });
+        await applySavedTask(attached.task);
+      }
       toast('任务已更新。');
     } catch (error) {
       if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
@@ -1289,7 +1295,7 @@ function taskDetail(id) {
       throw error;
     }
   }, formOptions);
-  const upload = canChangeStatus ? bindFileUploads(form, () => completionDraft?.files) : null;
+  const upload = canChangeStatus ? bindFileUploads(form, () => form.elements.files?.files) : null;
   bindTaskComments(form);
   const taskOptions = bindTaskOptions(form, task, optionKinds);
   if (canEditProject) {
@@ -1305,7 +1311,7 @@ function taskDetail(id) {
     confirmDeleteTask(task, () => taskDetail(task.id));
   });
   form.querySelector('[data-task-dialog-action="transfer"]')?.addEventListener('click', () => {
-    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0;
+    const dirty = Object.keys(collectTaskPatch(Object.fromEntries(new FormData(form)))).length > 0 || Boolean(form.elements.files?.files?.length);
     if (dirty && !window.confirm('当前有未保存的修改，转交负责人将放弃这些修改，是否继续？')) return;
     taskTransferForm(task.id, { returnToDetail: true });
   });
@@ -1601,16 +1607,15 @@ function confirmTaskStart(plan, task, draftHours) {
 }
 
 function confirmTaskCompletion(draft) {
-  const { result, hours, files } = taskCompleteDialog.querySelector('form').elements;
+  const { result, hours } = taskCompleteDialog.querySelector('form').elements;
   result.value = draft.result ?? '';
   result.setCustomValidity('');
   hours.value = draft.hours ?? '';
-  if (files.files !== draft.files) files.value = '';
   taskCompleteDialog.returnValue = 'cancel';
   return new Promise(resolve => {
     taskCompleteDialog.addEventListener('close', () => {
       resolve(taskCompleteDialog.returnValue === 'complete'
-        ? { result: trimmed(result.value), hours: hours.valueAsNumber, files: files.files } : null);
+        ? { result: trimmed(result.value), hours: hours.valueAsNumber } : null);
     }, { once: true });
     taskCompleteDialog.showModal();
   });

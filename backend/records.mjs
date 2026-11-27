@@ -220,7 +220,8 @@ function canAppendAttachment(user, task, kind) {
     const fromDemand = task.demand_id != null || Object.hasOwn(task, 'initial_receiver_id');
     return fromDemand && (isAdmin(user) || task.requirement_owner_id === user.id);
   }
-  return task.status === '已完成' && (managesRecord(user, task) || task.assignee_id === user.id);
+  return (task.status === '已完成' || ACTIVE_TASK_STATUSES.includes(task.status)) &&
+    (managesRecord(user, task) || task.assignee_id === user.id);
 }
 
 function taskForComments(db, user, taskId) {
