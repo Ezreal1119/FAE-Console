@@ -11,6 +11,7 @@ const guidelinesBody = $('#guidelines-dialog-body');
 const guidelinesConfirm = $('#confirm-guidelines');
 const guidelinesScrollHint = $('#guidelines-scroll-hint');
 const STATUS = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
+const TASK_KINDS = { L: '临时任务', W: '工作任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', projects: '项目管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
@@ -380,15 +381,15 @@ function workspacePage() {
   const week = weekRange();
   const weekly = tasks.filter(task => inWeek(task.endDate, week));
   const queue = [...active].sort((a, b) => (a.dueTime || '9999').localeCompare(b.dueTime || '9999')).slice(0, 8);
-  const rows = queue.map(task => `<tr><td>${action(task.title, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueTime)}</td></tr>`).join('');
+  const rows = queue.map(task => `<tr><td>${action(task.code, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueTime)}</td></tr>`).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(overdue).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
-    `<div class="grid-two workspace-overview">${panel('我的待办', table(['任务', '项目', '状态', '计划完成'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>` +
+    `<div class="grid-two workspace-overview">${panel('我的待办', table(['任务编号', '项目', '状态', '计划完成'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>` +
     pagedListPanel('home');
 }
 
 const taskHeaders = [
-  '任务', '项目', '工单分类', '状态', { label: '优先级', sortKey: 'pri' }, '负责人',
+  '任务编号', '项目', '工单分类', '状态', { label: '优先级', sortKey: 'pri' }, '负责人',
   { label: '计划完成时间', sortKey: 'dueTime' }, { label: '开始时间', sortKey: 'startTime' },
   { label: '完成日期', sortKey: 'endDate' }, { label: '工时', sortKey: 'hours' }, '操作'
 ];
@@ -405,7 +406,7 @@ function filteredTasks() {
   const { taskQuery, taskCategory, taskStatus, taskPriority: priority, taskScope } = state.filters;
   return state.tasks.filter(task => matchesTaskScope(task, taskScope) && (!taskStatus || task.status === taskStatus) &&
     (!taskCategory || taskCategoryLabel(task) === taskCategory) && (!priority || taskPriority(task.pri) === priority) &&
-    hasText(taskQuery, task.title, task.id, task.proj, task.category, task.device_type, task.project_stage,
+    hasText(taskQuery, task.code, task.id, task.proj, task.category, task.device_type, task.project_stage,
       task.owner_name, task.desc, task.result));
 }
 function taskSortValue(task, key) {
@@ -443,20 +444,21 @@ function taskRows(tasks) {
     const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
     const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
     const ownerBadge = assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
-    return `<tr>
-    <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span>${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
+    const summary = task.desc ? `<tr class="task-summary"><td colspan="${taskHeaders.length}"><p>${text(task.desc)}</p></td></tr>` : '';
+    return `<tr${summary ? ' class="task-with-summary"' : ''}>
+    <td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>
     <td>${shown(task.proj)}</td><td>${text(taskCategoryLabel(task))}</td><td>${statusBadge(task.status)}</td>
     <td>${priorityBadge(task.pri)}</td><td>${shown(task.owner_name)}</td>
     <td class="task-date${overdue(task) ? ' text-red' : ''}">${shown(task.dueTime)}</td>
     <td class="task-date">${shown(task.startTime)}</td><td class="task-date">${shown(task.endDate)}</td><td>${text(withHours(task.hours))}</td>
-    <td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}${ownerBadge}</div></td></tr>`;
+    <td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}${ownerBadge}</div></td></tr>${summary}`;
   }).join('');
 }
 function tasksPage() {
   const scope = admin() ? `<select aria-label="任务范围" data-filter="taskScope">${option('all', state.filters.taskScope, '所有任务')}${option('mine', state.filters.taskScope, '我负责的任务')}</select>` : '';
   const category = filterSelect('taskCategory', '按工单分类筛选', [...state.taskCategories, otherTaskCategory], '全部分类');
   const priority = filterSelect('taskPriority', '按优先级筛选', PRIORITY, '全部优先级');
-  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务、编号、项目、分类、设备类型、项目阶段或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
+  const toolbar = `<div class="toolbar">${search('taskQuery', '搜索任务编号、描述、项目、分类、设备类型、项目阶段或负责人')}${category}${filterSelect('taskStatus', '按任务状态过滤', STATUS, '全部状态')}${priority}${scope}</div>`;
   return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
     pagedListPanel('tasks', toolbar);
 }
@@ -498,11 +500,11 @@ function handledTasks() {
 }
 function handledTaskRows(tasks) {
   return tasks.map(task => `<tr>
-    <td>${action(task.title || '未命名任务', 'task-detail', task.id, 'link')}<span class="number">#${text(task.id)}</span></td>
+    <td>${action(task.code, 'task-detail', task.id, 'link')}</td>
     <td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td>${shown(task.owner_name)}</td></tr>`).join('');
 }
 const pagedLists = {
-  home: { id: 'handled', title: '我经手的任务', headers: ['任务', '项目', '状态', '当前负责人'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
+  home: { id: 'handled', title: '我经手的任务', headers: ['任务编号', '项目', '状态', '当前负责人'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
   tasks: { id: 'task', title: '任务列表', headers: taskHeaders, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
   demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
 };
@@ -675,7 +677,7 @@ function boardPage() {
   const active = tasks.filter(task => task.status !== '已完成');
   const load = grouped(active, task => task.owner_name || '未指定', task => Number(task.hours) || 0)
     .map(([name, value]) => [name, Math.round(value / 40 * 100), value > 40 ? '#b02c42' : '#26a980', Math.round(value / 40 * 100) + '% · ' + value + 'h']);
-  const completed = done.slice(0, 12).map(task => `<div class="detail-item">${action(task.title, 'task-detail', task.id, 'link')}<span class="number">${shown(task.endDate)}</span><p class="muted text-small">${shown(task.result)}</p></div>`).join('');
+  const completed = done.slice(0, 12).map(task => `<div class="detail-item">${action(task.code, 'task-detail', task.id, 'link')}<span class="number">${shown(task.endDate)}</span><p class="muted text-small">${shown(task.result)}</p></div>`).join('');
   return heading('数据看板', admin() ? '根据团队可见任务实时计算。' : '根据你可见的任务实时计算。') +
     stats([['任务总数', tasks.length], ['完成率', (tasks.length ? Math.round(done.length / tasks.length * 100) : 0) + '%', done.length + ' 项已完成'],
       ['投入工时', sumHours(tasks) + 'h', tasks.filter(task => task.fileName).length + ' 项含附件'], ['按时交付率', due.length ? Math.round(onTime.length / due.length * 100) + '%' : '—', due.length ? onTime.length + ' / ' + due.length + ' 项' : '暂无可统计交付日期']]) +
@@ -881,8 +883,8 @@ function details(entries, className = 'form-grid') {
 function field(label, name, value = '', attributes = '') {
   return `<label>${label}<input name="${name}" value="${text(value)}" ${attributes}></label>`;
 }
-function area(label, name, value) {
-  return `<label>${label}<textarea name="${name}" rows="3" maxlength="10000">${text(value)}</textarea></label>`;
+function area(label, name, value, required = false) {
+  return `<label>${label}<textarea name="${name}" rows="3" maxlength="10000"${required ? ' required' : ''}>${text(value)}</textarea></label>`;
 }
 function selectField(label, name, values, current, attributes = '') {
   const options = [...new Set([...values, current])].filter(value => value != null);
@@ -954,7 +956,7 @@ function taskDispatchTime(task) {
 }
 function taskDetails(task) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
-  const info = details([['项目', task.proj], ['工单分类', task.category],
+  const info = details([['任务类型', TASK_KINDS[task.task_kind]], ['项目', task.proj], ['工单分类', task.category],
     ['设备类型', task.device_type], ['项目阶段', task.project_stage],
     ['负责人', task.owner_name],
     ...(source ? [['来源需求', action(source.code, 'demand-detail', source.id, 'link'), true]] : []),
@@ -969,7 +971,7 @@ function taskDetails(task) {
 }
 function taskDetail(id) {
   const task = getRow('tasks', id);
-  modal(task.title || '任务详情', '#' + task.id, taskDetails(task) + `<div class="dialog-actions">
+  modal(task.code, '', taskDetails(task) + `<div class="dialog-actions">
     <a class="button" href="/?task=${text(task.id)}">打开任务页面</a>${action('关闭', 'close')}${taskEditActions(task, 'button primary')}</div>`);
 }
 function taskLinkPage() {
@@ -979,7 +981,7 @@ function taskLinkPage() {
     const message = state.loadWarnings.includes('任务') ? '任务加载失败，请重新加载。' : '找不到该任务，或你没有权限查看。';
     return heading('任务详情', '', back) + '<p class="panel">' + message + '</p>';
   }
-  return heading(task.title || '任务详情', '#' + task.id, back + taskEditActions(task, 'button primary')) + panel('任务详情', taskDetails(task));
+  return heading(task.code, '', back + taskEditActions(task, 'button primary')) + panel('任务详情', taskDetails(task));
 }
 function taskAttachmentFields(task) {
   return field('附件（单个文件最多 20MB）', 'file', '', 'type="file"') +
@@ -1003,7 +1005,7 @@ function taskTransferForm(id) {
   let recipient, loadChoices;
   const fields = details([['当前负责人', task.owner_name]], 'task-form-facts') +
     choiceField('接手人（必填）', 'assignee_id', { inlineList: true }) + choiceStatus;
-  const form = modalForm('转交负责人', '#' + task.id + ' ' + task.title, fields, async () => {
+  const form = modalForm('转交负责人', task.code, fields, async () => {
     const session = state.user;
     const { value: assigneeId, label } = recipient.selection();
     if (!Number.isSafeInteger(assigneeId)) throw new Error('请选择接手人。');
@@ -1025,7 +1027,7 @@ function taskTransferForm(id) {
 }
 
 function confirmTaskTransfer(task, recipient) {
-  $('#task-transfer-summary').textContent = '#' + task.id + ' ' + task.title;
+  $('#task-transfer-summary').textContent = task.code;
   $('#task-transfer-recipient').textContent = recipient;
   taskTransferDialog.returnValue = 'cancel';
   return new Promise(resolve => {
@@ -1105,18 +1107,23 @@ function taskForm(task = {}, demand, plan) {
   const priority = taskPriority(task.pri);
   const optionKinds = canEditClassification ? ['category', 'device_type'] : [];
   if (!demand) optionKinds.push('project_stage');
-  const canEditNameAndProject = canEditDetails && !demand && task.demand_id == null;
+  const canEditProject = canEditDetails && !demand && task.demand_id == null;
+  const isDispatch = Boolean(demand);
+  const descriptionRequired = !isUpdate && !isDispatch;
   const dispatchKey = demand && crypto.randomUUID();
-  const ownerField = isUpdate ? '' : choiceField(demand ? '负责人（必填）' : '负责人', 'assignee_id');
-  const identityFields = canEditNameAndProject
-    ? field('任务名称', 'title', task.title, 'required maxlength="180"') +
-      `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
+  const ownerField = isUpdate ? '' : choiceField('负责人', 'assignee_id', { required: isDispatch });
+  const identityFields = canEditProject
+    ? `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
     : ownerField;
-  const priorityField = canEditClassification ? selectField('优先级', 'pri', PRIORITY, priority, plan ? 'form="dialog-form"' : '') : '';
+  const kindField = isUpdate ? '' : `<label>任务类型（必填）<select name="task_kind" required>
+    <option value="" selected disabled>请选择任务类型</option>
+    ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, '', label)).join('')}</select></label>`;
+  const priorityField = canEditClassification ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
+    plan ? 'form="dialog-form"' : isDispatch ? 'required' : '') : '';
   const headingAside = plan ? `<div class="dialog-priority">${priorityField || `<span>优先级</span>${priorityBadge(priority)}`}</div>` : '';
   const setupFields = identityFields +
-    `<div class="form-grid">${plan ? '' : priorityField}${optionKinds.map(taskOptionField).join('')}</div>` +
-    (canEditDetails ? area('任务描述', 'desc', task.desc ?? demand?.descr) : '');
+    `<div class="form-grid">${kindField}${plan ? '' : priorityField}${optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('')}</div>` +
+    (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
   const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status)
     : details([['状态', statusBadge(task.status), true]], 'task-form-facts');
@@ -1126,20 +1133,21 @@ function taskForm(task = {}, demand, plan) {
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields + progressFields) +
     taskAttachmentFields(task) + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
-  const context = demand?.code || (isUpdate ? '#' + task.id + ' ' + task.title : '');
+  const context = demand?.code || task.code || '';
   const submit = demand ? '派发任务' : plan ? '开始任务' : '保存';
   let project, owner, loadChoices;
   const form = modalForm(formTitle, context, fields, async values => {
     const formUser = state.user;
     const patch = taskOptions.changes();
-    if (canEditNameAndProject) {
-      const title = trimmed(values.title);
-      if (!title) throw new Error('请填写任务名称。');
-      if (title !== task.title) patch.title = title;
+    if (canEditProject) {
       const proj = project.value();
       if (proj !== optional(task.proj)) patch.proj = proj;
     }
-    if (canEditDetails && optional(values.desc) !== optional(task.desc ?? demand?.descr)) patch.desc = optional(values.desc);
+    if (canEditDetails) {
+      const desc = optional(values.desc);
+      if (descriptionRequired && !desc) throw new Error('请填写任务描述。');
+      if (desc !== optional(task.desc ?? demand?.descr)) patch.desc = desc;
+    }
     if (canEditClassification && (!isUpdate || values.pri !== priority)) patch.pri = values.pri;
     if (isUpdate && !plan) {
       if (canChangeStatus && values.status !== task.status) patch.status = values.status;
@@ -1152,9 +1160,15 @@ function taskForm(task = {}, demand, plan) {
       throw new Error('请填写有效的计划投入工时，至少为 1 分钟。');
     }
     if (!isUpdate) {
+      if (!Object.hasOwn(TASK_KINDS, values.task_kind)) throw new Error('请选择临时任务或工作任务。');
+      patch.task_kind = values.task_kind;
       const assignee = owner.value();
       if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
       patch.assignee_id = assignee;
+    }
+    if (isDispatch) {
+      if (!patch.category) throw new Error('请填写工单分类。');
+      if (!patch.device_type) throw new Error('请填写设备类型。');
     }
     if (plan && !(await confirmTaskStart())) return false;
     if (!formUser || state.user !== formUser) return false;
@@ -1189,7 +1203,7 @@ function taskForm(task = {}, demand, plan) {
     preview();
   }
   const taskOptions = bindTaskOptions(form, task, optionKinds);
-  if (canEditNameAndProject) {
+  if (canEditProject) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
   }
   if (!isUpdate) {
@@ -1204,13 +1218,13 @@ function taskForm(task = {}, demand, plan) {
   });
 }
 
-function choiceField(label, key, { allowCustom = false, inlineList = false } = {}) {
+function choiceField(label, key, { allowCustom = false, inlineList = false, required = false } = {}) {
   const list = `<ul id="choices-${key}" class="choice-list${inlineList ? ' choice-list-inline' : ''}" role="listbox" aria-label="${label}" hidden></ul>`;
   return `<div class="choice-field" data-choice="${key}">
-    <label for="choice-${key}">${label}</label>
+    <label for="choice-${key}">${label}${required ? '（必填）' : ''}</label>
     <div class="choice-control">
       <input id="choice-${key}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="choices-${key}"
-        autocomplete="off" ${allowCustom ? `maxlength="100" placeholder="请选择或直接输入${label}"` : 'placeholder="请选择或输入关键词"'} disabled>
+        autocomplete="off" ${required ? 'required ' : ''}${allowCustom ? `maxlength="100" placeholder="请选择或直接输入${label}"` : 'placeholder="请选择或输入关键词"'} disabled>
       <span aria-hidden="true" class="choice-arrow"></span>
       ${inlineList ? '' : list}
     </div>${inlineList ? list : ''}
@@ -1340,8 +1354,8 @@ function catalogChoiceEntries(values, kind) {
   return catalogOptionNames(values, kind).map(value => ({ value, label: value }));
 }
 
-function taskOptionField(kind) {
-  return choiceField(catalogLabels[kind], kind, { allowCustom: true });
+function taskOptionField(kind, required) {
+  return choiceField(catalogLabels[kind], kind, { allowCustom: true, required });
 }
 
 function bindTaskOptions(form, task, kinds) {
@@ -1407,7 +1421,7 @@ function demandDetail(id) {
   const tasks = demand.linked_tasks || [];
   const task = tasks[0];
   const items = tasks.map(task => `<div class="detail-item demand-task-item">
-    <div>${task.id ? action(task.title || '打开任务', 'demand-task', task.id, 'link') : '<strong>任务</strong>'}
+    <div>${task.id ? action(task.code, 'demand-task', task.id, 'link') : '<strong>任务</strong>'}
     <p class="muted text-small">${shown(task.owner_name)}</p></div>${statusBadge(task.status)}</div>`).join('');
   modal(demand.code, demand.title, details([['项目', demand.proj], ['需求提出方', demand.proposer], ['创建人', demand.owner_name],
     ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
@@ -1704,7 +1718,7 @@ const actions = {
   'task-update': openTaskUpdate, 'task-transfer': taskTransferForm,
   'task-delete': id => {
     const row = getRow('tasks', id);
-    confirmDelete('删除任务', '确定删除「' + row.title + '」？', async () => {
+    confirmDelete('删除任务', '确定删除「' + row.code + '」？', async () => {
       await removeRow('tasks', row, '任务已删除。');
       if (row.demand_id != null && state.user) await refresh();
     });

@@ -4,7 +4,7 @@ import { dirname, extname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import ExcelJS from 'exceljs';
 import { isAdmin } from './accounts.mjs';
-import { insertHistoricalTask } from './records.mjs';
+import { backfillTaskCodes, insertHistoricalTask } from './records.mjs';
 import { readDatabase } from './store.mjs';
 
 const columns = {
@@ -159,16 +159,6 @@ function classify(source, options) {
   return options.includes(proposed) ? proposed : input;
 }
 
-function shortenTitle(text) {
-  if (text.length <= 180) return text;
-  let title = '';
-  for (const character of text) {
-    if (title.length + character.length > 179) break;
-    title += character;
-  }
-  return title.trimEnd() + '…';
-}
-
 function indexMembers(db) {
   const accounts = new Set(db.users.map(user => user.id));
   const names = new Map();
@@ -232,20 +222,15 @@ function prepareImport(db, workbook, workbookId) {
         totals.alreadyImported++;
         continue;
       }
-      const title = shortenTitle(entry.log);
       const member = matched.values().next().value;
       const fields = {
-        title, status, due, end_time: end,
+        desc: entry.log, status, due, end_time: end,
         proj: configuredValue(source.project, catalog.proj, projectKey),
         device_type: configuredValue(source.device, catalog.device_type, matchKey, deviceAliases),
         project_stage: configuredValue(source.stage, catalog.project_stage, matchKey, stageAliases),
         category: classify(source.category, catalog.category)
       };
       const warnings = [];
-      if (title !== entry.log) {
-        fields.desc = entry.log;
-        warnings.push('标题缩短，全文保存在任务描述');
-      }
       if (!due && optionalSource(source.due)) warnings.push('无法识别计划日期：' + sourceText(source.due));
       if (!end && optionalSource(source.end)) warnings.push('无法识别完成日期：' + sourceText(source.end));
       if (end && status !== '已完成') warnings.push('已填写完成日期，沿用原完成状态');
@@ -313,6 +298,7 @@ async function main() {
   }
   const imports = (db.wbsImports ??= {});
   const imported = (imports[workbookId] ??= []);
+  backfillTaskCodes(db);
   for (const item of pending.toReversed()) {
     insertHistoricalTask(db, admin, item.member, item.fields);
     imported.push(item.id);

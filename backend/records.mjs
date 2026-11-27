@@ -8,7 +8,7 @@ import { ACTIVE_TASK_STATUSES, plannedCompletion, TASK_PRIORITIES } from '../pub
 const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
   tasks: {
-    title: 180, proj: 100, owner_name: 100, assignee_id: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
+    proj: 100, owner_name: 100, assignee_id: 0, status: 20, pri: 20, due: 10, start: 10, end: 10,
     category: 100, device_type: 100, project_stage: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000, attachment_name: 255, attachment_path: 60
   },
@@ -22,7 +22,7 @@ const taskProgressFields = new Set(['status', 'hours', 'result', 'attachment_nam
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at'];
 const taskClassificationFields = ['pri', 'category', 'device_type'];
 const retiredCollaboratorFields = ['collaborators', 'collaborator_ids', 'add_collaborator_ids', 'keep_as_collaborator'];
-const demandCodeDate = new Intl.DateTimeFormat('en-CA', {
+const recordCodeDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
 });
 const expiry = 24 * 60 * 60 * 1000;
@@ -83,19 +83,38 @@ function taskOwnerName(db, task) {
   return assignee ? displayName(db, assignee) : task.owner_name;
 }
 
-function assignDemandCode(db, demand) {
-  const createdAt = Date.parse(demand.created_at);
-  const parts = demandCodeDate.formatToParts(Number.isFinite(createdAt) ? createdAt : Date.now());
+function assignCode(sequences, record, prefix, fallback) {
+  const createdAt = Date.parse(record.created_at);
+  const parts = recordCodeDate.formatToParts(Number.isFinite(createdAt) ? createdAt : fallback);
   const { year, month, day } = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
   const date = year + month + day;
-  db.demandCodeSequences ??= {};
-  const next = (db.demandCodeSequences[date] ?? 0) + 1;
-  db.demandCodeSequences[date] = next;
-  demand.code = `FAE-${date}${String(next).padStart(3, '0')}`;
+  const next = (sequences[date] ?? 0) + 1;
+  sequences[date] = next;
+  record.code = `${prefix}-${date}${String(next).padStart(3, '0')}`;
 }
 
-function demandTaskFields(demand) {
-  return { title: demand.title || demand.code, proj: demand.proj ?? null };
+function taskKind(payload) {
+  if (payload.task_kind !== 'L' && payload.task_kind !== 'W') {
+    throw new RequestError(400, '请选择临时任务或工作任务。');
+  }
+  return payload.task_kind;
+}
+
+export function backfillTaskCodes(db) {
+  const fallback = Date.now();
+  for (const task of db.tasks.filter(row => !row.code).sort((a, b) => a.id - b.id)) {
+    const title = task.title?.trim();
+    const desc = task.desc?.trim();
+    const fromDemand = task.demand_id != null || Object.hasOwn(task, 'initial_receiver_id');
+    if (title && !(fromDemand && /^FAE-\d{11,}$/.test(title))) {
+      if (!desc) task.desc = title;
+      else if (!desc.includes(title) && !(title.endsWith('…') && desc.startsWith(title.slice(0, -1)))) {
+        task.desc = title + '\n' + task.desc;
+      }
+    }
+    task.task_kind = 'W';
+    assignCode(db.taskCodeSequences ??= {}, task, task.task_kind, fallback);
+  }
 }
 
 function projectCatalog(db) {
@@ -114,8 +133,8 @@ function taskHandledAt(user, task) {
 }
 
 function publicTask(db, user, task, demand = db.demands.find(row => row.id === task.demand_id)) {
-  const { dispatch_key, collaborators, transfer_history, revision, ...row } = task;
-  if (demand) Object.assign(row, demandTaskFields(demand));
+  const { title, dispatch_key, collaborators, transfer_history, revision, ...row } = task;
+  if (demand) row.proj = demand.proj ?? null;
   if (dispatch_key || row.demand_id != null || Object.hasOwn(row, 'initial_receiver_id')) {
     row.dispatched_at = row.created_at ?? null;
   }
@@ -132,7 +151,7 @@ function publicDemand(db, user, row, linkedTasks) {
   const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
   return { ...row, responsible: assigned?.display_name || row.responsible || null, linked_tasks: linkedTasks.map(task => {
     const summary = { owner_name: taskOwnerName(db, task), initial_receiver_name: task.initial_receiver_name, status: task.status };
-    return visibleTask(user, task) ? { ...summary, id: task.id, title: row.title || row.code } : summary;
+    return visibleTask(user, task) ? { ...summary, id: task.id, code: task.code } : summary;
   }) };
 }
 
@@ -243,9 +262,10 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
   }
   const row = { id: db.seq[sequence[table]]++, owner_id: user.id, owner_name: displayName(db, user), created_at: now(), ...extra };
   if (table !== 'profiles') row.creator_id = user.id;
-  if (table === 'demands') assignDemandCode(db, row);
+  if (table === 'demands') assignCode(db.demandCodeSequences ??= {}, row, 'FAE', Date.now());
   if (table === 'tasks') {
     Object.assign(row, { owner_name: null, assignee_id: null, status: statuses[0], pri: defaultPriority });
+    assignCode(db.taskCodeSequences ??= {}, row, row.task_kind, Date.now());
   }
   const result = applyPatch(db, user, table, row, patch, recordTaskChange, true);
   db[table].unshift(row);
@@ -253,7 +273,10 @@ function insertRecord(db, user, table, patch, recordTaskChange, extra = {}) {
 }
 
 export function insertHistoricalTask(db, admin, member, fields) {
-  const { row } = insertRecord(db, admin, 'tasks', cleanFields('tasks', fields));
+  // Keep the full workbook log, including cells longer than the web form limit.
+  const { desc, ...attributes } = fields;
+  const patch = { ...cleanFields('tasks', attributes), desc };
+  const { row } = insertRecord(db, admin, 'tasks', patch, undefined, { task_kind: 'W' });
   // Match the existing account even when the member has since left the team.
   row.assignee_id = member.id;
   row.owner_name = member.name;
@@ -279,9 +302,13 @@ export function openRecords(store, { recordTaskChange } = {}) {
   const needsDemandCode = demand => !demand.code;
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
   const { demands, tasks } = store.read();
-  if (demands.some(needsDemandCode) || tasks.some(needsReceiver)) {
+  if (demands.some(needsDemandCode) || tasks.some(task => needsReceiver(task) || !task.code)) {
     store.update(db => {
-      for (const demand of db.demands.filter(needsDemandCode).sort((a, b) => a.id - b.id)) assignDemandCode(db, demand);
+      const fallback = Date.now();
+      for (const demand of db.demands.filter(needsDemandCode).sort((a, b) => a.id - b.id)) {
+        assignCode(db.demandCodeSequences ??= {}, demand, 'FAE', fallback);
+      }
+      backfillTaskCodes(db);
       for (const task of db.tasks.filter(needsReceiver)) {
         task.initial_receiver_id = task.assignee_id ?? null;
         task.initial_receiver_name = taskOwnerName(db, task) ?? null;
@@ -335,9 +362,15 @@ export function openRecords(store, { recordTaskChange } = {}) {
       }
       const id = op === 'insert' ? null : recordId(Array.isArray(eq) && eq[0] === 'id' ? eq[1] : null);
       const patch = op === 'delete' ? {} : cleanFields(table, payload);
+      let extra;
       if (table === 'tasks' && op !== 'delete') {
         checkTaskPeople(payload, op === 'insert');
         if (op === 'update') checkTaskSchedule(payload);
+        else {
+          extra = { task_kind: taskKind(payload) };
+          if (!patch.desc) throw new RequestError(400, '请填写任务描述。');
+          newTaskPatch(patch);
+        }
       }
       const { row, removed } = store.update(db => {
         const list = db[table];
@@ -350,7 +383,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
               const linked = db.tasks.filter(task => task.demand_id === id);
               if (linked.length && !isAdmin(user)) throw new RequestError(403, '已派发的需求只能由管理员删除。');
               for (const task of linked) {
-                Object.assign(task, demandTaskFields(list[index]), { demand_id: null, revision: (task.revision ?? 0) + 1 });
+                Object.assign(task, { proj: list[index].proj ?? null, demand_id: null, revision: (task.revision ?? 0) + 1 });
               }
             }
             const [row] = list.splice(index, 1);
@@ -367,8 +400,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
           }
           return applyPatch(db, user, table, list[index], patch, recordTaskChange);
         }
-        if (table === 'tasks') newTaskPatch(patch);
-        return insertRecord(db, user, table, patch, recordTaskChange);
+        return insertRecord(db, user, table, patch, recordTaskChange, extra);
       });
       removed.forEach(id => removeFile(store.attachments, id));
       return { data: [publicRecord(store.read(), user, table, row)] };
@@ -417,6 +449,10 @@ export function openRecords(store, { recordTaskChange } = {}) {
       const patch = newTaskPatch(cleanFields('tasks', task));
       checkTaskPeople(task, true);
       if (!patch.assignee_id) throw new RequestError(400, '派发任务需要选择负责人。');
+      if (!optionalText(task.pri, fields.tasks.pri)) throw new RequestError(400, '请选择优先级。');
+      if (!patch.category) throw new RequestError(400, '请填写工单分类。');
+      if (!patch.device_type) throw new RequestError(400, '请填写设备类型。');
+      const kind = taskKind(task);
       delete patch.project_stage;
 
       const { created, demand } = store.update(db => {
@@ -428,8 +464,10 @@ export function openRecords(store, { recordTaskChange } = {}) {
           if (existing.creator_id === user.id && existing.dispatch_key === dispatchKey) return { created: existing, demand: source };
           throw new RequestError(409, '这条需求已经派发。');
         }
-        const details = { desc: source.descr ?? null, ...patch, ...demandTaskFields(source) };
-        const row = insertRecord(db, user, 'tasks', details, recordTaskChange, { demand_id: id, dispatch_key: dispatchKey }).row;
+        const details = { desc: source.descr ?? null, ...patch, proj: source.proj ?? null };
+        const row = insertRecord(db, user, 'tasks', details, recordTaskChange, {
+          demand_id: id, dispatch_key: dispatchKey, task_kind: kind
+        }).row;
         row.initial_receiver_id = row.assignee_id;
         row.initial_receiver_name = row.owner_name;
         return { created: row, demand: source };
@@ -566,10 +604,7 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
     removed = changeAttachment(db, user, row, patch);
     delete patch.attachment_path;
     delete patch.attachment_name;
-    if (!creating && row.demand_id != null) {
-      delete patch.title;
-      delete patch.proj;
-    }
+    if (!creating && row.demand_id != null) delete patch.proj;
   }
   if (table === 'demands' && patch.proposer != null && patch.proposer !== row.proposer &&
       !db.demandOptions.proposer.includes(patch.proposer)) {
@@ -579,8 +614,6 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
   if (table === 'profiles') {
     if (!row.display_name) throw new RequestError(400, '请填写姓名。');
     row.owner_name = row.display_name;
-  } else if (table === 'tasks' && !row.title) {
-    throw new RequestError(400, '请填写名称。');
   }
   if (table === 'tasks' && !statuses.includes(row.status)) throw new RequestError(400, '任务状态无效。');
   if (before) recordTaskChange(db, row, before);

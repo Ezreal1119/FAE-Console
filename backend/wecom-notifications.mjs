@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 const messages = {
-  dispatch: id => '【任务派发】任务 #' + id + ' 已派发，请查看详情。',
-  owner: id => '【任务转交】你已成为任务 #' + id + ' 的负责人。'
+  dispatch: code => '【任务派发】任务 ' + code + ' 已派发，请查看详情。',
+  owner: code => '【任务转交】你已成为任务 ' + code + ' 的负责人。'
 };
 const retryDelays = [15_000, 60_000, 300_000];
 const notificationLifetime = 24 * 60 * 60 * 1000;
@@ -57,7 +57,7 @@ export function openWecomNotifications(store, webhook) {
             method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ msgtype: 'text', text: {
-              content: messages[event.kind](event.taskId) + '\n查看任务 ' + link.href,
+              content: messages[event.kind](task.code) + '\n查看任务 ' + link.href,
               mentioned_list: [...new Set(mentioned)]
             } })
           });
