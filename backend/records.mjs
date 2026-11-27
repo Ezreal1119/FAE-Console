@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { attachmentKind, bindAttachments } from './attachments.mjs';
 import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
+import { changeProjectRequirement, initializeProjectRequirements, projectRequirementRows } from './project-requirements.mjs';
 import { RequestError } from './store.mjs';
 import { ACTIVE_TASK_STATUSES, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
 
@@ -598,6 +599,18 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     projectCatalog: () => projectCatalog(store.read()),
 
+    projectDetail(name) {
+      const db = store.read();
+      if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
+      return {
+        project: { name, stage: projectStage(db, name) },
+        stages: db.demandOptions.project_stage,
+        requirements: projectRequirementRows(db, name)
+      };
+    },
+
+    changeProjectRequirement: input => store.update(db => changeProjectRequirement(db, input)),
+
     changeProject({ action, name, stage }) {
       if (!['create', 'update', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
       if (action === 'create') name = optionalText(name);
@@ -611,12 +624,16 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if (action === 'create') {
           if (index !== -1) throw new RequestError(409, '项目名称已存在。');
           names.push(name);
+          initializeProjectRequirements(db, name);
         } else {
           if (index === -1) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
           if (action === 'update' && stage !== null && !db.demandOptions.project_stage.includes(stage)) {
             throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
           }
-          if (action === 'remove') names.splice(index, 1);
+          if (action === 'remove') {
+            names.splice(index, 1);
+            if (db.projectRequirements) delete db.projectRequirements[name];
+          }
           if (action === 'update' && stage !== null) {
             db.projectStages = { ...db.projectStages, [name]: stage };
           } else if (db.projectStages) {

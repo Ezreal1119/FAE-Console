@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { isAdmin, openAccounts, sessionSeconds } from './backend/accounts.mjs';
 import { openAttachments } from './backend/attachments.mjs';
 import { MEMBER_IMPORT_LIMIT_BYTES, readMemberWorkbook } from './backend/member-import.mjs';
-import { readNpiStages } from './backend/npi-stages.mjs';
+import { seedProjectRequirements } from './backend/project-requirements.mjs';
 import { openRecords } from './backend/records.mjs';
 import { openSftpStorage } from './backend/sftp-storage.mjs';
 import { openStore, RequestError } from './backend/store.mjs';
@@ -19,10 +19,13 @@ const trustProxy = process.env.TRUST_PROXY === '1';
 const sessionCookie = 'fae_console_session';
 const dataDirectory = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : fileURLToPath(new URL('./data/', import.meta.url));
 const store = openStore(dataDirectory);
-const npiRequirements = await readNpiStages(resolve(dataDirectory, 'npi-stages.xlsx')).catch(error => {
-  if (error.code !== 'ENOENT') console.error('NPI 阶段清单加载失败：', error.code || error.message);
-  return null;
-});
+if (!store.read().projectRequirementTemplate) {
+  await readFile(resolve(dataDirectory, 'npi-stage-seed.json'), 'utf8')
+    .then(source => seedProjectRequirements(store, JSON.parse(source)))
+    .catch(error => {
+      if (error.code !== 'ENOENT') console.error('NPI 项目清单初始化失败：', error.code || error.message);
+    });
+}
 const guidelinesFile = process.env.CREDENTIALS_DIRECTORY
   ? resolve(process.env.CREDENTIALS_DIRECTORY, 'guidelines.json')
   : new URL('./private/guidelines.json', import.meta.url);
@@ -60,6 +63,7 @@ const apiRoutes = new Map([
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
   ['/api/admin/member-wecom', 'POST'],
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
+  ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/complete', 'POST'], ['/api/tasks/transfer', 'POST'],
   ['/api/tasks/attachments', 'POST'], ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
@@ -195,7 +199,8 @@ async function download(res, user, taskId, fileId) {
   }, signal));
 }
 
-function privateApi(path, session, body) {
+function privateApi(url, session, body) {
+  const path = url.pathname;
   switch (path) {
     case '/api/me': return accounts.me(session);
     case '/api/guidelines': return { guidelines };
@@ -209,8 +214,10 @@ function privateApi(path, session, body) {
     case '/api/admin/accounts': return accounts.list();
     case '/api/admin/member-wecom': return accounts.setWecomUserId(session.user, body);
     case '/api/admin/member-role': return accounts.setAdminRole(session.user, body);
-    case '/api/admin/projects': return { ...records.projectCatalog(), npiRequirements };
+    case '/api/admin/projects': return records.projectCatalog();
+    case '/api/admin/projects/detail': return records.projectDetail(url.searchParams.get('name'));
     case '/api/admin/projects/change': return records.changeProject(body);
+    case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
@@ -290,7 +297,7 @@ async function handleApi(req, res, url, attachmentRoute) {
 
   const body = req.method === 'POST' ? await readJson(req) : undefined;
   const current = req.method === 'POST' ? sessionFor(req, path) : session;
-  return sendJson(res, 200, { ok: true, ...privateApi(path, current, body) });
+  return sendJson(res, 200, { ok: true, ...privateApi(url, current, body) });
 }
 
 const server = createServer(async (req, res) => {
