@@ -5,6 +5,7 @@ const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const dialog = $('#dialog');
 const taskStartDialog = $('#task-start-dialog');
+const taskCompleteDialog = $('#task-complete-dialog');
 const taskTransferDialog = $('#task-transfer-dialog');
 const guidelinesDialog = $('#guidelines-dialog');
 const guidelinesBody = $('#guidelines-dialog-body');
@@ -131,7 +132,7 @@ function normalizeTask(row) {
     ...row,
     startTime, dueTime,
     startDate: startTime.slice(0, 10),
-    endDate: sharedDate(row.end_time, row.end, row.created_at),
+    endDate: formatPlanningTime(row.completed_at).slice(0, 10) || sharedDate(row.end_time, row.end, row.created_at),
     dueDate: dueTime.slice(0, 10),
     sharedFile: !originalLocalFile && !!row.attachment_path,
     fileName: originalLocalFile ? row.attach : row.attachment_name || row.attach || ''
@@ -149,10 +150,10 @@ function weekRange() {
   return [isoDate(from), isoDate(to)];
 }
 function inWeek(value, [from, to]) { return value >= from && value <= to; }
-function overdue(task) {
+function overdue(task, at = Date.now()) {
   if (task.status === '已完成' || !task.dueTime) return false;
   const deadline = Date.parse(task.planned_due_at);
-  return Number.isFinite(deadline) ? Date.now() > deadline : task.dueDate < isoDate();
+  return Number.isFinite(deadline) ? at > deadline : task.dueDate < formatPlanningTime(new Date(at).toISOString()).slice(0, 10);
 }
 function assignedToMe(task) { return same(task.assignee_id, state.user.id); }
 function canEditTask(task) { return admin() || same(task.creator_id ?? task.owner_id, state.user.id); }
@@ -202,6 +203,7 @@ function showAuth(error = '') {
   state.hiddenTaskFields.clear();
   document.title = '工程小管家';
   if (taskStartDialog.open) taskStartDialog.close('cancel');
+  if (taskCompleteDialog.open) taskCompleteDialog.close('cancel');
   if (taskTransferDialog.open) taskTransferDialog.close('cancel');
   dialog.close();
   guidelinesDialog.close();
@@ -386,22 +388,22 @@ function workspacePage() {
   const queue = [...active].sort((a, b) => (a.dueTime || '9999').localeCompare(b.dueTime || '9999')).slice(0, 8);
   const rows = queue.map(task => `<tr><td>${action(task.code, 'task-detail', task.id, 'link')}</td><td>${shown(task.proj)}</td><td>${statusBadge(task.status)}</td><td class="${overdue(task) ? 'text-red' : ''}">${shown(task.dueTime)}</td><td>${text(withHours(task.planned_hours))}</td></tr>`).join('');
   return heading('工作台', myName() ? '你好，' + myName() : '', action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary')) +
-    stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(overdue).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
+    stats([['我的未完成任务', active.length], ['我的逾期任务', active.filter(task => overdue(task)).length], ['我的本周完成工时', sumHours(weekly) + 'h'], ['我的任务完成率', (tasks.length ? Math.round((tasks.length - active.length) / tasks.length * 100) : 0) + '%']]) +
     `<div class="grid-two workspace-overview">${panel('我的待办', table(['任务编号', '项目', '状态', '计划完成', '计划工时'], rows, '暂无待办任务'), action('任务中心', 'go', 'tasks', 'link'))}${panel('我的任务状态', distribution(tasks))}</div>` +
     pagedListPanel('home');
 }
 
 const taskColumns = [
-  { key: 'code', label: '任务编号', cell: task => `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>` },
+  { key: 'code', label: '任务编号', cell: taskCodeCell },
   { key: 'proj', label: '项目', cell: task => `<td>${shown(task.proj)}</td>` },
   { key: 'category', label: '工单分类', cell: task => `<td>${text(taskCategoryLabel(task))}</td>` },
   { key: 'status', label: '状态', cell: task => `<td>${statusBadge(task.status)}</td>` },
   { key: 'pri', label: '优先级', sortKey: 'pri', cell: task => `<td>${priorityBadge(task.pri)}</td>` },
-  { key: 'owner_name', label: '负责人', cell: task => `<td>${shown(task.owner_name)}</td>` },
-  { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: task => `<td class="task-date${overdue(task) ? ' text-red' : ''}">${shown(task.dueTime)}</td>` },
+  { key: 'owner_name', label: '负责人', adminOnly: true, cell: task => `<td>${shown(task.owner_name)}</td>` },
   { key: 'startTime', label: '开始时间', sortKey: 'startTime', cell: task => `<td class="task-date">${shown(task.startTime)}</td>` },
+  { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: (task, isOverdue) => `<td class="task-date task-due-date${isOverdue ? ' text-red' : ''}">${shown(task.dueTime)}</td>` },
   { key: 'endDate', label: '完成日期', sortKey: 'endDate', cell: task => `<td class="task-date">${shown(task.endDate)}</td>` },
-  { key: 'hours', label: '工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
+  { key: 'hours', label: '投入工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
   { key: 'actions', label: '操作', cell: taskActionsCell }
 ];
 const taskDisplayFields = [...taskColumns.filter(column => column.key !== 'actions'), { key: 'desc', label: '任务描述' }];
@@ -415,20 +417,29 @@ function loadHiddenTaskFields() {
       return new Set(taskDisplayFields.filter(({ key }) => key !== 'code' && saved.includes(key)).map(({ key }) => key));
     }
   } catch { /* The list can still be configured for this session. */ }
-  return new Set();
+  return admin() ? new Set() : new Set(['endDate', 'hours']);
+}
+
+function canShowTaskField(field) {
+  return !field.adminOnly || admin();
 }
 
 function visibleTaskColumns() {
-  return taskColumns.filter(column => !state.hiddenTaskFields.has(column.key));
+  return taskColumns.filter(column => canShowTaskField(column) && !state.hiddenTaskFields.has(column.key));
 }
 
 function taskDisplayOptions() {
-  const fields = taskDisplayFields.map(({ key, label }) => `<label>
+  const displayFields = taskDisplayFields.filter(canShowTaskField);
+  const fields = displayFields.map(({ key, label }) => `<label>
     <input type="checkbox" name="${key}"${state.hiddenTaskFields.has(key) ? '' : ' checked'}${key === 'code' ? ' disabled' : ''}>
     <span>${text(label)}${key === 'code' ? ' <small class="muted">始终显示</small>' : ''}</span>
   </label>`).join('');
   modalForm('显示选项', '', `<div class="form-grid task-display-options">${fields}</div>`, values => {
-    state.hiddenTaskFields = new Set(taskDisplayFields.filter(({ key }) => key !== 'code' && !Object.hasOwn(values, key)).map(({ key }) => key));
+    for (const { key } of displayFields) {
+      if (key === 'code') continue;
+      if (Object.hasOwn(values, key)) state.hiddenTaskFields.delete(key);
+      else state.hiddenTaskFields.add(key);
+    }
     try { localStorage.setItem(taskDisplayStorageKey(), JSON.stringify([...state.hiddenTaskFields])); }
     catch { /* Keep the selected fields for this session. */ }
     const columns = visibleTaskColumns();
@@ -483,23 +494,41 @@ function fileAction(task) {
     : `<span title="原附件保存在桌面客户端电脑上">${text(task.fileName)}<small class="muted">桌面本地附件</small></span>`;
 }
 function taskEditActions(task, className) {
-  return canUpdateTaskProgress(task)
+  return task.status !== '已完成' && canUpdateTaskProgress(task)
     ? action(task.status === '待规划' ? '开始规划' : '更新任务', 'task-update', task.id, className) : '';
 }
+function taskCodeCell(task, isOverdue) {
+  return `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}
+    <div class="task-overdue" data-task-overdue="${text(task.id)}"${isOverdue ? '' : ' hidden'}><span class="tag danger">已逾期</span></div></td>`;
+}
 function taskActionsCell(task) {
-  const remove = canEditTask(task) ? action('删除', 'task-delete', task.id, 'link danger') : '';
+  const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
+  const remove = canDelete ? action('删除', 'task-delete', task.id, 'link danger') : '';
   const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
-  const ownerBadge = assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
+  const ownerBadge = admin() && assignedToMe(task) ? '<span class="tag danger task-owner-badge">责任人</span>' : '';
   return `<td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}${ownerBadge}</div></td>`;
 }
 function taskRows(tasks) {
   const columns = visibleTaskColumns();
   const showDescription = !state.hiddenTaskFields.has('desc');
+  const at = Date.now();
   return tasks.map(task => {
+    const isOverdue = overdue(task, at);
     const summary = showDescription && task.desc
       ? `<tr class="task-summary"><td colspan="${columns.length}"><p>${text(task.desc)}</p></td></tr>` : '';
-    return `<tr${summary ? ' class="task-with-summary"' : ''}>${columns.map(column => column.cell(task)).join('')}</tr>${summary}`;
+    return `<tr${summary ? ' class="task-with-summary"' : ''}>${columns.map(column => column.cell(task, isOverdue)).join('')}</tr>${summary}`;
   }).join('');
+}
+function updateTaskOverdueIndicators() {
+  if (state.page !== 'tasks' || !state.user) return;
+  const at = Date.now();
+  for (const badge of content.querySelectorAll('[data-task-overdue]')) {
+    const task = state.tasks.find(row => same(row.id, badge.dataset.taskOverdue));
+    if (!task) continue;
+    const isOverdue = overdue(task, at);
+    badge.hidden = !isOverdue;
+    badge.closest('tr').querySelector('.task-due-date')?.classList.toggle('text-red', isOverdue);
+  }
 }
 function tasksPage() {
   const scope = admin() ? `<select aria-label="任务范围" data-filter="taskScope">${option('all', state.filters.taskScope, '所有任务')}${option('mine', state.filters.taskScope, '我负责的任务')}</select>` : '';
@@ -955,24 +984,26 @@ function modal(title, description, body, locked = false, headingAside = '') {
 }
 function modalForm(title, description, fields, onSave, options = {}) {
   const buttons = options.locked ? action('退出登录', 'logout') : action('取消', 'close');
+  const secondary = options.secondarySubmit
+    ? `<button type="submit" class="button" value="secondary">${text(options.secondarySubmit)}</button>` : '';
   modal(title, description, `<form id="dialog-form"><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions">${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button></div></form>`, options.locked, options.headingAside);
+    <div class="dialog-actions">${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside);
   const form = dialog.querySelector('form');
   const message = form.querySelector('.form-error');
+  const submitButtons = [...form.querySelectorAll('[type=submit]')];
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    const button = form.querySelector('[type=submit]');
-    if (button.disabled) return;
-    button.disabled = true;
+    if (submitButtons.some(button => button.disabled)) return;
+    submitButtons.forEach(button => { button.disabled = true; });
     formError(message, '');
     const values = Object.fromEntries(new FormData(form));
     try {
-      const result = await onSave(values);
+      const result = await onSave(values, event.submitter?.value === 'secondary');
       if (result !== false && dialog.contains(form)) dialog.close();
     } catch (error) {
       formError(message, error.message);
     } finally {
-      button.disabled = false;
+      submitButtons.forEach(button => { button.disabled = false; });
     }
   });
   return form;
@@ -1092,6 +1123,18 @@ function confirmTaskStart() {
   });
 }
 
+function confirmTaskCompletion(task) {
+  const input = taskCompleteDialog.querySelector('[name=hours]');
+  input.value = task.hours ?? '';
+  taskCompleteDialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    taskCompleteDialog.addEventListener('close', () => {
+      resolve(taskCompleteDialog.returnValue === 'complete' ? input.valueAsNumber : null);
+    }, { once: true });
+    taskCompleteDialog.showModal();
+  });
+}
+
 const planDueHint = '填写计划投入工时后计算';
 
 function taskScheduleFields(task, plan) {
@@ -1100,7 +1143,7 @@ function taskScheduleFields(task, plan) {
   if (plan) {
     entries.push(['计划完成时间', `<span data-plan-due aria-live="polite">${planDueHint}</span>`, true]);
   } else {
-    entries.push(['计划完成时间', task.dueTime], ['计划投入工时', withHours(task.planned_hours)], ['完成日期', task.endDate]);
+    entries.push(['计划完成时间', task.dueTime]);
   }
   const summary = details(entries, 'form-grid task-form-facts task-schedule-summary');
   return plan ? summary + `<div class="plan-hours-field">
@@ -1135,7 +1178,7 @@ function bindPlanHours(input, preview) {
 
 async function openTaskUpdate(id) {
   const task = getRow('tasks', id);
-  if (!canUpdateTaskProgress(task)) return;
+  if (task.status === '已完成' || !canUpdateTaskProgress(task)) return;
   if (task.status !== '待规划') return taskForm(task);
   const currentDialog = dialog.firstElementChild;
   try {
@@ -1149,7 +1192,7 @@ async function openTaskUpdate(id) {
 
 function taskForm(task = {}, demand, plan) {
   const isUpdate = Boolean(task.id);
-  if (isUpdate && !canUpdateTaskProgress(task)) return;
+  if (isUpdate && (task.status === '已完成' || !canUpdateTaskProgress(task))) return;
   const canEditDetails = !isUpdate || canEditTask(task);
   const canEditClassification = !isUpdate || canEditTaskClassification(task);
   const priority = taskPriority(task.pri);
@@ -1167,7 +1210,8 @@ function taskForm(task = {}, demand, plan) {
     ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, '', label)).join('')}</select></label>`;
   const priorityField = canEditClassification ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
     plan ? 'form="dialog-form"' : isDispatch ? 'required' : '') : '';
-  const headingAside = plan ? `<div class="dialog-priority">${priorityField || `<span>优先级</span>${priorityBadge(priority)}`}</div>` : '';
+  const headingAside = plan ? `<div class="dialog-priority">${priorityField || `<span>优先级</span>${priorityBadge(priority)}`}</div>`
+    : isUpdate ? `<span class="tag">计划投入工时 ${text(withHours(task.planned_hours))}</span>` : '';
   const taskOptionsFields = kindField + (plan ? '' : priorityField) + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
   const setupFields = identityFields +
     (taskOptionsFields ? `<div class="form-grid">${taskOptionsFields}</div>` : '') +
@@ -1175,8 +1219,7 @@ function taskForm(task = {}, demand, plan) {
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
   const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status)
     : details([['状态', statusBadge(task.status), true]], 'task-form-facts');
-  const progressFields = isUpdate && !plan ? `<div class="form-grid">${statusField}
-    ${field('投入工时（小时）', 'hours', task.hours, 'type="number" min="0" step="0.01"')}</div>` + area('完成结果', 'result', task.result) : '';
+  const progressFields = isUpdate && !plan ? statusField + area('完成结果', 'result', task.result) : '';
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields + progressFields) +
     taskAttachmentFields(task) + choiceStatus;
@@ -1184,8 +1227,13 @@ function taskForm(task = {}, demand, plan) {
   const context = demand?.code || task.code || '';
   const submit = demand ? '派发任务' : plan ? '开始任务' : '保存';
   let project, owner, loadChoices;
-  const form = modalForm(formTitle, context, fields, async values => {
+  const form = modalForm(formTitle, context, fields, async (values, completing) => {
     const formUser = state.user;
+    const resultText = optional(values.result);
+    if (completing && !resultText) {
+      form.elements.result.focus();
+      throw new Error('请填写完成结果。');
+    }
     const patch = taskOptions.changes();
     if (canEditProject) {
       const proj = project.value();
@@ -1198,10 +1246,8 @@ function taskForm(task = {}, demand, plan) {
     }
     if (canEditClassification && (!isUpdate || values.pri !== priority)) patch.pri = values.pri;
     if (isUpdate && !plan) {
-      if (canChangeStatus && values.status !== task.status) patch.status = values.status;
-      const hours = values.hours === '' ? null : Number(values.hours);
-      if (hours !== (task.hours ?? null)) patch.hours = hours;
-      if (optional(values.result) !== optional(task.result)) patch.result = optional(values.result);
+      if (!completing && canChangeStatus && values.status !== task.status) patch.status = values.status;
+      if (completing || resultText !== optional(task.result)) patch.result = resultText;
     }
     const plannedHours = plan ? Number(values.plan_hours) : null;
     if (plan && !plannedCompletion(plan.startedAt, plannedHours, patch.pri ?? priority)) {
@@ -1219,11 +1265,16 @@ function taskForm(task = {}, demand, plan) {
       if (!patch.device_type) throw new Error('请填写设备类型。');
     }
     if (plan && !(await confirmTaskStart())) return false;
+    const hours = completing ? await confirmTaskCompletion(task) : null;
+    if (completing && hours === null) return false;
     if (!formUser || state.user !== formUser) return false;
     Object.assign(patch, await taskAttachmentPatch(values.file));
     if (!formUser || state.user !== formUser) return false;
     try {
-      if (demand) {
+      if (completing) {
+        const result = await post('/api/tasks/complete', { taskId: task.id, expectedVersion: task.version, hours, changes: patch });
+        await applySavedTask(result.task);
+      } else if (demand) {
         const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, task: patch });
         updateRow('tasks', normalizeTask(result.task));
         updateRow('demands', result.demand);
@@ -1235,11 +1286,11 @@ function taskForm(task = {}, demand, plan) {
       }
     } catch (error) {
       if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
-      if ((demand || plan) && error.status === 409 && state.user) await refresh();
+      if ((demand || isUpdate) && error.status === 409 && state.user) await refresh();
       throw error;
     }
-    toast(demand ? '任务已派发。' : plan ? '任务已开始。' : isUpdate ? '任务已更新。' : '任务已创建。');
-  }, { submit, headingAside });
+    toast(completing ? '任务已完成。' : demand ? '任务已派发。' : plan ? '任务已开始。' : isUpdate ? '任务已更新。' : '任务已创建。');
+  }, { submit, headingAside, secondarySubmit: isUpdate && !plan && canChangeStatus ? '完成任务' : '' });
   if (plan) {
     const dueDisplay = form.querySelector('[data-plan-due]');
     const preview = () => {
@@ -1440,7 +1491,7 @@ const choiceStatus = '<p class="muted text-small" data-choice-loading role="stat
   '<div data-choice-retry hidden><button type="button" class="link">重新加载可选项</button></div>';
 
 function prepareFormChoices(form, applyChoices) {
-  const submit = form.querySelector('[type=submit]');
+  const submitButtons = form.querySelectorAll('[type=submit]');
   const loading = form.querySelector('[data-choice-loading]');
   const retry = form.querySelector('[data-choice-retry]');
   const message = form.querySelector('.form-error');
@@ -1449,13 +1500,13 @@ function prepareFormChoices(form, applyChoices) {
     if (form.isConnected && dialog.open) applyChoices(result);
   }
   async function prepareChoices() {
-    submit.disabled = true;
+    submitButtons.forEach(button => { button.disabled = true; });
     loading.hidden = false;
     retry.hidden = true;
     formError(message, '');
     try {
       await loadChoices();
-      submit.disabled = false;
+      submitButtons.forEach(button => { button.disabled = false; });
     } catch (error) {
       formError(message, error.message);
       retry.hidden = false;
@@ -1889,6 +1940,9 @@ function updateFilter(event) {
   }
 }
 content.addEventListener('input', updateFilter);
+setInterval(updateTaskOverdueIndicators, 60_000);
+document.addEventListener('visibilitychange', updateTaskOverdueIndicators);
+taskCompleteDialog.querySelector('[data-completion-cancel]').addEventListener('click', () => taskCompleteDialog.close('cancel'));
 dialog.addEventListener('cancel', event => {
   if (dialog.dataset.locked === 'true') event.preventDefault();
 });

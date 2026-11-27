@@ -18,8 +18,8 @@ const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const defaultPriority = '中';
 const catalogKinds = new Set(['proposer', 'category', 'device_type', 'project_stage']);
-const taskProgressFields = new Set(['status', 'hours', 'result', 'attachment_name', 'attachment_path']);
-const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at'];
+const taskProgressFields = new Set(['status', 'result', 'attachment_name', 'attachment_path']);
+const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at', 'completed_at'];
 const taskClassificationFields = ['pri', 'category', 'device_type'];
 const retiredCollaboratorFields = ['collaborators', 'collaborator_ids', 'add_collaborator_ids', 'keep_as_collaborator'];
 const recordCodeDate = new Intl.DateTimeFormat('en-CA', {
@@ -369,8 +369,10 @@ export function openRecords(store, { recordTaskChange } = {}) {
       let extra;
       if (table === 'tasks' && op !== 'delete') {
         checkTaskPeople(payload, op === 'insert');
-        if (op === 'update') checkTaskSchedule(payload);
-        else {
+        if (op === 'update') {
+          checkTaskSchedule(payload);
+          if (Object.hasOwn(patch, 'hours')) throw new RequestError(400, '投入工时请在完成任务时填写。');
+        } else {
           extra = { task_kind: taskKind(payload) };
           if (!patch.desc) throw new RequestError(400, '请填写任务描述。');
           newTaskPatch(patch);
@@ -382,6 +384,10 @@ export function openRecords(store, { recordTaskChange } = {}) {
           const index = list.findIndex(item => item.id === id);
           if (index === -1) throw new RequestError(404, '未找到此记录。');
           if (!changeable(db, user, table, list[index], op, patch)) throw new RequestError(403, '你没有权限修改或删除这条记录。');
+          if (table === 'tasks' && list[index].status === '已完成') {
+            if (op === 'update') throw new RequestError(409, '任务已完成，无法修改。');
+            if (!isAdmin(user)) throw new RequestError(403, '只有管理员可以删除已完成的任务。');
+          }
           if (op === 'delete') {
             if (table === 'demands') {
               const linked = db.tasks.filter(task => task.demand_id === id);
@@ -441,6 +447,39 @@ export function openRecords(store, { recordTaskChange } = {}) {
         const due = plannedCompletion(startedAt, plannedHours, TASK_PRIORITIES.includes(priority) ? priority : defaultPriority);
         if (!due) throw new RequestError(400, '请填写有效的计划投入工时，至少为 1 分钟。');
         Object.assign(patch, { status: '开发中', started_at: startedAt, planned_hours: plannedHours, planned_due_at: due });
+        return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
+      });
+      removed.forEach(id => removeFile(store.attachments, id));
+      return { task: publicTask(store.read(), user, row) };
+    },
+
+    completeTask(user, { taskId, expectedVersion, hours, changes }) {
+      const id = recordId(taskId);
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
+        throw new RequestError(400, '请刷新任务后重试。');
+      }
+      if (typeof hours !== 'number' || !Number.isFinite(hours) || hours < 0) {
+        throw new RequestError(400, '请填写有效的投入工时，可填 0。');
+      }
+      const patch = cleanFields('tasks', changes);
+      checkTaskSchedule(changes);
+      checkTaskPeople(changes, false);
+      if (!patch.result) throw new RequestError(400, '请填写完成结果。');
+      if (Object.hasOwn(patch, 'status') || Object.hasOwn(patch, 'hours')) {
+        throw new RequestError(400, '任务状态和投入工时由完成操作记录。');
+      }
+
+      const { row, removed } = store.update(db => {
+        const task = db.tasks.find(item => item.id === id);
+        if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
+        if (!changeable(db, user, 'tasks', task, 'update', patch)) {
+          throw new RequestError(403, '你没有权限完成此任务或修改这些任务信息。');
+        }
+        if (!ACTIVE_TASK_STATUSES.includes(task.status)) {
+          throw new RequestError(409, '只有开发中或测试中的任务可以完成，请刷新后查看。');
+        }
+        if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请重新打开更新任务后重试。');
+        Object.assign(patch, { status: '已完成', hours, completed_at: now() });
         return applyPatch(db, user, 'tasks', task, patch, recordTaskChange);
       });
       removed.forEach(id => removeFile(store.attachments, id));

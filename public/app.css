@@ -152,6 +152,7 @@ td:first-child { min-width: 105px; }
 .table-wrap:has(#task-rows) { container-type: inline-size; }
 #task-rows td { white-space: nowrap; }
 #task-rows .task-code + small { display: inline; margin-inline-start: 5px; }
+.task-overdue { margin-top: 3px; }
 .task-with-summary td { padding-bottom: 4px; border-bottom: 0; }
 .task-summary td { padding-top: 0; }
 .task-summary p {
