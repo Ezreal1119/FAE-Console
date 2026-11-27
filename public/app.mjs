@@ -1220,10 +1220,6 @@ function bindTaskComments(container) {
     });
   });
 }
-function taskAttachmentFields(task) {
-  return field('附件（单个文件最多 20MB）', 'file', '', 'type="file"') +
-    (task.fileName ? '<p class="muted text-small">当前附件：' + text(task.fileName) + '</p>' : '');
-}
 async function taskAttachmentPatch(file) {
   if (!file?.name) return {};
   if (!file.size || file.size > 20 * 1024 * 1024) throw new Error('请选择不超过 20MB 的非空附件。');
@@ -1282,15 +1278,16 @@ function confirmTaskStart() {
 }
 
 function confirmTaskCompletion(draft) {
-  const { result, hours } = taskCompleteDialog.querySelector('form').elements;
+  const { result, hours, file } = taskCompleteDialog.querySelector('form').elements;
   result.value = draft.result ?? '';
   result.setCustomValidity('');
   hours.value = draft.hours ?? '';
+  if (file.files[0] !== draft.file) file.value = '';
   taskCompleteDialog.returnValue = 'cancel';
   return new Promise(resolve => {
     taskCompleteDialog.addEventListener('close', () => {
       resolve(taskCompleteDialog.returnValue === 'complete'
-        ? { result: trimmed(result.value), hours: hours.valueAsNumber } : null);
+        ? { result: trimmed(result.value), hours: hours.valueAsNumber, file: file.files[0] } : null);
     }, { once: true });
     taskCompleteDialog.showModal();
   });
@@ -1383,7 +1380,7 @@ function taskForm(task = {}, demand, plan) {
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields) +
-    taskAttachmentFields(task) + (isUpdate && !plan ? taskCommentSection(task) : '') + choiceStatus;
+    (isUpdate && !plan ? taskCommentSection(task) : '') + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
   const context = demand?.code || task.code || '';
   const submit = demand ? '派发任务' : plan ? '开始任务' : '保存';
@@ -1422,13 +1419,13 @@ function taskForm(task = {}, demand, plan) {
     if (completing && !completion) return false;
     if (completion) completionDraft = completion;
     if (!formUser || state.user !== formUser) return false;
-    Object.assign(patch, await taskAttachmentPatch(values.file));
-    if (!formUser || state.user !== formUser) return false;
     try {
       if (completion) {
+        const attachment = await taskAttachmentPatch(completion.file);
+        if (state.user !== formUser) return false;
         const result = await post('/api/tasks/complete', {
           taskId: task.id, expectedVersion: task.version, hours: completion.hours,
-          changes: { ...patch, result: completion.result }
+          changes: { ...patch, ...attachment, result: completion.result }
         });
         await applySavedTask(result.task);
       } else if (demand) {
