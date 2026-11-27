@@ -1380,6 +1380,7 @@ function taskForm(task = {}, demand, plan) {
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields) +
+    (isDispatch ? field('附件（选填，最多 20 MB）', 'file', '', 'type="file"') : '') +
     (isUpdate && !plan ? taskCommentSection(task) : '') + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
   const context = demand?.code || task.code || '';
@@ -1429,7 +1430,9 @@ function taskForm(task = {}, demand, plan) {
         });
         await applySavedTask(result.task);
       } else if (demand) {
-        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, task: patch });
+        const attachment = await taskAttachmentPatch(values.file);
+        if (state.user !== formUser) return false;
+        const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, task: { ...patch, ...attachment } });
         updateRow('tasks', normalizeTask(result.task));
         updateRow('demands', result.demand);
       } else if (plan) {
