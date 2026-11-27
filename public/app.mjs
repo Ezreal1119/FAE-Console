@@ -2141,9 +2141,8 @@ function demandDetail(id) {
     ['项目阶段', `<span data-demand-project-stage>${shown(demand.project_stage)}</span>`, true],
     ['需求提出方', canEdit ? inlineChoiceControl('需求提出方', 'proposer', { allowCustom: false }) : demand.proposer, canEdit],
     ['创建人', demandCreator(demand), true],
-    ['任务进度', task ? statusBadge(task.status) : '<span class="tag">待派发</span>', true],
-    ['当前负责人', demandOwner(task), true],
-    ...(task?.initial_receiver_name ? [['初始接收人', task.initial_receiver_name]] : [])
+    ['初始接收人', task?.initial_receiver_name],
+    ['当前负责人', demandOwner(task), true]
   ]);
   const descriptionBlock = canEdit
     ? area('需求说明', 'descr', demand.descr, false)
