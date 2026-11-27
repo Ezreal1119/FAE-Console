@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import ssh2 from 'ssh2';
 import { RequestError } from './store.mjs';
@@ -11,6 +12,36 @@ const missingFile = error => error.code === 2;
 const sftpCall = (sftp, method, ...args) => new Promise((resolve, reject) => {
   sftp[method](...args, (error, value) => error ? reject(error) : resolve(value));
 });
+
+const downloadChunkSize = 32 * 1024;
+const downloadReadAhead = 4;
+
+async function readChunk(sftp, handle, offset, length) {
+  const chunk = Buffer.allocUnsafe(length);
+  for (let filled = 0; filled < length;) {
+    const count = await sftpCall(sftp, 'read', handle, chunk, filled, length - filled, offset + filled);
+    if (!count) throw new Error('附件在读取完成前结束。');
+    filled += count;
+  }
+  return chunk;
+}
+
+async function* downloadChunks(sftp, handle, size, signal) {
+  // Keep a small SFTP read window in flight, yielding in file order as HTTP drains.
+  const pending = [];
+  let offset = 0;
+  while (pending.length || offset < size) {
+    signal.throwIfAborted();
+    while (pending.length < downloadReadAhead && offset < size) {
+      const length = Math.min(downloadChunkSize, size - offset);
+      pending.push(readChunk(sftp, handle, offset, length).then(chunk => ({ chunk }), error => ({ error })));
+      offset += length;
+    }
+    const { chunk, error } = await pending.shift();
+    if (error) throw error;
+    yield chunk;
+  }
+}
 
 export function openSftpStorage(settings) {
   const { SFTP_HOST: host, SFTP_PORT, SFTP_USERNAME: username, SFTP_PASSWORD: password,
@@ -107,7 +138,9 @@ export function openSftpStorage(settings) {
         }
         const stat = await sftpCall(sftp, 'fstat', handle);
         if (stat.size !== file.size) throw new Error('附件大小与索引不一致。');
-        const stream = sftp.createReadStream(path, { handle, autoClose: false });
+        const stream = Readable.from(downloadChunks(sftp, handle, file.size, transferSignal), {
+          objectMode: false, highWaterMark: downloadChunkSize
+        });
         const result = await consume(stream, transferSignal);
         await sftpCall(sftp, 'close', handle);
         return result;
