@@ -150,6 +150,8 @@ td:first-child { min-width: 105px; }
 .task-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .task-code { white-space: nowrap; }
 .table-wrap:has(#task-rows) { container-type: inline-size; }
+#task-rows td { white-space: nowrap; }
+#task-rows .task-code + small { display: inline; margin-inline-start: 5px; }
 .task-with-summary td { padding-bottom: 4px; border-bottom: 0; }
 .task-summary td { padding-top: 0; }
 .task-summary p {
