@@ -97,8 +97,8 @@
     <form method="dialog">
       <p id="task-complete-note">确认后，任务将标记为已完成，任务内容将锁定。</p>
       <label>完成结果（必填）<textarea name="result" rows="3" maxlength="10000" required autofocus></textarea></label>
-      <label>附件（选填，最多 20 MB）<input name="file" type="file"></label>
       <label>投入工时（小时，必填）<input name="hours" type="number" min="0" step="any" required></label>
+      <label>附件（选填，最多 20 MB）<input name="file" type="file"></label>
       <div class="dialog-actions">
         <button type="button" class="button" data-completion-cancel>取消</button>
         <button type="submit" class="button primary" value="complete">确定完成</button>
