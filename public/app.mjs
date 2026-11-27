@@ -1119,13 +1119,16 @@ function confirmTaskStart() {
   });
 }
 
-function confirmTaskCompletion(task) {
-  const input = taskCompleteDialog.querySelector('[name=hours]');
-  input.value = task.hours ?? '';
+function confirmTaskCompletion(draft) {
+  const { result, hours } = taskCompleteDialog.querySelector('form').elements;
+  result.value = draft.result ?? '';
+  result.setCustomValidity('');
+  hours.value = draft.hours ?? '';
   taskCompleteDialog.returnValue = 'cancel';
   return new Promise(resolve => {
     taskCompleteDialog.addEventListener('close', () => {
-      resolve(taskCompleteDialog.returnValue === 'complete' ? input.valueAsNumber : null);
+      resolve(taskCompleteDialog.returnValue === 'complete'
+        ? { result: trimmed(result.value), hours: hours.valueAsNumber } : null);
     }, { once: true });
     taskCompleteDialog.showModal();
   });
@@ -1216,21 +1219,16 @@ function taskForm(task = {}, demand, plan) {
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
   const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status)
     : details([['状态', statusBadge(task.status), true]], 'task-form-facts');
-  const progressFields = isUpdate && !plan ? statusField + area('完成结果', 'result', task.result) : '';
+  const progressFields = isUpdate && !plan ? statusField : '';
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
   const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields + progressFields) +
     taskAttachmentFields(task) + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
   const context = demand?.code || task.code || '';
   const submit = demand ? '派发任务' : plan ? '开始任务' : '保存';
-  let project, owner, loadChoices;
+  let project, owner, loadChoices, completionDraft;
   const form = modalForm(formTitle, context, fields, async (values, completing) => {
     const formUser = state.user;
-    const resultText = optional(values.result);
-    if (completing && !resultText) {
-      form.elements.result.focus();
-      throw new Error('请填写完成结果。');
-    }
     const patch = taskOptions.changes();
     if (canEditProject) {
       const proj = project.value();
@@ -1242,10 +1240,7 @@ function taskForm(task = {}, demand, plan) {
       if (desc !== optional(task.desc ?? demand?.descr)) patch.desc = desc;
     }
     if (canEditPriority && (!isUpdate || values.pri !== priority)) patch.pri = values.pri;
-    if (isUpdate && !plan) {
-      if (!completing && canChangeStatus && values.status !== task.status) patch.status = values.status;
-      if (completing || resultText !== optional(task.result)) patch.result = resultText;
-    }
+    if (isUpdate && !plan && !completing && canChangeStatus && values.status !== task.status) patch.status = values.status;
     const plannedHours = plan ? Number(values.plan_hours) : null;
     if (plan && !plannedCompletion(plan.startedAt, plannedHours, priority)) {
       throw new Error('请填写有效的计划投入工时，至少为 1 分钟。');
@@ -1262,14 +1257,18 @@ function taskForm(task = {}, demand, plan) {
       if (!patch.device_type) throw new Error('请填写设备类型。');
     }
     if (plan && !(await confirmTaskStart())) return false;
-    const hours = completing ? await confirmTaskCompletion(task) : null;
-    if (completing && hours === null) return false;
+    const completion = completing ? await confirmTaskCompletion(completionDraft ?? task) : null;
+    if (completing && !completion) return false;
+    if (completion) completionDraft = completion;
     if (!formUser || state.user !== formUser) return false;
     Object.assign(patch, await taskAttachmentPatch(values.file));
     if (!formUser || state.user !== formUser) return false;
     try {
-      if (completing) {
-        const result = await post('/api/tasks/complete', { taskId: task.id, expectedVersion: task.version, hours, changes: patch });
+      if (completion) {
+        const result = await post('/api/tasks/complete', {
+          taskId: task.id, expectedVersion: task.version, hours: completion.hours,
+          changes: { ...patch, result: completion.result }
+        });
         await applySavedTask(result.task);
       } else if (demand) {
         const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, task: patch });
@@ -1939,6 +1938,14 @@ content.addEventListener('input', updateFilter);
 setInterval(updateTaskOverdueIndicators, 60_000);
 document.addEventListener('visibilitychange', updateTaskOverdueIndicators);
 taskCompleteDialog.querySelector('[data-completion-cancel]').addEventListener('click', () => taskCompleteDialog.close('cancel'));
+taskCompleteDialog.addEventListener('submit', event => {
+  const result = event.target.elements.result;
+  if (trimmed(result.value)) return;
+  event.preventDefault();
+  result.setCustomValidity('请填写完成结果。');
+  result.reportValidity();
+});
+taskCompleteDialog.querySelector('[name=result]').addEventListener('input', event => event.target.setCustomValidity(''));
 dialog.addEventListener('cancel', event => {
   if (dialog.dataset.locked === 'true') event.preventDefault();
 });

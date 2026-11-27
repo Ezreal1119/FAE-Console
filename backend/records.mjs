@@ -372,6 +372,7 @@ export function openRecords(store, { recordTaskChange } = {}) {
         if (op === 'update') {
           checkTaskSchedule(payload);
           if (Object.hasOwn(patch, 'hours')) throw new RequestError(400, '投入工时请在完成任务时填写。');
+          if (Object.hasOwn(patch, 'result')) throw new RequestError(400, '完成结果请在完成任务时填写。');
         } else {
           extra = { task_kind: taskKind(payload) };
           if (!patch.desc) throw new RequestError(400, '请填写任务描述。');
