@@ -35,7 +35,7 @@ npm start
 
 在现有的服务环境文件中设置 `SFTP_HOST`、`SFTP_PORT`、`SFTP_USERNAME`、`SFTP_PASSWORD` 和 `SFTP_HOST_FINGERPRINT`。根目录 `SFTP_ROOT` 默认为 `/FAE-Console`。当前公司端点还需要 `SFTP_LEGACY_SSH=1`。部署时运行 `node --env-file=.env backend/attachment-maintenance.mjs prepare` 初始化目录。
 
-旧版本的本地服务器附件需要迁移时，停止服务，备份 `db.json`，以服务数据目录的所有者身份运行 `node --env-file=.env backend/attachment-maintenance.mjs migrate <DATA_DIR>`。确认新索引和 SFTP 下载后，在开放业务写入前运行同一命令的 `purge <DATA_DIR>` 子命令。清理前会重新校验每个历史附件。
+迁移旧版本的本地服务器附件时，停止服务并保留一份带原所有权的 `db.json` 备份。用 root 运行 `node --env-file=.env backend/attachment-maintenance.mjs migrate <DATA_DIR>`，随后运行同一命令的 `purge <DATA_DIR>` 子命令。清理前会重新校验每个历史附件。用 `chown --reference=<备份文件> <DATA_DIR>/db.json` 恢复索引所有权，再启动服务。
 
 ## 一次性导入工程中心 WBS
 
