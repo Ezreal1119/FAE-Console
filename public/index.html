@@ -84,12 +84,31 @@
       <button class="button primary" value="transfer">确定转交</button>
     </form>
   </dialog>
-  <dialog id="task-start-dialog" aria-labelledby="task-start-title">
-    <div class="dialog-heading"><h2 id="task-start-title">确定开始任务？</h2></div>
-    <p>确认后，任务将进入开发中。开始时间、计划投入工时和计划完成时间会锁定。</p>
-    <form method="dialog" class="dialog-actions">
-      <button class="button" value="cancel" autofocus>取消</button>
-      <button class="button primary" value="start">确定开始</button>
+  <dialog id="task-start-dialog" aria-labelledby="task-start-title" aria-describedby="task-start-note">
+    <div class="dialog-heading">
+      <h2 id="task-start-title">开始规划</h2>
+      <div class="dialog-priority"><span>优先级</span><span id="task-start-priority"></span></div>
+    </div>
+    <form method="dialog">
+      <p id="task-start-note">确认后，任务将进入开发中。开始时间、计划投入工时和计划完成时间会锁定。</p>
+      <dl class="form-grid task-form-facts task-schedule-summary">
+        <div><dt>开始时间</dt><dd id="task-start-time"></dd></div>
+        <div><dt>计划完成时间</dt><dd id="task-start-due" aria-live="polite"></dd></div>
+      </dl>
+      <div class="plan-hours-field">
+        <label for="plan-hours">计划投入工时（小时，必填）</label>
+        <div class="plan-hours-control">
+          <input id="plan-hours" name="plan_hours" type="number" min="0.01" step="0.01" required autofocus>
+          <div class="plan-hours-arrows">
+            <button type="button" data-plan-step="1" aria-label="增加 1 小时">▴</button>
+            <button type="button" data-plan-step="-1" aria-label="减少 1 小时">▾</button>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="button" data-start-cancel>取消</button>
+        <button type="submit" class="button primary" value="start">确定开始</button>
+      </div>
     </form>
   </dialog>
   <dialog id="task-complete-dialog" aria-labelledby="task-complete-title" aria-describedby="task-complete-note">

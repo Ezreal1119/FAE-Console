@@ -519,15 +519,11 @@ function taskFiles(task, kind) {
   if (canAppend) links.push(action('补传' + attachmentLabels[kind], 'task-attachment-append', JSON.stringify([task.id, kind]), 'link'));
   return links.join('') || '—';
 }
-function taskEditActions(task, className) {
-  return task.status !== '已完成' && canUpdateTaskProgress(task)
-    ? action(task.status === '待规划' ? '开始规划' : '更新任务', 'task-update', task.id, className) : '';
-}
 function taskActionsCell(task) {
   const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
   const remove = canDelete ? action('删除', 'task-delete', task.id, 'link danger') : '';
   const transfer = canTransferTask(task) ? action('转交负责人', 'task-transfer', task.id, 'link') : '';
-  return `<td><div class="row-actions">${taskEditActions(task, 'link') + transfer + remove || '—'}</div></td>`;
+  return `<td><div class="row-actions">${transfer + remove || '—'}</div></td>`;
 }
 function taskDeadlineCell(task, isOverdue) {
   return `<td data-task-deadline="${text(task.id)}" class="task-date task-due-date${isOverdue ? ' text-red' : ''}">${shown(task.dueTime)}</td>`;
@@ -1103,7 +1099,7 @@ function modal(title, description, body, locked = false, headingAside = '', focu
   else if (focusTitle) dialog.querySelector('#dialog-title').focus({ preventScroll: true });
 }
 function modalForm(title, description, fields, onSave, options = {}) {
-  const buttons = options.locked ? action('退出登录', 'logout') : action('取消', 'close');
+  const buttons = options.locked ? action('退出登录', 'logout') : action(options.cancel || '取消', 'close');
   const secondary = options.secondarySubmit
     ? `<button type="submit" class="button" value="secondary">${text(options.secondarySubmit)}</button>` : '';
   modal(title, description, `<form id="dialog-form"><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
@@ -1153,28 +1149,140 @@ function taskDispatchTime(task) {
   const dispatchedAt = Date.parse(task.dispatched_at ?? '');
   return Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null;
 }
-function taskDetails(task) {
+function taskDetails(task, { editable = {} } = {}) {
   const source = state.demands.find(row => same(row.id, task.demand_id));
-  const info = details([['任务类型', TASK_KINDS[task.task_kind]], ['项目', task.proj],
-    ['设备类型', task.device_type], ['项目阶段', task.project_stage],
+  const info = details([
+    ['任务类型', TASK_KINDS[task.task_kind]],
+    ...(!editable.proj ? [['项目', task.proj]] : []),
+    ...(!editable.deviceType ? [['设备类型', task.device_type]] : []),
+    ['项目阶段', task.project_stage],
     ['负责人', task.owner_name],
     ...(source ? [['来源需求', action(source.code, 'demand-detail', source.id, 'link'), true]] : []),
     ...(Object.hasOwn(task, 'dispatched_at') ? [['派发时间', taskDispatchTime(task)]] : []),
-    ['状态', statusBadge(task.status), true], ['优先级', priorityBadge(task.pri), true],
-    ['计划完成时间', task.dueTime], ['计划投入工时', plannedHoursBadge(task), true], ['投入工时', withHours(task.hours)],
-    ['开始时间', task.startTime], ['完成日期', task.endDate],
-    ['需求文件', taskFiles(task, 'requirement'), true], ['交付文件', taskFiles(task, 'delivery'), true],
+    ...(!editable.status ? [['状态', statusBadge(task.status), true]] : []),
+    ...(!editable.pri ? [['优先级', priorityBadge(task.pri), true]] : []),
+    ['计划完成时间', task.dueTime],
+    ...(!editable.status ? [['计划投入工时', plannedHoursBadge(task), true]] : []),
+    ['投入工时', withHours(task.hours)],
+    ['开始时间', task.startTime],
+    ['完成日期', task.endDate],
+    ['需求文件', taskFiles(task, 'requirement'), true],
+    ['交付文件', taskFiles(task, 'delivery'), true],
     ...(task.attachments.some(file => file.kind === 'legacy') ? [['历史附件', taskFiles(task, 'legacy'), true]] : []),
-    ['前置依赖', task.deps]]);
-  const remarks = `<div class="details-list"><div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>
+    ['前置依赖', task.deps]
+  ]);
+  const remarks = `<div class="details-list">${editable.desc ? '' : `<div class="detail-item"><strong>任务描述</strong><p class="muted">${shown(task.desc)}</p></div>`}
     <div class="detail-item"><strong>完成结果</strong><p class="muted">${shown(task.result)}</p></div></div>`;
   return info + remarks;
 }
 function taskDetail(id) {
   const task = getRow('tasks', id);
-  modal(task.code, '', taskDetails(task) + taskCommentSection(task) + `<div class="dialog-actions">
-    <a class="button" href="/?task=${text(task.id)}">打开任务页面</a>${action('关闭', 'close')}${taskEditActions(task, 'button primary')}</div>`);
-  bindTaskComments(dialog);
+  const canOperate = task.status !== '已完成' && canUpdateTaskProgress(task);
+  if (!canOperate) {
+    modal(task.code, '', taskDetails(task) + taskCommentSection(task) + `<div class="dialog-actions">${action('关闭', 'close')}</div>`, false, '', true);
+    bindTaskComments(dialog);
+    return;
+  }
+  const isPlanning = task.status === '待规划';
+  const canEditDetails = canEditTask(task);
+  const canEditClassification = canEditTaskClassification(task);
+  const canEditProject = canEditDetails && task.demand_id == null;
+  const canEditPriority = canEditClassification && !isPlanning;
+  const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
+  const hasEditableFields = canEditProject || canEditDetails || canEditClassification || canChangeStatus;
+  const priority = taskPriority(task.pri);
+  const optionKinds = canEditClassification ? ['device_type'] : [];
+  const needsChoices = canEditProject || optionKinds.length > 0;
+  const statusField = canChangeStatus
+    ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
+    : statusBadge(task.status);
+  const headingAside = `<div class="dialog-task-meta">${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>`;
+  const priorityField = canEditPriority ? selectField('优先级', 'pri', PRIORITY, priority) : '';
+  const optionFields = optionKinds.map(kind => taskOptionField(kind, false)).join('');
+  const editableRow = (priorityField || optionFields) ? `<div class="form-grid">${priorityField}${optionFields}</div>` : '';
+  const fields = taskDetails(task, {
+    editable: { proj: canEditProject, deviceType: canEditClassification, pri: canEditPriority, status: true, desc: canEditDetails }
+  }) +
+    (canEditProject ? choiceField('项目', 'proj', { allowCustom: true }) : '') +
+    editableRow +
+    (canEditDetails ? area('任务描述', 'desc', task.desc, false) : '') +
+    (canChangeStatus ? uploadProgress : '') +
+    taskCommentSection(task) +
+    (needsChoices ? choiceStatus : '');
+  const formOptions = isPlanning
+    ? hasEditableFields
+      ? { submit: '保存', secondarySubmit: '开始规划', headingAside, focusTitle: true }
+      : { cancel: '关闭', submit: '开始规划', headingAside, focusTitle: true }
+    : { submit: '保存', secondarySubmit: '完成任务', headingAside, focusTitle: true };
+  let project, loadChoices, completionDraft, planDraftHours;
+  const form = modalForm(task.code, '', fields, async (values, isSecondary) => {
+    const formUser = state.user;
+    const starting = isPlanning && (!hasEditableFields || isSecondary);
+    const completing = canChangeStatus && isSecondary;
+    const patch = taskOptions.changes();
+    if (canEditProject) {
+      const proj = project.value();
+      if (proj !== optional(task.proj)) patch.proj = proj;
+    }
+    if (canEditDetails) {
+      const desc = optional(values.desc);
+      if (desc !== optional(task.desc)) patch.desc = desc;
+    }
+    if (canEditPriority && values.pri !== priority) patch.pri = values.pri;
+    if (canChangeStatus && !completing && values.status !== task.status) patch.status = values.status;
+
+    try {
+      if (starting) {
+        const plan = await post('/api/tasks/plan-preview', { taskId: task.id });
+        if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+        const start = await confirmTaskStart(plan, task, planDraftHours);
+        if (!start) return false;
+        planDraftHours = start.plannedHours;
+        if (!formUser || state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+        const result = await post('/api/tasks/start', {
+          taskId: task.id, startToken: plan.startToken, plannedHours: start.plannedHours, changes: patch
+        });
+        await applySavedTask(result.task);
+        toast('任务已开始。');
+        return;
+      }
+      if (completing) {
+        const completion = await confirmTaskCompletion(completionDraft ?? task);
+        if (!completion) return false;
+        completionDraft = completion;
+        if (!formUser || state.user !== formUser) return false;
+        const files = await upload('delivery');
+        if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+        const result = await post('/api/tasks/complete', {
+          taskId: task.id, expectedVersion: task.version, hours: completion.hours, files,
+          changes: { ...patch, result: completion.result }
+        });
+        await applySavedTask(result.task);
+        toast('任务已完成。');
+        return;
+      }
+      if (Object.keys(patch).length) {
+        await applySavedTask(await saveRow('tasks', patch, task.id));
+      }
+      toast('任务已更新。');
+    } catch (error) {
+      if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
+      if (error.status === 409 && state.user) await refresh();
+      throw error;
+    }
+  }, formOptions);
+  const upload = canChangeStatus ? bindFileUploads(form, () => completionDraft?.files) : null;
+  bindTaskComments(form);
+  const taskOptions = bindTaskOptions(form, task, optionKinds);
+  if (canEditProject) {
+    project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
+  }
+  if (needsChoices) {
+    loadChoices = prepareFormChoices(form, ({ options }) => {
+      project?.setOptions(catalogChoiceEntries(options.proj));
+      taskOptions.setOptions(options);
+    });
+  }
 }
 function taskLinkPage() {
   const task = state.tasks.find(row => same(row.id, linkedTaskId()));
@@ -1183,7 +1291,10 @@ function taskLinkPage() {
     const message = state.loadWarnings.includes('任务') ? '任务加载失败，请重新加载。' : '找不到该任务，或你没有权限查看。';
     return heading('任务详情', '', back) + '<p class="panel">' + message + '</p>';
   }
-  return heading(task.code, '', back + taskEditActions(task, 'button primary')) + panel('任务详情', taskDetails(task) + taskCommentSection(task));
+  const manage = task.status !== '已完成' && canUpdateTaskProgress(task)
+    ? action(task.status === '待规划' ? '开始规划' : '更新任务', 'task-detail', task.id, 'button primary')
+    : '';
+  return heading(task.code, '', back + manage) + panel('任务详情', taskDetails(task) + taskCommentSection(task));
 }
 
 function commentButton(label, name, { className = 'link', hidden = false } = {}) {
@@ -1428,10 +1539,33 @@ function confirmTaskTransfer(task, recipient) {
   });
 }
 
-function confirmTaskStart() {
+let startDialogContext = null;
+const planDueHint = '填写计划投入工时后计算';
+
+function updateStartDialogDuePreview() {
+  const input = taskStartDialog.querySelector('[name=plan_hours]');
+  const dueDisplay = $('#task-start-due');
+  if (!startDialogContext) return;
+  const due = plannedCompletion(startDialogContext.startedAt, input.valueAsNumber, startDialogContext.priority);
+  dueDisplay.textContent = formatPlanningTime(due) || planDueHint;
+}
+
+function confirmTaskStart(plan, task, draftHours) {
+  const input = taskStartDialog.querySelector('[name=plan_hours]');
+  const priority = normalizeTaskPriority(plan.task?.pri ?? task.pri) || '中';
+  startDialogContext = { startedAt: plan.startedAt, priority };
+  $('#task-start-priority').innerHTML = priorityBadge(priority);
+  $('#task-start-time').textContent = formatPlanningTime(plan.startedAt);
+  input.value = draftHours ?? task.planned_hours ?? task.estimated_hours ?? '';
+  input.setCustomValidity('');
+  updateStartDialogDuePreview();
   taskStartDialog.returnValue = 'cancel';
   return new Promise(resolve => {
-    taskStartDialog.addEventListener('close', () => resolve(taskStartDialog.returnValue === 'start'), { once: true });
+    taskStartDialog.addEventListener('close', () => {
+      const hours = input.valueAsNumber;
+      startDialogContext = null;
+      resolve(taskStartDialog.returnValue === 'start' ? { plannedHours: hours } : null);
+    }, { once: true });
     taskStartDialog.showModal();
   });
 }
@@ -1450,28 +1584,6 @@ function confirmTaskCompletion(draft) {
     }, { once: true });
     taskCompleteDialog.showModal();
   });
-}
-
-const planDueHint = '填写计划投入工时后计算';
-
-function taskScheduleFields(task, plan) {
-  const start = plan ? formatPlanningTime(plan.startedAt) : task.startTime;
-  const entries = [['开始时间', start]];
-  if (plan) {
-    entries.push(['计划完成时间', `<span data-plan-due aria-live="polite">${planDueHint}</span>`, true]);
-  } else {
-    entries.push(['计划完成时间', task.dueTime]);
-  }
-  const summary = details(entries, 'form-grid task-form-facts task-schedule-summary');
-  return plan ? summary + `<div class="plan-hours-field">
-    <label for="plan-hours">计划投入工时（小时）</label>
-    <div class="plan-hours-control">
-      <input id="plan-hours" name="plan_hours" value="${text(task.planned_hours ?? task.estimated_hours)}" type="number" min="0.01" step="0.01" required>
-      <div class="plan-hours-arrows">
-        <button type="button" data-plan-step="1" aria-label="增加 1 小时">▴</button>
-        <button type="button" data-plan-step="-1" aria-label="减少 1 小时">▾</button>
-      </div>
-    </div></div>` : summary;
 }
 
 function bindPlanHours(input, preview) {
@@ -1493,148 +1605,73 @@ function bindPlanHours(input, preview) {
   }
 }
 
-async function openTaskUpdate(id) {
-  const task = getRow('tasks', id);
-  if (task.status === '已完成' || !canUpdateTaskProgress(task)) return;
-  if (task.status !== '待规划') return taskForm(task);
-  const currentDialog = dialog.firstElementChild;
-  try {
-    const plan = await post('/api/tasks/plan-preview', { taskId: task.id });
-    if (state.user && dialog.firstElementChild === currentDialog) taskForm(normalizeTask(plan.task), undefined, plan);
-  } catch (error) {
-    if (error.status === 409 && state.user) await refresh();
-    throw error;
-  }
-}
-
-function taskForm(task = {}, demand, plan) {
-  const isUpdate = Boolean(task.id);
-  if (isUpdate && (task.status === '已完成' || !canUpdateTaskProgress(task))) return;
-  const canEditDetails = !isUpdate || canEditTask(task);
-  const canEditClassification = !isUpdate || canEditTaskClassification(task);
-  const canEditPriority = canEditClassification && !plan;
-  const priority = taskPriority(task.pri);
-  const optionKinds = canEditClassification ? ['device_type'] : [];
-  const canEditProject = canEditDetails && !demand && task.demand_id == null;
+function taskForm(demand) {
   const isDispatch = Boolean(demand);
-  const descriptionRequired = !isUpdate && !isDispatch;
+  const priority = taskPriority();
   const dispatchKey = demand && crypto.randomUUID();
-  const ownerField = isUpdate ? '' : choiceField('负责人', 'assignee_id', { required: isDispatch });
-  const identityFields = canEditProject
-    ? `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`
-    : ownerField;
-  const kindField = isUpdate ? '' : `<label>任务类型（必填）<select name="task_kind" required>
+  const ownerField = choiceField('负责人', 'assignee_id', { required: isDispatch });
+  const identityFields = isDispatch
+    ? ownerField
+    : `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`;
+  const kindField = `<label>任务类型（必填）<select name="task_kind" required>
     <option value="" selected disabled>请选择任务类型</option>
     ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, '', label)).join('')}</select></label>`;
-  const priorityField = canEditPriority ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
-    isDispatch ? 'required' : '') : '';
-  const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
-  const statusField = canChangeStatus ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
-    : statusBadge(task.status);
-  const headingAside = plan ? `<div class="dialog-priority"><span>优先级</span>${priorityBadge(priority)}</div>`
-    : isUpdate ? `<div class="dialog-task-meta">${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>` : '';
-  const taskOptionsFields = kindField + priorityField + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
-  const setupFields = identityFields +
-    (taskOptionsFields ? `<div class="form-grid">${taskOptionsFields}</div>` : '') +
+  const priorityField = selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
+    isDispatch ? 'required' : '');
+  const fields = identityFields +
+    `<div class="form-grid">${kindField}${priorityField}${taskOptionField('device_type', isDispatch)}</div>` +
     (isDispatch ? field('预计工时（小时，选填）', 'estimated_hours', '', 'type="number" min="0.01" step="0.01" inputmode="decimal"') : '') +
-    (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
-  const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
-  const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields) +
-    (isDispatch ? taskFileField('requirement') : '') +
-    (isDispatch || isUpdate && !plan && canChangeStatus ? uploadProgress : '') +
-    (isUpdate && !plan ? taskCommentSection(task) : '') + choiceStatus;
-  const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
-  const context = demand?.code || task.code || '';
-  const submit = demand ? '派发任务' : plan ? '开始任务' : '保存';
-  let project, owner, loadChoices, completionDraft;
-  const form = modalForm(formTitle, context, fields, async (values, completing) => {
+    area(isDispatch ? '任务描述' : '任务描述（必填）', 'desc', demand?.descr, !isDispatch) +
+    (isDispatch ? taskFileField('requirement') + uploadProgress : '') +
+    choiceStatus;
+  let project, owner, loadChoices;
+  const form = modalForm(demand ? '派发任务' : '新建任务', demand?.code || '', fields, async values => {
     const formUser = state.user;
     const patch = taskOptions.changes();
-    if (canEditProject) {
+    if (!isDispatch) {
       const proj = project.value();
-      if (proj !== optional(task.proj)) patch.proj = proj;
+      if (proj !== null) patch.proj = proj;
     }
-    if (canEditDetails) {
-      const desc = optional(values.desc);
-      if (descriptionRequired && !desc) throw new Error('请填写任务描述。');
-      if (desc !== optional(task.desc ?? demand?.descr)) patch.desc = desc;
-    }
-    if (canEditPriority && (!isUpdate || values.pri !== priority)) patch.pri = values.pri;
-    if (isUpdate && !plan && !completing && canChangeStatus && values.status !== task.status) patch.status = values.status;
-    const plannedHours = plan ? Number(values.plan_hours) : null;
-    if (plan && !plannedCompletion(plan.startedAt, plannedHours, priority)) {
-      throw new Error('请填写有效的计划投入工时，至少为 1 分钟。');
-    }
-    if (!isUpdate) {
-      if (!Object.hasOwn(TASK_KINDS, values.task_kind)) throw new Error('请选择临时任务或工作任务。');
-      patch.task_kind = values.task_kind;
-      const assignee = owner.value();
-      if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
-      patch.assignee_id = assignee;
-    }
-    if (isDispatch) {
-      if (!patch.device_type) throw new Error('请填写设备类型。');
-    }
-    if (plan && !(await confirmTaskStart())) return false;
-    const completion = completing ? await confirmTaskCompletion(completionDraft ?? task) : null;
-    if (completing && !completion) return false;
-    if (completion) completionDraft = completion;
-    if (!formUser || state.user !== formUser) return false;
+    const desc = optional(values.desc);
+    if (!isDispatch && !desc) throw new Error('请填写任务描述。');
+    if (desc !== optional(demand?.descr)) patch.desc = desc;
+    patch.pri = values.pri;
+    if (!Object.hasOwn(TASK_KINDS, values.task_kind)) throw new Error('请选择临时任务或工作任务。');
+    patch.task_kind = values.task_kind;
+    const assignee = owner.value();
+    if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
+    patch.assignee_id = assignee;
+    if (isDispatch && !patch.device_type) throw new Error('请填写设备类型。');
     try {
-      if (completion) {
-        const files = await upload('delivery');
-        if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
-        const result = await post('/api/tasks/complete', {
-          taskId: task.id, expectedVersion: task.version, hours: completion.hours, files,
-          changes: { ...patch, result: completion.result }
-        });
-        await applySavedTask(result.task);
-      } else if (demand) {
+      if (demand) {
         const files = await upload('requirement');
         if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
         const estimatedHours = values.estimated_hours ? Number(values.estimated_hours) : null;
         const result = await post('/api/demands/dispatch', { demandId: demand.id, dispatchKey, files, task: patch, estimatedHours });
         updateRow('tasks', normalizeTask(result.task));
         updateRow('demands', result.demand);
-      } else if (plan) {
-        const result = await post('/api/tasks/start', { taskId: task.id, startToken: plan.startToken, plannedHours, changes: patch });
-        await applySavedTask(result.task);
-      } else if (!isUpdate || Object.keys(patch).length) {
-        await applySavedTask(await saveRow('tasks', patch, task.id));
+      } else {
+        await applySavedTask(await saveRow('tasks', patch));
       }
     } catch (error) {
       if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
-      if ((demand || isUpdate) && error.status === 409 && state.user) await refresh();
+      if (demand && error.status === 409 && state.user) await refresh();
       throw error;
     }
-    toast(completing ? '任务已完成。' : demand ? '任务已派发。' : plan ? '任务已开始。' : isUpdate ? '任务已更新。' : '任务已创建。');
-  }, { submit, headingAside, focusTitle: isUpdate && !plan, secondarySubmit: isUpdate && !plan && canChangeStatus ? '完成任务' : '' });
-  const upload = isDispatch || isUpdate && !plan && canChangeStatus
-    ? bindFileUploads(form, () => isDispatch ? form.elements.files.files : completionDraft?.files)
-    : null;
-  bindTaskComments(form);
-  if (plan) {
-    const dueDisplay = form.querySelector('[data-plan-due]');
-    const preview = () => {
-      const due = plannedCompletion(plan.startedAt, Number(form.elements.plan_hours.value), priority);
-      dueDisplay.textContent = formatPlanningTime(due) || planDueHint;
-    };
-    bindPlanHours(form.elements.plan_hours, preview);
-    preview();
+    toast(demand ? '任务已派发。' : '任务已创建。');
+  }, { submit: demand ? '派发任务' : '保存' });
+  const upload = isDispatch ? bindFileUploads(form, () => form.elements.files.files) : null;
+  const taskOptions = bindTaskOptions(form, {}, ['device_type']);
+  if (!isDispatch) {
+    project = bindChoice(form.querySelector('[data-choice=proj]'), { value: null, label: '' }, { allowCustom: true });
   }
-  const taskOptions = bindTaskOptions(form, task, optionKinds);
-  if (canEditProject) {
-    project = bindChoice(form.querySelector('[data-choice=proj]'), { value: optional(task.proj), label: task.proj }, { allowCustom: true });
-  }
-  if (!isUpdate) {
-    owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), {
-      value: demand ? null : state.user.id, label: demand ? '' : myName()
-    }, { clearable: false });
-  }
+  owner = bindChoice(form.querySelector('[data-choice=assignee_id]'), {
+    value: demand ? null : state.user.id, label: demand ? '' : myName()
+  }, { clearable: false });
   loadChoices = prepareFormChoices(form, ({ people, options }) => {
     project?.setOptions(catalogChoiceEntries(options.proj));
     taskOptions.setOptions(options);
-    owner?.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
+    owner.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
   });
 }
 
@@ -2135,7 +2172,7 @@ const actions = {
   logout: async () => { await post('/api/logout'); showAuth(); },
   'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-list': () => navigate('tasks'),
   'task-display-options': taskDisplayOptions,
-  'task-update': openTaskUpdate, 'task-transfer': taskTransferForm,
+  'task-transfer': taskTransferForm,
   'task-delete': id => {
     const row = getRow('tasks', id);
     confirmDelete('删除任务', '确定删除「' + row.code + '」？', async () => {
@@ -2146,7 +2183,7 @@ const actions = {
   'demand-new': () => demandForm(), 'demand-edit': id => demandForm(getRow('demands', id)), 'demand-detail': demandDetail,
   'demand-dispatch': id => {
     const demand = getRow('demands', id);
-    if (canManageDemand(demand) && !demand.linked_tasks?.length) taskForm({}, demand);
+    if (canManageDemand(demand) && !demand.linked_tasks?.length) taskForm(demand);
   },
   'demand-task': async id => {
     await refresh();
@@ -2302,6 +2339,16 @@ content.addEventListener('submit', async event => {
 });
 setInterval(updateTaskOverdueIndicators, 60_000);
 document.addEventListener('visibilitychange', updateTaskOverdueIndicators);
+bindPlanHours(taskStartDialog.querySelector('[name=plan_hours]'), updateStartDialogDuePreview);
+taskStartDialog.querySelector('[data-start-cancel]').addEventListener('click', () => taskStartDialog.close('cancel'));
+taskStartDialog.addEventListener('submit', event => {
+  const input = event.target.elements.plan_hours;
+  if (startDialogContext && plannedCompletion(startDialogContext.startedAt, input.valueAsNumber, startDialogContext.priority)) return;
+  event.preventDefault();
+  input.setCustomValidity('请填写有效的计划投入工时，至少为 1 分钟。');
+  input.reportValidity();
+});
+taskStartDialog.querySelector('[name=plan_hours]').addEventListener('input', event => event.target.setCustomValidity(''));
 taskCompleteDialog.querySelector('[data-completion-cancel]').addEventListener('click', () => taskCompleteDialog.close('cancel'));
 taskCompleteDialog.addEventListener('submit', event => {
   const result = event.target.elements.result;
