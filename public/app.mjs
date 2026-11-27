@@ -17,7 +17,7 @@ const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', projects: '项目管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
-const catalogLabels = { proposer: '需求提出方', category: '工单分类', device_type: '设备类型', project_stage: '项目阶段' };
+const catalogLabels = { proposer: '需求提出方', category: '工单分类', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态' };
 const otherTaskCategory = '其他';
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
@@ -641,6 +641,10 @@ function demandCatalogPage() {
     `<button type="button" class="button" data-action="demand-catalog-tab" data-id="${key}" aria-pressed="${key === kind}">${title}</button>`).join('');
   const header = heading(PAGE_TITLES.demandCatalog, '维护任务与需求表单中的下拉选项。') +
     `<div class="catalog-tabs" role="group" aria-label="配置类别">${tabs}</div>`;
+  if (kind === 'task_status') {
+    const rows = ACTIVE_TASK_STATUSES.map(status => `<tr><td>${statusBadge(status)}</td></tr>`).join('');
+    return header + panel(label, table([label], rows, '暂无任务状态。'));
+  }
   if (!state.demandCatalog) {
     const error = state.demandCatalogError;
     return header + panel(label, error
@@ -1210,18 +1214,17 @@ function taskForm(task = {}, demand, plan) {
     ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, '', label)).join('')}</select></label>`;
   const priorityField = canEditPriority ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
     isDispatch ? 'required' : '') : '';
+  const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
+  const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form"')
+    : statusBadge(task.status);
   const headingAside = plan ? `<div class="dialog-priority"><span>优先级</span>${priorityBadge(priority)}</div>`
-    : isUpdate ? `<span class="tag">计划投入工时 ${text(withHours(task.planned_hours))}</span>` : '';
+    : isUpdate ? `<div class="dialog-task-meta"><span class="tag">计划投入工时 ${text(withHours(task.planned_hours))}</span>${statusField}</div>` : '';
   const taskOptionsFields = kindField + priorityField + optionKinds.map(kind => taskOptionField(kind, isDispatch)).join('');
   const setupFields = identityFields +
     (taskOptionsFields ? `<div class="form-grid">${taskOptionsFields}</div>` : '') +
     (canEditDetails ? area(descriptionRequired ? '任务描述（必填）' : '任务描述', 'desc', task.desc ?? demand?.descr, descriptionRequired) : '');
-  const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
-  const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status)
-    : details([['状态', statusBadge(task.status), true]], 'task-form-facts');
-  const progressFields = isUpdate && !plan ? statusField : '';
   const scheduleFields = isUpdate ? taskScheduleFields(task, plan) : '';
-  const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields + progressFields) +
+  const fields = (plan ? scheduleFields + setupFields : setupFields + scheduleFields) +
     taskAttachmentFields(task) + choiceStatus;
   const formTitle = demand ? '派发任务' : plan ? '开始规划' : isUpdate ? '更新任务' : '新建任务';
   const context = demand?.code || task.code || '';

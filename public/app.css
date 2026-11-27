@@ -290,6 +290,10 @@ dialog::backdrop { background: #0f183677; }
 .dialog-heading-actions, .dialog-priority { display: flex; align-items: center; gap: 6px; }
 .dialog-heading-actions { flex-shrink: 0; }
 .dialog-priority { color: var(--muted); font-size: .85rem; white-space: nowrap; }
+.dialog-task-meta { display: grid; justify-items: end; gap: 6px; }
+.dialog-task-meta label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dialog-task-meta select { width: auto; min-height: 32px; padding-block: 4px; }
+.dialog-task-meta + .dialog-close { align-self: flex-start; }
 .dialog-close { padding: 1px 6px; background: transparent; border: 0; color: var(--muted); font-size: 1.25rem; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px; }
 .guidelines-layout { display: grid; grid-template-columns: minmax(186px, 220px) minmax(0, 1fr); align-items: start; gap: 18px; }
