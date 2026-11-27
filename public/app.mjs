@@ -975,19 +975,20 @@ function formError(element, message) {
   element.textContent = message;
   element.hidden = !message;
 }
-function modal(title, description, body, locked = false, headingAside = '') {
+function modal(title, description, body, locked = false, headingAside = '', focusTitle = false) {
   const close = locked ? '' : '<button type="button" class="dialog-close" data-action="close" aria-label="关闭">×</button>';
   dialog.dataset.locked = String(locked);
-  dialog.innerHTML = `<div class="dialog-heading"><div class="dialog-heading-text"><h2 id="dialog-title">${text(title)}</h2>${description ? '<p class="muted text-small">' + text(description) + '</p>' : ''}</div>
+  dialog.innerHTML = `<div class="dialog-heading"><div class="dialog-heading-text"><h2 id="dialog-title"${focusTitle ? ' tabindex="-1" autofocus' : ''}>${text(title)}</h2>${description ? '<p class="muted text-small">' + text(description) + '</p>' : ''}</div>
     ${headingAside ? `<div class="dialog-heading-actions">${headingAside}${close}</div>` : close}</div>${body}`;
   if (!dialog.open) dialog.showModal();
+  else if (focusTitle) dialog.querySelector('#dialog-title').focus({ preventScroll: true });
 }
 function modalForm(title, description, fields, onSave, options = {}) {
   const buttons = options.locked ? action('退出登录', 'logout') : action('取消', 'close');
   const secondary = options.secondarySubmit
     ? `<button type="submit" class="button" value="secondary">${text(options.secondarySubmit)}</button>` : '';
   modal(title, description, `<form id="dialog-form"><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions">${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside);
+    <div class="dialog-actions">${buttons}<button type="submit" class="button ${options.danger ? 'danger' : 'primary'}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside, options.focusTitle);
   const form = dialog.querySelector('form');
   const message = form.querySelector('.form-error');
   const submitButtons = [...form.querySelectorAll('[type=submit]')];
@@ -1215,7 +1216,7 @@ function taskForm(task = {}, demand, plan) {
   const priorityField = canEditPriority ? selectField(isDispatch ? '优先级（必填）' : '优先级', 'pri', PRIORITY, priority,
     isDispatch ? 'required' : '') : '';
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
-  const statusField = canChangeStatus ? selectField('状态', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form"')
+  const statusField = canChangeStatus ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
     : statusBadge(task.status);
   const headingAside = plan ? `<div class="dialog-priority"><span>优先级</span>${priorityBadge(priority)}</div>`
     : isUpdate ? `<div class="dialog-task-meta"><span class="tag">计划投入工时 ${text(withHours(task.planned_hours))}</span>${statusField}</div>` : '';
@@ -1289,7 +1290,7 @@ function taskForm(task = {}, demand, plan) {
       throw error;
     }
     toast(completing ? '任务已完成。' : demand ? '任务已派发。' : plan ? '任务已开始。' : isUpdate ? '任务已更新。' : '任务已创建。');
-  }, { submit, headingAside, secondarySubmit: isUpdate && !plan && canChangeStatus ? '完成任务' : '' });
+  }, { submit, headingAside, focusTitle: isUpdate && !plan, secondarySubmit: isUpdate && !plan && canChangeStatus ? '完成任务' : '' });
   if (plan) {
     const dueDisplay = form.querySelector('[data-plan-due]');
     const preview = () => {

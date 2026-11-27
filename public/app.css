@@ -286,14 +286,15 @@ dialog { width: min(calc(100% - 30px), 620px); max-height: min(90dvh, 820px); bo
 dialog::backdrop { background: #0f183677; }
 .dialog-heading { display: flex; gap: 10px; justify-content: space-between; align-items: start; margin-bottom: 13px; }
 .dialog-heading-text { min-width: 0; overflow-wrap: anywhere; }
+.dialog-heading-text h2[autofocus]:focus { outline: none; }
 .dialog-heading p { margin-top: 5px; }
 .dialog-heading-actions, .dialog-priority { display: flex; align-items: center; gap: 6px; }
 .dialog-heading-actions { flex-shrink: 0; }
 .dialog-priority { color: var(--muted); font-size: .85rem; white-space: nowrap; }
-.dialog-task-meta { display: grid; justify-items: end; gap: 6px; }
-.dialog-task-meta label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dialog-heading:has(.dialog-task-meta) { flex-wrap: wrap; }
+.dialog-heading-actions:has(> .dialog-task-meta) { margin-inline-start: auto; }
+.dialog-task-meta { display: flex; align-items: center; gap: 6px; }
 .dialog-task-meta select { width: auto; min-height: 32px; padding-block: 4px; }
-.dialog-task-meta + .dialog-close { align-self: flex-start; }
 .dialog-close { padding: 1px 6px; background: transparent; border: 0; color: var(--muted); font-size: 1.25rem; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px; }
 .guidelines-layout { display: grid; grid-template-columns: minmax(186px, 220px) minmax(0, 1fr); align-items: start; gap: 18px; }
