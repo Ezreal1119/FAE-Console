@@ -13,9 +13,9 @@ const guidelinesScrollHint = $('#guidelines-scroll-hint');
 const STATUS = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求管理', projects: '项目管理', demandCatalog: '基础配置', people: '人员管理', board: '数据看板', account: '我的账号', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
-const catalogLabels = { proj: '项目', proposer: '需求提出方', category: '工单分类', device_type: '设备类型', project_stage: '项目阶段' };
+const catalogLabels = { proposer: '需求提出方', category: '工单分类', device_type: '设备类型', project_stage: '项目阶段' };
 const otherTaskCategory = '其他';
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
@@ -32,12 +32,14 @@ const state = {
   taskSort: null,
   catalog: { teams: [], roles: [] },
   taskCategories: new Set(),
-  demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proj',
+  demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proposer',
+  projectCatalog: null, projectCatalogError: '',
   guidelines: undefined, guidelinesError: '', guidelinesPending: false,
   loadWarnings: []
 };
 let toastTimer;
 let demandCatalogLoad;
+let projectCatalogLoad;
 let guidelinesLoad;
 let guidelinesReachedEnd = false;
 let refreshVersion = 0;
@@ -183,7 +185,9 @@ function showAuth(error = '') {
   state.taskCategories.clear();
   state.demandCatalog = null;
   state.demandCatalogError = '';
-  state.demandCatalogKind = 'proj';
+  state.demandCatalogKind = 'proposer';
+  state.projectCatalog = null;
+  state.projectCatalogError = '';
   state.guidelines = undefined;
   state.guidelinesError = '';
   state.guidelinesPending = false;
@@ -246,6 +250,7 @@ function showWorkspace() {
   $('#loading-view').hidden = true;
   $('#auth-view').hidden = true;
   $('#workspace').hidden = false;
+  $('[data-page="projects"]').hidden = !admin();
   $('[data-page="demandCatalog"]').hidden = !admin();
   const label = myName() || state.user.account;
   $('#avatar').textContent = label.slice(0, 1);
@@ -596,6 +601,71 @@ async function changeDemandOption(kind, operation, name) {
   toast(catalogLabels[kind] + (operation === 'add' ? '已添加。' : '已删除。'));
 }
 
+function projectsPage() {
+  const header = heading(PAGE_TITLES.projects, '', state.projectCatalog ? action('＋ 新建项目', 'project-new', '', 'button primary') : '');
+  if (!state.projectCatalog) {
+    return header + panel('项目列表', state.projectCatalogError
+      ? `<p class="form-error" role="alert">${text(state.projectCatalogError)}</p>` + action('重新加载', 'project-load', '', 'link')
+      : '<p class="empty" role="status">正在加载项目…</p>');
+  }
+  const rows = state.projectCatalog.projects.toSorted((a, b) => sortZh(a.name, b.name)).map(project => `<tr>
+    <td>${action(project.name, 'project-edit', project.name, 'link')}</td><td>${shown(project.stage)}</td>
+    <td>${action('删除', 'project-remove', project.name, 'link danger')}</td></tr>`).join('');
+  return header + panel('项目列表', table(['项目名称', '项目阶段', '操作'], rows, '暂无项目。'));
+}
+
+async function loadProjects() {
+  if (!admin()) return;
+  const session = state.user;
+  state.projectCatalog = null;
+  state.projectCatalogError = '';
+  if (state.page === 'projects') render();
+  const pending = request('/api/admin/projects');
+  projectCatalogLoad = pending;
+  try {
+    const result = await pending;
+    if (projectCatalogLoad === pending && session === state.user) state.projectCatalog = result;
+  } catch (error) {
+    if (projectCatalogLoad === pending && session === state.user) state.projectCatalogError = error.message;
+  }
+  if (projectCatalogLoad === pending && session === state.user && state.page === 'projects') render();
+}
+
+async function changeProject(action, name, stage) {
+  const result = await post('/api/admin/projects/change', { action, name, stage });
+  projectCatalogLoad = undefined;
+  state.projectCatalog = result;
+  if (state.page === 'projects') render();
+  toast({ create: '项目已新建。', update: '项目阶段已保存。', remove: '项目已删除。' }[action]);
+}
+
+function projectForm(project) {
+  if (!admin() || !state.projectCatalog) return;
+  if (!project) {
+    modalForm('新建项目', '', field('项目名称', 'name', '', 'required maxlength="100"'), async values => {
+      const name = trimmed(values.name);
+      if (!name) throw new Error('请填写项目名称。');
+      await changeProject('create', name);
+    });
+    return;
+  }
+  const stages = catalogOptionNames(state.projectCatalog.stages, 'project_stage');
+  const retiredStage = project.stage && !stages.includes(project.stage);
+  const options = `${retiredStage ? `<option selected disabled>${text(project.stage)}（已从基础配置移除）</option>` : ''}` +
+    option('', retiredStage ? null : project.stage ?? '', '未设置') + stages.map(stage => option(stage, project.stage)).join('');
+  modalForm('编辑项目', project.name, `<label>项目阶段<select name="stage">${options}</select></label>`, async values => {
+    if (!Object.hasOwn(values, 'stage')) return;
+    const stage = values.stage || null;
+    if (stage === project.stage) return;
+    try {
+      await changeProject('update', project.name, stage);
+    } catch (error) {
+      if (error.status === 404 || error.status === 409) await loadProjects();
+      throw error;
+    }
+  });
+}
+
 function boardPage() {
   const tasks = state.tasks.filter(canUpdateTaskProgress);
   const done = tasks.filter(task => task.status === '已完成');
@@ -773,7 +843,7 @@ function openGuidelinesNotice() {
   void loadGuidelines();
 }
 
-const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, demandCatalog: demandCatalogPage,
+const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, projects: projectsPage, demandCatalog: demandCatalogPage,
   people: peoplePage, board: boardPage, account: accountPage, guidelines: guidelinesPage };
 function render() {
   if (!state.user) return;
@@ -789,7 +859,7 @@ function render() {
   content.innerHTML = warnings + pages[state.page]();
 }
 function navigate(page) {
-  if (!Object.hasOwn(pages, page) || (page === 'demandCatalog' && !admin())) return;
+  if (!Object.hasOwn(pages, page) || ((page === 'demandCatalog' || page === 'projects') && !admin())) return;
   if (state.page === 'taskLink' && page !== 'taskLink') {
     const url = new URL(location.href);
     url.searchParams.delete('task');
@@ -797,6 +867,7 @@ function navigate(page) {
   }
   state.page = page;
   if (page === 'demandCatalog') void loadDemandCatalog();
+  else if (page === 'projects') void loadProjects();
   else {
     render();
     if (page === 'guidelines') void loadGuidelines();
@@ -1656,6 +1727,16 @@ const actions = {
       if (state.user) await refresh();
     });
   },
+  'project-load': loadProjects,
+  'project-new': () => projectForm(),
+  'project-edit': name => {
+    const project = state.projectCatalog?.projects.find(row => row.name === name);
+    if (project) projectForm(project);
+  },
+  'project-remove': name => {
+    if (!admin() || !state.projectCatalog?.projects.some(project => project.name === name)) return;
+    confirmDelete('删除项目', `确定删除「${name}」？已有任务和需求会保留项目名称。`, () => changeProject('remove', name));
+  },
   'demand-catalog-load': loadDemandCatalog,
   'demand-catalog-tab': kind => {
     if (!Object.hasOwn(catalogLabels, kind)) return;
@@ -1673,7 +1754,7 @@ const actions = {
   },
   'demand-option-remove': id => {
     const [kind, name] = JSON.parse(id);
-    const records = kind === 'proj' || kind === 'proposer' ? '需求' : '任务';
+    const records = kind === 'proposer' ? '需求' : kind === 'project_stage' ? '项目和任务' : '任务';
     confirmDelete('删除' + catalogLabels[kind], '确定删除「' + name + '」？已有' + records + '会保留原值。',
       () => changeDemandOption(kind, 'remove', name));
   },

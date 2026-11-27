@@ -17,7 +17,7 @@ const fields = {
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const defaultPriority = '中';
-const catalogKinds = new Set(['proj', 'proposer', 'category', 'device_type', 'project_stage']);
+const catalogKinds = new Set(['proposer', 'category', 'device_type', 'project_stage']);
 const taskProgressFields = new Set(['status', 'hours', 'result', 'attachment_name', 'attachment_path']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at'];
 const taskClassificationFields = ['pri', 'category', 'device_type'];
@@ -96,6 +96,14 @@ function assignDemandCode(db, demand) {
 
 function demandTaskFields(demand) {
   return { title: demand.title || demand.code, proj: demand.proj ?? null };
+}
+
+function projectCatalog(db) {
+  const assignedStages = db.projectStages ?? {};
+  return {
+    projects: db.demandOptions.proj.map(name => ({ name, stage: Object.hasOwn(assignedStages, name) ? assignedStages[name] : null })),
+    stages: db.demandOptions.project_stage
+  };
 }
 
 function taskHandledAt(user, task) {
@@ -458,6 +466,37 @@ export function openRecords(store, { recordTaskChange } = {}) {
           return { id: user.id, name: profile.display_name, emp_no: profile.emp_no || user.account, is_admin: isAdmin(user) };
         });
       return { options: db.demandOptions, people };
+    },
+
+    projectCatalog: () => projectCatalog(store.read()),
+
+    changeProject({ action, name, stage }) {
+      if (!['create', 'update', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
+      if (action === 'create') name = optionalText(name);
+      if (typeof name !== 'string' || !name) throw new RequestError(400, '请填写项目名称。');
+      if (action === 'update' && typeof stage !== 'string' && stage !== null) {
+        throw new RequestError(400, '请选择项目阶段。');
+      }
+      return store.update(db => {
+        const names = db.demandOptions.proj;
+        const index = names.indexOf(name);
+        if (action === 'create') {
+          if (index !== -1) throw new RequestError(409, '项目名称已存在。');
+          names.push(name);
+        } else {
+          if (index === -1) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
+          if (action === 'update' && stage !== null && !db.demandOptions.project_stage.includes(stage)) {
+            throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
+          }
+          if (action === 'remove') names.splice(index, 1);
+          if (action === 'update' && stage !== null) {
+            db.projectStages = { ...db.projectStages, [name]: stage };
+          } else if (db.projectStages) {
+            delete db.projectStages[name];
+          }
+        }
+        return projectCatalog(db);
+      });
     },
 
     changeDemandOptions({ kind, action, name }) {

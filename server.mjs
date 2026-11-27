@@ -50,7 +50,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-import-template', 'GET'], ['/api/admin/import-members', 'POST'],
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
   ['/api/admin/member-wecom', 'POST'],
-  ['/api/admin/member-role', 'POST'],
+  ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/transfer', 'POST'],
   ['/api/db', 'POST'], ['/api/upload', 'POST']
@@ -190,6 +190,8 @@ function privateApi(path, session, body) {
     case '/api/admin/accounts': return accounts.list();
     case '/api/admin/member-wecom': return accounts.setWecomUserId(session.user, body);
     case '/api/admin/member-role': return accounts.setAdminRole(session.user, body);
+    case '/api/admin/projects': return records.projectCatalog();
+    case '/api/admin/projects/change': return records.changeProject(body);
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
