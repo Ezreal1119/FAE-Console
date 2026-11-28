@@ -4,6 +4,7 @@ import { ACTIVE_TASK_STATUSES, formatPlanningTime, normalizeTaskPriority, planne
 const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const dialog = $('#dialog');
+const projectTemplateConfirmDialog = $('#project-template-confirm-dialog');
 const taskStartDialog = $('#task-start-dialog');
 const taskCompleteDialog = $('#task-complete-dialog');
 const taskUploadHistoryDialog = $('#task-upload-history-dialog');
@@ -221,6 +222,7 @@ function showAuth(error = '') {
   state.taskSort = null;
   state.hiddenTaskFields.clear();
   document.title = '工程小管家';
+  if (projectTemplateConfirmDialog.open) projectTemplateConfirmDialog.close('cancel');
   if (taskStartDialog.open) taskStartDialog.close('cancel');
   if (taskCompleteDialog.open) taskCompleteDialog.close('cancel');
   if (taskUploadHistoryDialog.open) taskUploadHistoryDialog.close();
@@ -987,6 +989,21 @@ function projectDeleteForm(name) {
     }, { danger: true, submit: '确认删除' });
 }
 
+function confirmProjectTemplateChange(label, subtitle) {
+  $('#project-template-confirm-title').textContent = `确认${label}模板需求？`;
+  $('#project-template-confirm-summary').textContent = subtitle;
+  const confirm = projectTemplateConfirmDialog.querySelector('[value="confirm"]');
+  confirm.textContent = '确认' + label;
+  confirm.classList.toggle('danger', label === '删除');
+  confirm.classList.toggle('primary', label !== '删除');
+  projectTemplateConfirmDialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    projectTemplateConfirmDialog.addEventListener('close',
+      () => resolve(projectTemplateConfirmDialog.returnValue === 'confirm'), { once: true });
+    projectTemplateConfirmDialog.showModal();
+  });
+}
+
 function projectRequirementForm(code) {
   const page = state.page;
   const isTemplate = page === 'projectConfig';
@@ -1014,14 +1031,23 @@ function projectRequirementForm(code) {
     }
     toast(action === 'remove' ? '需求已删除。' : '需求已保存。');
   }
-  modalForm(row ? '编辑阶段需求' : '新增阶段需求', subtitle, fields, (values, remove) => {
+  const form = modalForm(row ? '编辑阶段需求' : '新增阶段需求', subtitle, fields, async (values, remove) => {
+    if (!remove && !trimmed(values.description) && !trimmed(values.deliverable)) throw new Error('请填写需求说明或交付内容。');
+    const operation = remove ? 'remove' : row ? 'update' : 'add';
+    if (isTemplate) {
+      const session = state.user;
+      const approved = await confirmProjectTemplateChange(remove ? '删除' : row ? '保存' : '新增', subtitle);
+      if (!approved || state.user !== session || state.page !== page || state.projectTemplate !== detail ||
+          !dialog.open || !dialog.contains(form)) return false;
+      return save(operation, remove ? undefined : values);
+    }
     if (remove) {
       confirmDelete('删除阶段需求', `确定删除「${subtitle}」？`, () => save('remove'));
       return false;
     }
-    if (!trimmed(values.description) && !trimmed(values.deliverable)) throw new Error('请填写需求说明或交付内容。');
-    return save(row ? 'update' : 'add', values);
+    return save(operation, values);
   }, { secondarySubmit: row ? '删除' : undefined });
+  if (isTemplate && row) form.querySelector('[value="secondary"]').formNoValidate = true;
 }
 
 function boardPage() {
@@ -2947,6 +2973,10 @@ taskCompleteDialog.addEventListener('submit', event => {
   result.reportValidity();
 });
 taskCompleteDialog.querySelector('[name=result]').addEventListener('input', event => event.target.setCustomValidity(''));
+projectTemplateConfirmDialog.addEventListener('cancel', event => {
+  event.preventDefault();
+  projectTemplateConfirmDialog.close('cancel');
+});
 dialog.addEventListener('cancel', event => {
   if (dialog.dataset.locked === 'true') event.preventDefault();
 });

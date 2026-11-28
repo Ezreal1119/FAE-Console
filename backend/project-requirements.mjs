@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { RequestError } from './store.mjs';
 
 const stages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
+const legacyInitiationCode = /^立项-/;
 const emptyList = () => ({ next: 1, rows: [] });
 
 function cleanRequirement(input) {
@@ -23,7 +24,8 @@ function storedRequirements(db, name) {
 }
 
 function appendRequirement(stage, list, fields) {
-  const code = `${stage}-${String(list.next++).padStart(3, '0')}`;
+  const prefix = stage === '立项' ? 'LX' : stage;
+  const code = `${prefix}-${String(list.next++).padStart(3, '0')}`;
   list.rows.push({ code, ...fields, revision: randomUUID() });
 }
 
@@ -35,10 +37,22 @@ function buildTemplate(source) {
   }));
 }
 
-export function upgradeProjectRequirementTemplate(store) {
-  const source = store.read().projectRequirementTemplate;
-  if (!source || !stages.some(stage => Array.isArray(source[stage]))) return;
-  store.update(db => { db.projectRequirementTemplate = buildTemplate(source); });
+function initiationRows(db) {
+  return [db.projectRequirementTemplate, ...Object.values(db.projectRequirements ?? {})]
+    .flatMap(lists => lists?.立项?.rows ?? []);
+}
+
+export function upgradeProjectRequirements(store) {
+  const current = store.read();
+  const source = current.projectRequirementTemplate;
+  const legacyTemplate = source && stages.some(stage => Array.isArray(source[stage]));
+  if (!legacyTemplate && !initiationRows(current).some(row => legacyInitiationCode.test(row.code))) return;
+  store.update(db => {
+    if (legacyTemplate) db.projectRequirementTemplate = buildTemplate(source);
+    for (const row of initiationRows(db)) {
+      if (legacyInitiationCode.test(row.code)) row.code = row.code.replace(legacyInitiationCode, 'LX-');
+    }
+  });
 }
 
 export function initializeProjectRequirements(db, name) {

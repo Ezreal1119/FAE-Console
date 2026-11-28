@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { isAdmin, openAccounts, sessionSeconds } from './backend/accounts.mjs';
 import { openAttachments } from './backend/attachments.mjs';
 import { MEMBER_IMPORT_LIMIT_BYTES, readMemberWorkbook } from './backend/member-import.mjs';
-import { seedProjectRequirements, upgradeProjectRequirementTemplate } from './backend/project-requirements.mjs';
+import { seedProjectRequirements, upgradeProjectRequirements } from './backend/project-requirements.mjs';
 import { openRecords } from './backend/records.mjs';
 import { openSftpStorage } from './backend/sftp-storage.mjs';
 import { openStore, RequestError } from './backend/store.mjs';
@@ -19,7 +19,7 @@ const trustProxy = process.env.TRUST_PROXY === '1';
 const sessionCookie = 'fae_console_session';
 const dataDirectory = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : fileURLToPath(new URL('./data/', import.meta.url));
 const store = openStore(dataDirectory);
-upgradeProjectRequirementTemplate(store);
+upgradeProjectRequirements(store);
 if (!store.read().projectRequirementTemplate) {
   await readFile(resolve(dataDirectory, 'npi-stage-seed.json'), 'utf8')
     .then(source => seedProjectRequirements(store, JSON.parse(source)))

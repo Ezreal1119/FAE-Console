@@ -72,6 +72,17 @@
   </div>
 
   <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <dialog id="project-template-confirm-dialog" aria-labelledby="project-template-confirm-title" aria-describedby="project-template-confirm-note">
+    <div class="dialog-heading"><div class="dialog-heading-text">
+      <h2 id="project-template-confirm-title"></h2>
+      <p id="project-template-confirm-summary" class="muted text-small"></p>
+    </div></div>
+    <p id="project-template-confirm-note">此改动将应用到之后新建的项目。</p>
+    <form method="dialog" class="dialog-actions">
+      <button class="button" value="cancel" autofocus>取消</button>
+      <button class="button primary" value="confirm">确认</button>
+    </form>
+  </dialog>
   <dialog id="task-transfer-dialog" aria-labelledby="task-transfer-title">
     <div class="dialog-heading"><div class="dialog-heading-text">
       <h2 id="task-transfer-title">确定转交负责人？</h2>
