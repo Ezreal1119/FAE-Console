@@ -306,18 +306,22 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .project-stage-badge.stage-pvt { background: #f3f0ff; color: #6741d9; }
 .project-stage-badge.stage-mp { background: #e6fcf5; color: #087f5b; }
 .project-device-type { width: min(100%, 240px); }
-.project-stage-table table { min-width: 780px; table-layout: auto; }
+.project-stage-table table { min-width: 680px; table-layout: auto; }
 .project-stage-table th:first-child { width: 92px; }
 .project-stage-table td:first-child { font-weight: 650; white-space: nowrap; }
 .project-stage-table:not(.project-ckd-table) td:nth-child(2) { white-space: pre-line; }
 .project-ckd-table td:is(:nth-child(3), :nth-child(4)) { white-space: pre-wrap; }
 .project-stage-table:not(.project-ckd-table) :is(th, td):nth-child(4),
 .project-ckd-table :is(th, td):nth-child(5) { width: 108px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.project-stage-table:not(.project-template-table, .project-ckd-table) :is(th, td):nth-child(n+5),
-.project-ckd-table:not(.project-template-table) :is(th, td):nth-child(n+6) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-stage-table:not(.project-template-table, .project-ckd-table) :is(th, td):nth-child(5),
+.project-ckd-table:not(.project-template-table) :is(th, td):nth-child(6) { width: 1%; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-req-linked { display: grid; gap: 4px; justify-items: start; }
+.project-req-link-demand .link { font-size: .82rem; white-space: nowrap; text-align: left; }
+.project-req-link-task { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.project-req-link-task .link { font-size: .84rem; text-align: left; }
 .project-template-table table { min-width: 620px; table-layout: fixed; }
 .project-template-table:not(.project-ckd-table) th:nth-child(3) { width: 29%; }
-.project-ckd-table table { min-width: 860px; }
+.project-ckd-table table { min-width: 720px; }
 .project-ckd-table th:nth-child(2) { width: 155px; }
 .project-ckd-table.project-template-table th:nth-child(4) { width: 25%; }
 .project-template-table th:last-child { width: 72px; }

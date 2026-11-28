@@ -1035,19 +1035,22 @@ function projectRequirementTabs(requirements, selected, isTemplate = false) {
 
 function projectRequirementsTable(requirements, isTemplate, hasStepName) {
   const headers = ['编号', ...(hasStepName ? ['步骤名'] : []), '需求说明', '交付内容', '计划投入工时',
-    ...(isTemplate ? ['操作'] : ['需求编号', '任务编号', '任务状态'])];
+    ...(isTemplate ? ['操作'] : ['关联需求 / 任务'])];
   const canEdit = admin();
   const rows = requirements.map(item => {
     const code = text(item.code);
     const edit = `<button type="button" class="link" data-action="project-requirement-edit" data-id="${code}" aria-label="编辑需求 ${code}">${isTemplate ? '编辑' : code}</button>`;
-    const demandCell = item.demand_id && item.demand_code
-      ? action(item.demand_code, 'project-req-demand', item.demand_id, 'link') : '—';
-    const taskCell = item.task_id && item.task_code
-      ? action(item.task_code, 'demand-task', item.task_id, 'link task-code') : '—';
-    const statusCell = item.task_status ? statusBadge(item.task_status) : item.demand_id ? statusBadge('待派发') : '—';
+    const demandLine = item.demand_id && item.demand_code
+      ? `<div class="project-req-link-demand">${action(item.demand_code, 'project-req-demand', item.demand_id, 'link')}</div>` : '';
+    const taskPart = item.task_id && item.task_code
+      ? action(item.task_code, 'demand-task', item.task_id, 'link task-code') : '';
+    const statusPart = item.task_status ? statusBadge(item.task_status) : item.demand_id ? statusBadge('待派发') : '';
+    const taskLine = (taskPart || statusPart)
+      ? `<div class="project-req-link-task">${taskPart}${statusPart}</div>` : '';
+    const linkedCell = (demandLine || taskLine) ? `<div class="project-req-linked">${demandLine}${taskLine}</div>` : '—';
     const stepNameCell = hasStepName ? `<td>${shown(item.step_name)}</td>` : '';
     return `<tr><td>${isTemplate || !canEdit ? code : edit}</td>${stepNameCell}<td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
-      <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : `<td>${demandCell}</td><td>${taskCell}</td><td>${statusCell}</td>`}</tr>`;
+      <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td><td>${isTemplate ? edit : linkedCell}</td></tr>`;
   }).join('');
   return table(headers, rows, '本阶段暂无需求。');
 }
