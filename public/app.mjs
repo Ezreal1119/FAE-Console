@@ -306,6 +306,7 @@ function showWorkspace() {
   $('#loading-view').hidden = true;
   $('#auth-view').hidden = true;
   $('#workspace').hidden = false;
+  $('[data-page="demands"]').hidden = !admin();
   $('[data-page="demandCatalog"]').hidden = !admin();
   $('[data-page="demandApprovals"]').hidden = !demandApprover();
   updateSidebarBadges();
@@ -356,7 +357,7 @@ function consumeRestorePage() {
     if (!saved) return null;
     sessionStorage.removeItem(UPDATE_RESTORE_PAGE_KEY);
     if (!Object.hasOwn(pages, saved)) return null;
-    if ((saved === 'demandCatalog' || saved === 'projectConfig') && !admin()) return null;
+    if ((saved === 'demands' || saved === 'demandCatalog' || saved === 'projectConfig') && !admin()) return null;
     if (saved === 'demandApprovals' && !demandApprover()) return null;
     return saved;
   } catch {
@@ -1985,7 +1986,7 @@ function render() {
   content.innerHTML = warnings + pages[state.page]();
 }
 function navigate(page) {
-  if (!Object.hasOwn(pages, page) || ((page === 'demandCatalog' || page === 'projectConfig') && !admin())) return;
+  if (!Object.hasOwn(pages, page) || ((page === 'demands' || page === 'demandCatalog' || page === 'projectConfig') && !admin())) return;
   if (page === 'demandApprovals' && !demandApprover()) return;
   const queryKey = pageQueryKeys[state.page];
   if (queryKey && page !== state.page) {
