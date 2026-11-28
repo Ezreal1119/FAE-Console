@@ -811,27 +811,32 @@ function demandApprovalRows(demands) {
     </tr>`;
   }).join('');
 }
-const projectApprovalHeaders = ['项目名称', '项目类型', '设备类型', '项目经理', 'NPI', '申请人', '提交时间', '审批状态', '操作'];
+const projectApprovalHeaders = ['申请类型', '项目名称', '项目类型', '设备类型', '阶段 / 经理', 'NPI', '申请人', '提交时间', '审批状态', '操作'];
 function filteredProjectApprovals() {
   const targetStatus = approvalStatusFilterMap[state.filters.projectApprovalStatus] || '';
   return state.projectApplications
     .filter(row => {
       if (targetStatus && (row.status || 'pending') !== targetStatus) return false;
-      return hasText(state.filters.projectApprovalQuery, row.name, row.project_type, row.device_type, row.project_manager, row.npi_manager, row.applicant_name);
+      const kindLabel = row.kind === 'advance' ? '推进阶段' : '新建项目';
+      return hasText(state.filters.projectApprovalQuery, kindLabel, row.name, row.project_type, row.device_type, row.from_stage, row.to_stage, row.project_manager, row.npi_manager, row.applicant_name);
     })
     .toSorted((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
 }
 function projectApprovalRows(apps) {
   return apps.map(app => {
     const isPending = app.status === 'pending';
+    const isAdvance = app.kind === 'advance';
+    const kindTag = isAdvance ? '<span class="tag start">推进阶段</span>' : '<span class="tag">新建项目</span>';
+    const stageOrManager = isAdvance ? `${app.from_stage || '—'} → ${app.to_stage || '—'}` : (app.project_manager || '—');
     const ops = isPending
       ? `<div class="row-actions">${action('通过', 'project-app-approve', app.id, 'link')}${action('驳回', 'project-app-reject', app.id, 'link danger')}</div>`
       : `<span class="muted text-small">${shown(app.reviewed_by_name)}</span>`;
     return `<tr>
+      <td>${kindTag}</td>
       <td>${action(app.name, 'project-app-detail', app.id, 'link')}</td>
       <td>${shown(app.project_type)}</td>
       <td>${shown(app.device_type)}</td>
-      <td>${shown(app.project_manager)}</td>
+      <td>${shown(stageOrManager)}</td>
       <td>${shown(app.npi_manager)}</td>
       <td>${shown(app.applicant_name)}</td>
       <td class="task-date">${shown(attachmentUploadTime(app.created_at))}</td>
@@ -1144,9 +1149,11 @@ function projectDetailPage() {
       .map(type => option(type, project.project_type || '标准项目')).join('');
     const managerOptions = projectSelectOptions(state.projectDetail.projectManagers, 'project_manager', project.project_manager ?? '', '请选择项目经理');
     const npiOptions = projectNpiOptions(state.projectDetail.people, project.npi_manager_id, project.npi_manager);
-    const advanceButton = nextStage
-      ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
-      : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
+    const advanceButton = !nextStage
+      ? '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>'
+      : project.has_pending_advance
+        ? '<button type="button" class="button" disabled title="该项目已有待审批的推进申请">推进审批中</button>'
+        : '<button type="button" class="button success" data-action="project-advance">推进项目</button>';
     config = `<form id="project-stage-form" class="stack">
       <div class="form-grid">
         <label>设备类型<select name="device_type">${deviceOptions}</select></label>
@@ -1370,6 +1377,11 @@ async function changeProject(action, target, payload = {}) {
     state.projectDetail.projectTypes = result.projectTypes;
     state.projectDetail.projectManagers = result.projectManagers;
     state.projectDetail.people = result.people;
+    if (result.pendingApproval) {
+      render();
+      toast('推进项目申请已提交，等待审批。');
+      return result;
+    }
     if (payload.stage !== undefined) {
       state.projectStageTab = null;
       void loadProjectDetail();
@@ -1614,14 +1626,22 @@ function projectRenameForm(projectId) {
 function projectAdvanceForm() {
   if (!admin() || !state.projectDetail) return;
   const { project } = state.projectDetail;
+  if (project.has_pending_advance) {
+    toast('该项目已有待审批的推进申请，请等待审批完成。');
+    return;
+  }
   const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
   const nextStage = nextProjectStage(project, stages);
   if (!nextStage) return;
-  modalForm('推进项目', `是否确定将项目「${project.name}」推进到下一阶段「${nextStage}」，并触发对应阶段的项目任务？`, '', async () => {
+  const isApprover = demandApprover();
+  const promptText = isApprover
+    ? `是否确定将项目「${project.name}」推进到下一阶段「${nextStage}」，并触发对应阶段的项目任务？`
+    : `提交后将进入审批中心，审批通过后将自动将项目「${project.name}」推进到下一阶段「${nextStage}」，并派发对应阶段的项目任务。`;
+  modalForm('推进项目', promptText, '', async () => {
     const form = $('#project-stage-form');
     const payload = { ...projectConfigChanges(form, project), stage: nextStage };
     await changeProject('update', project.id, payload);
-  }, { submit: '确定推进', submitClass: 'success' });
+  }, { submit: isApprover ? '确定推进' : '提交审批', submitClass: isApprover ? 'success' : 'primary' });
 }
 
 function projectConfigChanges(form, project) {
@@ -3257,8 +3277,11 @@ function projectApplicationDetail(id) {
   const app = state.projectApplications.find(item => same(item.id, id));
   if (!app) { toast('未找到这条项目申请。'); return; }
   const isPending = app.status === 'pending';
+  const isAdvance = app.kind === 'advance';
   const info = details([
+    ['申请类型', isAdvance ? '推进阶段' : '新建项目'],
     ['项目名称', app.name],
+    ...(isAdvance ? [['推进阶段', `${app.from_stage || '—'} → ${app.to_stage || '—'}`]] : []),
     ['项目类型', app.project_type],
     ['设备类型', app.device_type],
     ['项目经理', app.project_manager],
@@ -3285,7 +3308,7 @@ function projectApplicationDetail(id) {
   const footer = isPending
     ? `<div class="dialog-actions"><button type="button" class="button danger" data-proj-app-action="reject">驳回</button><button type="button" class="button success" data-proj-app-action="approve">通过</button></div>`
     : '';
-  modal('项目创建申请', app.name, `<div class="stack">${info}${rejectBlock}${customBlock}${filesBlock}</div>${footer}`, false, '', true);
+  modal(isAdvance ? '推进项目申请' : '项目创建申请', app.name, `<div class="stack">${info}${rejectBlock}${customBlock}${filesBlock}</div>${footer}`, false, '', true);
   dialog.querySelector('[data-proj-app-action="approve"]')?.addEventListener('click', () => approveProjectApplication(app.id, () => projectApplicationDetail(app.id)));
   dialog.querySelector('[data-proj-app-action="reject"]')?.addEventListener('click', () => rejectProjectApplication(app.id, () => projectApplicationDetail(app.id)));
 }
@@ -3293,27 +3316,35 @@ function projectApplicationDetail(id) {
 function approveProjectApplication(id, onCancel) {
   const app = state.projectApplications.find(item => same(item.id, id));
   if (!demandApprover() || !app || app.status !== 'pending') return;
-  modalForm('审批通过项目申请', `确定审批通过「${app.applicant_name}」申请新建的${app.project_type}「${app.name}（${app.device_type}）」？通过后将自动创建项目并派发立项任务。`, '', async () => {
+  const isAdvance = app.kind === 'advance';
+  const promptText = isAdvance
+    ? `确定审批通过「${app.applicant_name}」将项目「${app.name}」从「${app.from_stage}」推进至「${app.to_stage}」的申请？通过后将自动推进项目并派发新阶段任务。`
+    : `确定审批通过「${app.applicant_name}」申请新建的${app.project_type}「${app.name}（${app.device_type}）」？通过后将自动创建项目并派发立项任务。`;
+  modalForm(isAdvance ? '审批通过推进申请' : '审批通过项目申请', promptText, '', async () => {
     const result = await post('/api/admin/project-applications/review', { applicationId: app.id, decision: 'approve' });
     state.projectApplications = state.projectApplications.map(item => same(item.id, app.id) ? result.application : item);
     if (result.catalog) state.projectCatalog = result.catalog;
     updateSidebarBadges();
     render();
     void refresh();
-    toast('项目申请已审批通过并创建项目。');
+    toast(isAdvance ? '推进申请已审批通过并派发新阶段任务。' : '项目申请已审批通过并创建项目。');
   }, { submit: '确认通过', submitClass: 'success', onCancel });
 }
 
 function rejectProjectApplication(id, onCancel) {
   const app = state.projectApplications.find(item => same(item.id, id));
   if (!demandApprover() || !app || app.status !== 'pending') return;
-  modalForm('驳回项目申请', `确定驳回「${app.applicant_name}」申请新建的「${app.name}」？`,
+  const isAdvance = app.kind === 'advance';
+  const promptText = isAdvance
+    ? `确定驳回「${app.applicant_name}」将项目「${app.name}」推进至「${app.to_stage}」的申请？`
+    : `确定驳回「${app.applicant_name}」申请新建的「${app.name}」？`;
+  modalForm(isAdvance ? '驳回推进申请' : '驳回项目申请', promptText,
     area('驳回原因（选填）', 'reason', '', false), async values => {
       const result = await post('/api/admin/project-applications/review', { applicationId: app.id, decision: 'reject', reason: optional(values.reason) });
       state.projectApplications = state.projectApplications.map(item => same(item.id, app.id) ? result.application : item);
       updateSidebarBadges();
       render();
-      toast('项目申请已驳回。');
+      toast(isAdvance ? '推进申请已驳回。' : '项目申请已驳回。');
     }, { danger: true, submit: '确认驳回', onCancel });
 }
 

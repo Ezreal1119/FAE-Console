@@ -242,7 +242,8 @@ function projectSummary(db, project) {
     project_type: project.project_type || DEFAULT_PROJECT_TYPE,
     project_manager: project.project_manager ?? null,
     npi_manager_id: validId(project.npi_manager_id) ? project.npi_manager_id : null,
-    npi_manager: npiManagerNameById(db, project.npi_manager_id)
+    npi_manager: npiManagerNameById(db, project.npi_manager_id),
+    has_pending_advance: (db.projectApplications ?? []).some(item => item.kind === 'advance' && item.project_id === project.id && item.status === 'pending')
   };
 }
 
@@ -527,7 +528,12 @@ function notifyUsers(db, recipientIds, { category, event, title, body, actor_nam
 function canExtendTask(db, user, task) {
   if (!ACTIVE_TASK_STATUSES.includes(task.status) || !task.planned_due_at) return false;
   if (isDemandApprover(user, db)) return true;
-  return (task.creator_id ?? task.owner_id) === user.id;
+  if ((task.creator_id ?? task.owner_id) === user.id) return true;
+  if (isAdmin(user)) {
+    const project = resolveProjectForRecord(db, task.project_id, task.proj);
+    if (project && validId(project.npi_manager_id) && project.npi_manager_id === user.id) return true;
+  }
+  return false;
 }
 
 function publicTaskExtension(db, app) {
@@ -557,6 +563,10 @@ function publicTaskExtension(db, app) {
 function publicProjectApplication(db, app) {
   return {
     id: app.id,
+    kind: app.kind === 'advance' ? 'advance' : 'create',
+    project_id: app.project_id ?? null,
+    from_stage: app.from_stage ?? null,
+    to_stage: app.to_stage ?? null,
     name: app.name,
     device_type: app.device_type ?? null,
     project_type: app.project_type || DEFAULT_PROJECT_TYPE,
@@ -1726,8 +1736,60 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
                 throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
               }
               const prevStage = project.stage || allowedStages[0];
-              project.stage = nextStage;
-              if (nextStage !== prevStage) syncProjectStageDemands(db, project, nextStage, recordTaskChange);
+              if (nextStage !== prevStage) {
+                db.projectApplications ??= [];
+                const hasPendingAdvance = db.projectApplications.some(item =>
+                  item.kind === 'advance' && item.project_id === project.id && item.status === 'pending');
+                if (isDemandApprover(user, db)) {
+                  if (hasPendingAdvance) {
+                    throw new RequestError(409, '该项目已有待审批的推进申请，请先前往审批中心处理。');
+                  }
+                  project.stage = nextStage;
+                  syncProjectStageDemands(db, project, nextStage, recordTaskChange);
+                } else {
+                  if (hasPendingAdvance) {
+                    throw new RequestError(409, '该项目已有待审批的推进申请，请等待审批完成后再操作。');
+                  }
+                  db.seq.projectApplication ??= 1;
+                  const timestamp = now();
+                  const applicantName = displayName(db, user);
+                  const app = {
+                    id: db.seq.projectApplication++,
+                    kind: 'advance',
+                    project_id: project.id,
+                    from_stage: prevStage,
+                    to_stage: nextStage,
+                    name: project.name,
+                    device_type: project.device_type ?? null,
+                    project_type: project.project_type || DEFAULT_PROJECT_TYPE,
+                    project_manager: project.project_manager ?? null,
+                    npi_manager_id: validId(project.npi_manager_id) ? project.npi_manager_id : null,
+                    initiation_files: {},
+                    initiation_requirements: [],
+                    applicant_id: user.id,
+                    applicant_name: applicantName,
+                    status: 'pending',
+                    reviewed_by_id: null,
+                    reviewed_by_name: null,
+                    reviewed_at: null,
+                    reject_reason: null,
+                    created_project_id: null,
+                    created_at: timestamp,
+                    updated_at: timestamp
+                  };
+                  db.projectApplications.unshift(app);
+                  notifyUsers(db, demandApproverIds(db), {
+                    category: 'project_approval',
+                    event: 'advance_submitted',
+                    title: `新的推进项目审批申请：${project.name}`,
+                    body: `${applicantName} 申请将${app.project_type}「${project.name}${project.device_type ? `（${project.device_type}）` : ''}」从「${prevStage}」推进至「${nextStage}」，请前往审批中心处理。`,
+                    actor_name: applicantName,
+                    target_type: 'project_application',
+                    target_id: app.id
+                  });
+                  return { pendingApproval: true, application: publicProjectApplication(db, app), ...projectCatalog(db) };
+                }
+              }
             }
           } else if (action === 'rename') {
             if (nextName !== project.name) {
@@ -1796,7 +1858,49 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if (app.status !== 'pending') throw new RequestError(409, '这条项目申请已审批，无需重复操作。');
         const timestamp = now();
         const reviewerName = displayName(db, user);
+        const isAdvance = app.kind === 'advance';
         let createdProject = null;
+        if (isAdvance) {
+          if (decision === 'approve') {
+            const project = (db.projects ?? []).find(item => item.id === app.project_id);
+            if (!project) throw new RequestError(409, '关联项目已不存在，无法审批通过，请驳回该申请。');
+            const allowedStages = projectStageOptions(db, project);
+            if (!allowedStages.includes(app.to_stage)) {
+              throw new RequestError(409, '目标阶段已不可选，无法审批通过，请驳回该申请。');
+            }
+            if ((project.stage || allowedStages[0]) === app.to_stage) {
+              throw new RequestError(409, '该项目已处于目标阶段，无需重复推进，请驳回该申请。');
+            }
+            project.stage = app.to_stage;
+            syncProjectStageDemands(db, project, app.to_stage, recordTaskChange);
+            createdProject = projectSummary(db, project);
+          }
+          app.status = decision === 'approve' ? 'approved' : 'rejected';
+          app.reviewed_by_id = user.id;
+          app.reviewed_by_name = reviewerName;
+          app.reviewed_at = timestamp;
+          app.reject_reason = rejectReason;
+          app.updated_at = timestamp;
+          if (validId(app.applicant_id) && app.applicant_id !== user.id) {
+            const projectExists = (db.projects ?? []).some(item => item.id === app.project_id);
+            notifyUsers(db, [app.applicant_id], {
+              category: 'project_approval',
+              event: decision === 'approve' ? 'advance_approved' : 'advance_rejected',
+              title: decision === 'approve' ? `推进项目申请已通过：${app.name}` : `推进项目申请已驳回：${app.name}`,
+              body: decision === 'approve'
+                ? `${reviewerName} 已审批通过你将「${app.name}」从「${app.from_stage}」推进至「${app.to_stage}」的申请，新阶段需求与任务已自动派发。`
+                : `${reviewerName} 驳回了你将「${app.name}」从「${app.from_stage}」推进至「${app.to_stage}」的申请${rejectReason ? `，驳回原因：${rejectReason}` : ''}。`,
+              actor_name: reviewerName,
+              target_type: projectExists ? 'project' : 'project_application',
+              target_id: projectExists ? app.project_id : app.id
+            });
+          }
+          return {
+            application: publicProjectApplication(db, app),
+            project: createdProject,
+            catalog: projectCatalog(db)
+          };
+        }
         if (decision === 'approve') {
           db.projects ??= [];
           db.seq.project ??= 1;
