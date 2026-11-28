@@ -82,6 +82,8 @@ const apiRoutes = new Map([
   ['/api/admin/projects/requirement-template', 'GET'], ['/api/admin/projects/requirement-template/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/admin/demands/review', 'POST'],
+  ['/api/admin/project-applications', 'GET'], ['/api/admin/project-applications/review', 'POST'],
+  ['/api/messages', 'GET'], ['/api/messages/read', 'POST'],
   ['/api/demands/attachments', 'POST'], ['/api/demands/attachments/delete', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/complete', 'POST'], ['/api/tasks/transfer', 'POST'],
   ['/api/tasks/attachments', 'POST'], ['/api/tasks/attachments/delete', 'POST'], ['/api/tasks/history', 'POST'], ['/api/tasks/comments', 'POST'], ['/api/tasks/comments/change', 'POST'],
@@ -247,6 +249,10 @@ function privateApi(url, session, body) {
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
     case '/api/admin/demands/review': return records.reviewDemand(session.user, body);
+    case '/api/admin/project-applications': return records.listProjectApplications(session.user);
+    case '/api/admin/project-applications/review': return records.reviewProjectApplication(session.user, body);
+    case '/api/messages': return records.listMessages(session.user);
+    case '/api/messages/read': return records.markMessagesRead(session.user, body);
     case '/api/demands/attachments': return records.appendDemandAttachments(session.user, body);
     case '/api/demands/attachments/delete': return records.deleteDemandAttachment(session.user, body);
     case '/api/tasks/plan-preview': return records.previewTaskPlan(session.user, body);

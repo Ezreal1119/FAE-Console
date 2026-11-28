@@ -310,9 +310,24 @@ function autoDispatchProjectDemand(db, project, demand, reqRow, adminUser, times
   taskRow.initial_receiver_id = taskRow.assignee_id;
   taskRow.initial_receiver_name = taskRow.owner_name;
   let filePart = '';
-  if (Array.isArray(deliveryFiles) && deliveryFiles.length && uploader) {
-    bindAttachments(db, uploader, taskRow, 'delivery', deliveryFiles);
-    filePart = `；上传交付文件：${deliveryFiles.map(file => file.name).join('、')}`;
+  if (Array.isArray(deliveryFiles) && deliveryFiles.length) {
+    const appBound = deliveryFiles.filter(file => {
+      const stored = db.attachments.find(item => item.id === file?.id && item.kind === 'delivery' && item.state === 'bound' && item.project_application_id != null);
+      return Boolean(stored);
+    });
+    if (appBound.length) {
+      for (const file of appBound) {
+        const stored = db.attachments.find(item => item.id === file.id);
+        if (stored) {
+          stored.task_id = taskRow.id;
+          delete stored.project_application_id;
+        }
+      }
+      filePart = `；上传交付文件：${appBound.map(file => file.name).join('、')}`;
+    } else if (uploader) {
+      bindAttachments(db, uploader, taskRow, 'delivery', deliveryFiles);
+      filePart = `；上传交付文件：${deliveryFiles.map(file => file.name).join('、')}`;
+    }
   }
   appendTaskHistory(db, dispatcher, taskRow.id, (due
     ? `从项目需求自动派发并开始规划（负责人：${taskRow.owner_name}，计划投入工时：${estimatedHours}h）`
@@ -452,6 +467,55 @@ function demandRequirementAttachments(db, demandId, linkedTasks) {
   const linkedIds = new Set(linkedTasks.map(task => task.id));
   return db.attachments.filter(file => file.state === 'bound' && file.kind === 'requirement' &&
     (file.demand_id === demandId || linkedIds.has(file.task_id)));
+}
+
+function demandApproverIds(db) {
+  return db.users.filter(user => isDemandApprover(user, db)).map(user => user.id);
+}
+
+function notifyUsers(db, recipientIds, { category, event, title, body, actor_name = null, target_type = null, target_id = null }) {
+  const uniqueIds = [...new Set(recipientIds.filter(validId))];
+  if (!uniqueIds.length) return;
+  db.messages ??= [];
+  db.seq.message ??= 1;
+  const timestamp = now();
+  for (const recipientId of uniqueIds) {
+    db.messages.unshift({
+      id: db.seq.message++,
+      recipient_id: recipientId,
+      category,
+      event,
+      title,
+      body,
+      actor_name,
+      target_type,
+      target_id,
+      read_at: null,
+      created_at: timestamp
+    });
+  }
+}
+
+function publicProjectApplication(db, app) {
+  return {
+    id: app.id,
+    name: app.name,
+    device_type: app.device_type ?? null,
+    project_type: app.project_type || DEFAULT_PROJECT_TYPE,
+    project_manager: app.project_manager ?? null,
+    npi_manager_id: validId(app.npi_manager_id) ? app.npi_manager_id : null,
+    npi_manager: npiManagerNameById(db, app.npi_manager_id),
+    initiation_files: app.initiation_files ?? {},
+    initiation_requirements: app.initiation_requirements ?? [],
+    applicant_id: app.applicant_id,
+    applicant_name: app.applicant_name,
+    status: app.status || 'pending',
+    reviewed_by_name: app.reviewed_by_name ?? null,
+    reviewed_at: app.reviewed_at ?? null,
+    reject_reason: app.reject_reason ?? null,
+    created_project_id: app.created_project_id ?? null,
+    created_at: app.created_at ?? null
+  };
 }
 
 function activeAdmins(db) {
@@ -938,6 +1002,18 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           };
         }
         const inserted = insertRecord(db, user, table, patch, recordTaskChange, extra);
+        if (table === 'demands' && op === 'insert' && inserted.row.approval_status === 'pending') {
+          const applicantName = displayName(db, user);
+          notifyUsers(db, demandApproverIds(db), {
+            category: 'demand_approval',
+            event: 'submitted',
+            title: `新的需求审批申请：${inserted.row.code}`,
+            body: `${applicantName} 提交了「${inserted.row.proj}」的需求申请（提出方：${inserted.row.proposer}），请前往审批中心处理。`,
+            actor_name: applicantName,
+            target_type: 'demand',
+            target_id: inserted.row.id
+          });
+        }
         if (table === 'tasks') {
           appendTaskHistory(db, user, inserted.row.id,
             inserted.row.owner_name ? `创建任务（负责人：${inserted.row.owner_name}）` : '创建任务');
@@ -1171,6 +1247,20 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         demand.approved_at = timestamp;
         demand.reject_reason = rejectReason;
         demand.updated_at = timestamp;
+        const recipientId = demand.creator_id ?? demand.owner_id;
+        if (validId(recipientId)) {
+          notifyUsers(db, [recipientId], {
+            category: 'demand_approval',
+            event: decision === 'approve' ? 'approved' : 'rejected',
+            title: decision === 'approve' ? `需求申请已通过：${demand.code}` : `需求申请已驳回：${demand.code}`,
+            body: decision === 'approve'
+              ? `${demand.approved_by_name} 已审批通过你提交的需求「${demand.code}」（${demand.proj}），现在可以进行派发。`
+              : `${demand.approved_by_name} 驳回了你提交的需求「${demand.code}」（${demand.proj}）${rejectReason ? `，驳回原因：${rejectReason}` : ''}。`,
+            actor_name: demand.approved_by_name,
+            target_type: 'demand',
+            target_id: demand.id
+          });
+        }
         return demand;
       });
       return { demand: publicRecord(store.read(), user, 'demands', row) };
@@ -1305,14 +1395,69 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         db.seq.project ??= 1;
         if (action === 'create') {
           const tuple = projectTupleKey(name, deviceType, projectType);
-          if (db.projects.some(item => projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
-            throw new RequestError(409, '相同项目名称、设备类型和项目类型的项目已存在。');
+          if (db.projects.some(item => projectTupleKey(item.name, item.device_type, item.project_type) === tuple) ||
+              (db.projectApplications ?? []).some(item => item.status === 'pending' && projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
+            throw new RequestError(409, '相同项目名称、设备类型和项目类型的项目或待审批申请已存在。');
           }
           if (!(db.demandOptions.project_manager ?? []).includes(manager)) {
             throw new RequestError(409, '项目经理已不可选，请刷新后重试。');
           }
           taskMember(db, npiId, 'NPI');
           const firstStage = projectTemplateStages(projectType)[0];
+          if (!isDemandApprover(user, db)) {
+            db.projectApplications ??= [];
+            db.seq.projectApplication ??= 1;
+            const appId = db.seq.projectApplication++;
+            const cleanedReqs = [];
+            for (const item of initiationRequirements) {
+              if (!item || typeof item !== 'object' || Array.isArray(item) ||
+                  (item.files !== undefined && !Array.isArray(item.files))) {
+                throw new RequestError(400, '新增立项需求或交付文件参数无效。');
+              }
+              const { description: reqDesc, deliverable, planned_hours, step_name, files = [] } = item;
+              if (files.length) bindAttachments(db, user, { id: appId }, 'delivery', files, { targetKey: 'project_application_id' });
+              cleanedReqs.push({ description: reqDesc ?? '', deliverable: deliverable ?? '', planned_hours: planned_hours ?? null, step_name: step_name ?? '', files });
+            }
+            const boundInitFiles = {};
+            for (const [code, files] of Object.entries(initiationFiles ?? {})) {
+              if (!Array.isArray(files) || !files.length) continue;
+              bindAttachments(db, user, { id: appId }, 'delivery', files, { targetKey: 'project_application_id' });
+              boundInitFiles[code] = files;
+            }
+            const timestamp = now();
+            const applicantName = displayName(db, user);
+            const app = {
+              id: appId,
+              name,
+              device_type: deviceType,
+              project_type: projectType,
+              project_manager: manager,
+              npi_manager_id: npiId,
+              initiation_files: boundInitFiles,
+              initiation_requirements: cleanedReqs,
+              applicant_id: user.id,
+              applicant_name: applicantName,
+              status: 'pending',
+              reviewed_by_id: null,
+              reviewed_by_name: null,
+              reviewed_at: null,
+              reject_reason: null,
+              created_project_id: null,
+              created_at: timestamp,
+              updated_at: timestamp
+            };
+            db.projectApplications.unshift(app);
+            notifyUsers(db, demandApproverIds(db), {
+              category: 'project_approval',
+              event: 'submitted',
+              title: `新的项目创建申请：${name}`,
+              body: `${applicantName} 申请新建${projectType}「${name}（${deviceType}）」，请前往审批中心处理。`,
+              actor_name: applicantName,
+              target_type: 'project_application',
+              target_id: app.id
+            });
+            return { ...projectCatalog(db), pendingApproval: true, application: publicProjectApplication(db, app) };
+          }
           const project = {
             id: db.seq.project++,
             name,
@@ -1435,6 +1580,121 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       });
       if (removedAttachments) void cleanupAttachments?.();
       return result;
+    },
+
+    listProjectApplications(user) {
+      const db = store.read();
+      if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以查看项目审批。');
+      const applications = (db.projectApplications ?? [])
+        .map(app => publicProjectApplication(db, app))
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+      return { applications };
+    },
+
+    reviewProjectApplication(user, { applicationId, decision, reason }) {
+      const id = recordId(applicationId);
+      if (!['approve', 'reject'].includes(decision)) throw new RequestError(400, '审批操作无效。');
+      const rejectReason = decision === 'reject' ? optionalText(reason, 500) : null;
+      let removedAttachments = false;
+      const result = store.update(db => {
+        if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以审批项目申请。');
+        const app = (db.projectApplications ?? []).find(item => item.id === id);
+        if (!app) throw new RequestError(404, '未找到这条项目申请。');
+        if (app.status !== 'pending') throw new RequestError(409, '这条项目申请已审批，无需重复操作。');
+        const timestamp = now();
+        const reviewerName = displayName(db, user);
+        let createdProject = null;
+        if (decision === 'approve') {
+          db.projects ??= [];
+          db.seq.project ??= 1;
+          const tuple = projectTupleKey(app.name, app.device_type, app.project_type);
+          if (db.projects.some(item => projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
+            throw new RequestError(409, '相同项目名称、设备类型和项目类型的项目已存在。');
+          }
+          taskMember(db, app.npi_manager_id, 'NPI');
+          const firstStage = projectTemplateStages(app.project_type)[0];
+          const project = {
+            id: db.seq.project++,
+            name: app.name,
+            stage: firstStage,
+            description: null,
+            device_type: app.device_type,
+            project_type: app.project_type,
+            project_manager: app.project_manager,
+            npi_manager_id: app.npi_manager_id
+          };
+          db.projects.push(project);
+          syncDemandOptionProjects(db);
+          const lists = initializeProjectRequirements(db, project.id, project.project_type);
+          const filesByCode = { ...(app.initiation_files ?? {}) };
+          for (const item of app.initiation_requirements ?? []) {
+            const { description: reqDesc, deliverable, planned_hours, step_name, files } = item;
+            changeProjectRequirement(db, { projectKey: project.id, stage: firstStage, action: 'add',
+              description: reqDesc, deliverable, planned_hours, step_name });
+            filesByCode[lists[firstStage].rows.at(-1).code] = files;
+          }
+          syncProjectStageDemands(db, project, firstStage, recordTaskChange, filesByCode, user);
+          app.created_project_id = project.id;
+          createdProject = projectSummary(db, project);
+        } else {
+          for (const file of db.attachments) {
+            if (file.project_application_id === app.id && file.state === 'bound') {
+              file.state = 'deleting';
+              removedAttachments = true;
+            }
+          }
+        }
+        app.status = decision === 'approve' ? 'approved' : 'rejected';
+        app.reviewed_by_id = user.id;
+        app.reviewed_by_name = reviewerName;
+        app.reviewed_at = timestamp;
+        app.reject_reason = rejectReason;
+        app.updated_at = timestamp;
+        if (validId(app.applicant_id)) {
+          notifyUsers(db, [app.applicant_id], {
+            category: 'project_approval',
+            event: decision === 'approve' ? 'approved' : 'rejected',
+            title: decision === 'approve' ? `新建项目申请已通过：${app.name}` : `新建项目申请已驳回：${app.name}`,
+            body: decision === 'approve'
+              ? `${reviewerName} 已审批通过你申请新建的${app.project_type}「${app.name}（${app.device_type}）」，项目已自动创建并派发立项任务。`
+              : `${reviewerName} 驳回了你申请新建的${app.project_type}「${app.name}（${app.device_type}）」${rejectReason ? `，驳回原因：${rejectReason}` : ''}。`,
+            actor_name: reviewerName,
+            target_type: decision === 'approve' ? 'project' : 'project_application',
+            target_id: decision === 'approve' ? app.created_project_id : app.id
+          });
+        }
+        return {
+          application: publicProjectApplication(db, app),
+          project: createdProject,
+          catalog: projectCatalog(db)
+        };
+      });
+      if (removedAttachments) void cleanupAttachments?.();
+      return result;
+    },
+
+    listMessages(user) {
+      const db = store.read();
+      const messages = (db.messages ?? [])
+        .filter(item => item.recipient_id === user.id)
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+      const unreadCount = messages.filter(item => !item.read_at).length;
+      return { messages, unreadCount };
+    },
+
+    markMessagesRead(user, { id, all } = {}) {
+      const targetId = id != null ? recordId(id) : null;
+      return store.update(db => {
+        const timestamp = now();
+        for (const item of db.messages ?? []) {
+          if (item.recipient_id !== user.id || item.read_at) continue;
+          if (all === true || (targetId != null && item.id === targetId)) {
+            item.read_at = timestamp;
+          }
+        }
+        const unreadCount = (db.messages ?? []).filter(item => item.recipient_id === user.id && !item.read_at).length;
+        return { unreadCount };
+      });
     },
 
     appendProjectAttachments(user, { projectId, id, name, files }) {

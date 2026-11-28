@@ -19,7 +19,7 @@ const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
 const TASK_KINDS = { L: '临时任务', W: '工作任务', P: '项目任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', demandApprovals: '需求审批', projects: '项目中心', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', demandApprovals: '审批中心', messages: '消息中心', projects: '项目中心', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理' };
 const PROJECT_TYPES = ['标准项目', 'SKD', 'CKD'];
@@ -29,12 +29,16 @@ const pageQueryKeys = { taskLink: 'task', projectDetail: 'project', projectConfi
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
   taskQuery: '', taskStatus: '未完成', taskPriority: '', taskStage: '', taskTeam: '', taskScope: 'mine',
-  demandQuery: '', demandType: '', approvalQuery: '', approvalStatus: '', peopleQuery: '', peopleTeam: ''
+  demandQuery: '', demandType: '', approvalQuery: '', approvalStatus: '',
+  projectApprovalQuery: '', projectApprovalStatus: '',
+  messageQuery: '', messageCategory: '',
+  peopleQuery: '', peopleTeam: ''
 };
 const listPageSize = 10;
-const firstListPages = { home: 1, tasks: 1, demands: 1, demandApprovals: 1 };
+const firstListPages = { home: 1, tasks: 1, demands: 1, demandApprovals: 1, projectApprovals: 1, messages: 1 };
 const state = {
-  user: null, tasks: [], demands: [], profiles: [], accounts: [], page: 'home', mode: 'login',
+  user: null, tasks: [], demands: [], profiles: [], accounts: [], messages: [], unreadMessages: 0, projectApplications: [],
+  page: 'home', mode: 'login', approvalTab: 'demands',
   registrationEnabled: false,
   filters: { ...defaultFilters },
   listPages: { ...firstListPages },
@@ -202,6 +206,10 @@ function showAuth(error = '') {
   state.demands = [];
   state.profiles = [];
   state.accounts = [];
+  state.messages = [];
+  state.unreadMessages = 0;
+  state.projectApplications = [];
+  state.approvalTab = 'demands';
   state.demandCatalog = null;
   state.demandCatalogError = '';
   state.demandCatalogKind = 'proposer';
@@ -277,12 +285,30 @@ function setAuthMode(mode) {
   });
   formError($('#auth-error'), '');
 }
+function updateSidebarBadges() {
+  const msgBadge = $('#nav-messages-badge');
+  if (msgBadge) {
+    const unread = state.unreadMessages || 0;
+    msgBadge.hidden = unread <= 0;
+    msgBadge.textContent = unread > 99 ? '99+' : String(unread);
+  }
+  const appBadge = $('#nav-approvals-badge');
+  if (appBadge) {
+    const pendingDemands = state.demands.filter(row => row.approval_status === 'pending').length;
+    const pendingProjects = state.projectApplications.filter(row => row.status === 'pending').length;
+    const total = demandApprover() ? pendingDemands + pendingProjects : 0;
+    appBadge.hidden = total <= 0;
+    appBadge.textContent = total > 99 ? '99+' : String(total);
+  }
+}
+
 function showWorkspace() {
   $('#loading-view').hidden = true;
   $('#auth-view').hidden = true;
   $('#workspace').hidden = false;
   $('[data-page="demandCatalog"]').hidden = !admin();
   $('[data-page="demandApprovals"]').hidden = !demandApprover();
+  updateSidebarBadges();
   const label = myName() || state.user.account;
   $('#user-name').textContent = label;
   $('#user-account').textContent = state.user.account || '';
@@ -411,8 +437,14 @@ async function refresh() {
   const session = state.user;
   const version = ++refreshVersion;
   const previous = { tasks: state.tasks, demands: state.demands };
-  const requests = [['tasks', '任务', db('tasks', 'select')], ['demands', '需求', db('demands', 'select')], ['profiles', '人员档案', db('profiles', 'select')]];
+  const requests = [
+    ['tasks', '任务', db('tasks', 'select')],
+    ['demands', '需求', db('demands', 'select')],
+    ['profiles', '人员档案', db('profiles', 'select')],
+    ['messages', '消息', request('/api/messages')]
+  ];
   if (admin()) requests.push(['accounts', '账号', request('/api/admin/accounts')]);
+  if (demandApprover()) requests.push(['projectApplications', '项目审批', request('/api/admin/project-applications')]);
   const results = await Promise.allSettled(requests.map(row => row[2]));
   if (session !== state.user || version !== refreshVersion) return;
   state.workDataLoaded = true;
@@ -420,6 +452,19 @@ async function refresh() {
   results.forEach((result, index) => {
     const [field, label] = requests[index];
     if (Object.hasOwn(previous, field) && state[field] !== previous[field]) return;
+    if (field === 'messages') {
+      if (result.status === 'fulfilled' && Array.isArray(result.value?.messages)) {
+        state.messages = result.value.messages;
+        state.unreadMessages = Number(result.value.unreadCount) || 0;
+      }
+      return;
+    }
+    if (field === 'projectApplications') {
+      if (result.status === 'fulfilled' && Array.isArray(result.value?.applications)) {
+        state.projectApplications = result.value.applications;
+      }
+      return;
+    }
     const rows = result.value?.[field === 'accounts' ? 'accounts' : 'data'];
     if (result.status === 'fulfilled' && Array.isArray(rows)) {
       if (field === 'tasks') {
@@ -753,11 +798,90 @@ function demandApprovalRows(demands) {
     </tr>`;
   }).join('');
 }
+const projectApprovalHeaders = ['项目名称', '项目类型', '设备类型', '项目经理', 'NPI', '申请人', '提交时间', '审批状态', '操作'];
+function filteredProjectApprovals() {
+  const targetStatus = approvalStatusFilterMap[state.filters.projectApprovalStatus] || '';
+  return state.projectApplications
+    .filter(row => {
+      if (targetStatus && (row.status || 'pending') !== targetStatus) return false;
+      return hasText(state.filters.projectApprovalQuery, row.name, row.project_type, row.device_type, row.project_manager, row.npi_manager, row.applicant_name);
+    })
+    .toSorted((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+}
+function projectApprovalRows(apps) {
+  return apps.map(app => {
+    const isPending = app.status === 'pending';
+    const ops = isPending
+      ? `<div class="row-actions">${action('通过', 'project-app-approve', app.id, 'link')}${action('驳回', 'project-app-reject', app.id, 'link danger')}</div>`
+      : `<span class="muted text-small">${shown(app.reviewed_by_name)}</span>`;
+    return `<tr>
+      <td>${action(app.name, 'project-app-detail', app.id, 'link')}</td>
+      <td>${shown(app.project_type)}</td>
+      <td>${shown(app.device_type)}</td>
+      <td>${shown(app.project_manager)}</td>
+      <td>${shown(app.npi_manager)}</td>
+      <td>${shown(app.applicant_name)}</td>
+      <td class="task-date">${shown(attachmentUploadTime(app.created_at))}</td>
+      <td>${approvalStatusBadge(app.status)}</td>
+      <td>${ops}</td>
+    </tr>`;
+  }).join('');
+}
+
 function demandApprovalsPage() {
+  const pendingDemands = state.demands.filter(row => row.approval_status === 'pending').length;
+  const pendingProjects = state.projectApplications.filter(row => row.status === 'pending').length;
+  const tab = state.approvalTab === 'projects' ? 'projects' : 'demands';
+  const demandBadge = pendingDemands ? `<span class="tab-badge">${pendingDemands > 99 ? '99+' : pendingDemands}</span>` : '';
+  const projectBadge = pendingProjects ? `<span class="tab-badge">${pendingProjects > 99 ? '99+' : pendingProjects}</span>` : '';
+  const tabs = `<div class="catalog-tabs" role="group" aria-label="审批类型">
+    <button type="button" class="button" data-action="approval-tab" data-id="demands" aria-pressed="${tab === 'demands'}">需求审批${demandBadge}</button>
+    <button type="button" class="button" data-action="approval-tab" data-id="projects" aria-pressed="${tab === 'projects'}">项目审批${projectBadge}</button>
+  </div>`;
+  const header = heading('审批中心', '集中处理需求申请与新建项目申请，按提交时间倒序展示。', action('刷新', 'refresh')) + tabs;
+  if (tab === 'projects') {
+    const statusFilter = filterSelect('projectApprovalStatus', '按审批状态筛选', ['待审批', '已通过', '已驳回'], '全部状态');
+    const toolbar = `<div class="toolbar">${search('projectApprovalQuery', '搜索项目名称、类型、设备类型、经理或申请人')}${statusFilter}</div>`;
+    return header + pagedListPanel('projectApprovals', toolbar);
+  }
   const statusFilter = filterSelect('approvalStatus', '按审批状态筛选', ['待审批', '已通过', '已驳回'], '全部状态');
   const toolbar = `<div class="toolbar">${search('approvalQuery', '搜索需求编码、项目、申请人或说明')}${statusFilter}</div>`;
-  return heading('需求审批', '审批管理员提交的需求申请，按提交时间倒序展示。', action('刷新', 'refresh')) +
-    pagedListPanel('demandApprovals', toolbar);
+  return header + pagedListPanel('demandApprovals', toolbar);
+}
+
+const messageCategoryLabels = { demand_approval: '需求审批', project_approval: '项目审批' };
+const messageCategoryFilterMap = { 需求审批: 'demand_approval', 项目审批: 'project_approval' };
+const messageHeaders = ['状态', '类别', '消息内容', '时间', '操作'];
+function filteredMessages() {
+  const cat = messageCategoryFilterMap[state.filters.messageCategory] || '';
+  return state.messages.filter(item => {
+    if (cat && item.category !== cat) return false;
+    return hasText(state.filters.messageQuery, item.title, item.body, item.actor_name, messageCategoryLabels[item.category]);
+  });
+}
+function messageRows(list) {
+  return list.map(item => {
+    const unread = !item.read_at;
+    const statusTag = unread ? '<span class="tag danger">未读</span>' : '<span class="tag">已读</span>';
+    const viewBtn = (item.target_type === 'demand' || item.target_type === 'project' || (item.target_type === 'project_application' && demandApprover()))
+      ? action('查看', 'message-open', item.id, 'link') : '';
+    const readBtn = unread ? action('标为已读', 'message-read', item.id, 'link') : '';
+    const ops = (viewBtn || readBtn) ? `<div class="row-actions">${viewBtn}${readBtn}</div>` : '—';
+    return `<tr class="${unread ? 'message-unread' : ''}">
+      <td>${statusTag}</td>
+      <td>${shown(messageCategoryLabels[item.category] || '系统通知')}</td>
+      <td><div class="message-title">${text(item.title)}</div><div class="message-body">${text(item.body)}</div></td>
+      <td class="task-date">${shown(attachmentUploadTime(item.created_at))}</td>
+      <td>${ops}</td>
+    </tr>`;
+  }).join('');
+}
+function messagesPage() {
+  const categoryFilter = filterSelect('messageCategory', '按消息类别筛选', ['需求审批', '项目审批'], '全部类别');
+  const toolbar = `<div class="toolbar">${search('messageQuery', '搜索消息标题、内容或处理人')}${categoryFilter}</div>`;
+  const readAllBtn = `<button type="button" class="button" data-action="messages-read-all"${state.unreadMessages ? '' : ' disabled'}>全部标为已读</button>`;
+  return heading('消息中心', '记录需求与项目审批申请、通过及驳回通知（永久留痕）。', action('刷新', 'refresh') + readAllBtn) +
+    pagedListPanel('messages', toolbar);
 }
 
 function handledTasks() {
@@ -776,8 +900,14 @@ const pagedLists = {
   home: { id: 'handled', title: '我经手的任务', headers: ['任务编号', '项目', '项目阶段', '状态', '优先级', '计划完成', '当前负责人', '任务描述'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
   tasks: { id: 'task', title: '任务列表', get headers() { return visibleTaskColumns(); }, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
   demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' },
-  demandApprovals: { id: 'approval', title: '审批列表', headers: demandApprovalHeaders, items: filteredDemandApprovals, rows: demandApprovalRows, empty: '暂无需求审批记录。' }
+  demandApprovals: { id: 'approval', title: '需求审批列表', headers: demandApprovalHeaders, items: filteredDemandApprovals, rows: demandApprovalRows, empty: '暂无需求审批记录。' },
+  projectApprovals: { id: 'project-approval', title: '项目审批列表', headers: projectApprovalHeaders, items: filteredProjectApprovals, rows: projectApprovalRows, empty: '暂无项目审批记录。' },
+  messages: { id: 'message', title: '消息列表', headers: messageHeaders, items: filteredMessages, rows: messageRows, empty: '暂无消息记录。' }
 };
+function activePagedListKey() {
+  if (state.page === 'demandApprovals') return state.approvalTab === 'projects' ? 'projectApprovals' : 'demandApprovals';
+  return Object.hasOwn(pagedLists, state.page) ? state.page : null;
+}
 function listPage(key) {
   const { items, rows } = pagedLists[key];
   const matches = items();
@@ -1192,7 +1322,8 @@ async function changeProject(action, target, payload = {}) {
   if (action === 'create' || payload.stage !== undefined) {
     void refresh();
   }
-  const message = action === 'create' ? '项目已新建。'
+  const message = action === 'create'
+    ? (result.pendingApproval ? '新建项目申请已提交，等待审批。' : '项目已新建。')
     : payload.stage !== undefined ? '项目阶段已保存。' : '项目配置已保存。';
   toast(message);
 }
@@ -1240,7 +1371,13 @@ function projectForm(initial = {}) {
     const totalFiles = activeFiles.reduce((sum, [, list]) => sum + list.length, 0);
     const confirmFields = totalFiles ? uploadProgress : '';
     const firstStage = projectType === 'CKD' ? 'P1' : '立项';
-    const confirmForm = modalForm('确认新建项目', `是否确定新建${projectType}「${name}（${deviceType}）」？系统将自动创建${firstStage}阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`, confirmFields, async () => {
+    const isApprover = demandApprover();
+    const confirmTitle = isApprover ? '确认新建项目' : '确认提交新建项目申请';
+    const confirmDesc = isApprover
+      ? `是否确定新建${projectType}「${name}（${deviceType}）」？系统将自动创建${firstStage}阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`
+      : `是否确定提交新建${projectType}「${name}（${deviceType}）」的申请？审批通过后将自动创建项目并派发${firstStage}阶段任务${totalFiles ? `，同时附带 ${totalFiles} 份交付文件` : ''}。`;
+    const confirmSubmitLabel = isApprover ? '确定新建' : '提交申请';
+    const confirmForm = modalForm(confirmTitle, confirmDesc, confirmFields, async () => {
       const progress = confirmForm.querySelector('[data-upload-progress]');
       const uploadedByItem = {};
       const uploadedIds = [];
@@ -1273,12 +1410,12 @@ function projectForm(initial = {}) {
       } finally {
         if (progress) progress.hidden = true;
       }
-    }, { submit: '确定新建', onCancel: () => projectForm({
+    }, { submit: confirmSubmitLabel, onCancel: () => projectForm({
       name, device_type: deviceType, project_type: projectType, project_manager: projectManager, npi_manager_id: npiManagerId,
       npi_label: npiLabel, selectedFiles, draftsByType
     }) });
     return false;
-  }, { submit: '确定新建' });
+  }, { submit: demandApprover() ? '确定新建' : '提交申请' });
   devicePicker = bindChoice(form.querySelector('[data-choice=device_type]'), {
     value: values0.device_type ?? null, label: values0.device_type ?? ''
   }, { allowCustom: true });
@@ -1831,7 +1968,7 @@ function openGuidelinesNotice() {
   void loadGuidelines();
 }
 
-const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, demandApprovals: demandApprovalsPage, projects: projectsPage, projectDetail: projectDetailPage, projectConfig: projectConfigPage, demandCatalog: demandCatalogPage,
+const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, demandApprovals: demandApprovalsPage, messages: messagesPage, projects: projectsPage, projectDetail: projectDetailPage, projectConfig: projectConfigPage, demandCatalog: demandCatalogPage,
   people: peoplePage, board: boardPage, guidelines: guidelinesPage };
 function render() {
   if (!state.user) return;
@@ -1867,7 +2004,7 @@ function navigate(page) {
   else {
     render();
     if (page === 'guidelines') void loadGuidelines();
-    if (['home', 'tasks', 'taskLink', 'demands', 'demandApprovals', 'people'].includes(page) ||
+    if (['home', 'tasks', 'taskLink', 'demands', 'demandApprovals', 'messages', 'people'].includes(page) ||
         (!state.workDataLoaded && ['board', 'account'].includes(page))) void refresh();
   }
 }
@@ -1961,6 +2098,7 @@ function getRow(key, id) {
 function updateRow(key, row) {
   const existing = state[key].findIndex(item => same(item.id, row.id));
   state[key] = existing === -1 ? [row, ...state[key]] : state[key].map((item, index) => index === existing ? row : item);
+  updateSidebarBadges();
   render();
 }
 async function removeRow(tableName, row, success) {
@@ -2985,6 +3123,106 @@ function confirmDeleteDemand(row, onCancel) {
   }, onCancel ? { onCancel } : {});
 }
 
+function projectApplicationDetail(id) {
+  const app = state.projectApplications.find(item => same(item.id, id));
+  if (!app) { toast('未找到这条项目申请。'); return; }
+  const isPending = app.status === 'pending';
+  const info = details([
+    ['项目名称', app.name],
+    ['项目类型', app.project_type],
+    ['设备类型', app.device_type],
+    ['项目经理', app.project_manager],
+    ['NPI', app.npi_manager],
+    ['申请人', app.applicant_name],
+    ['提交时间', attachmentUploadTime(app.created_at)],
+    ['审批状态', approvalStatusBadge(app.status), true],
+    ...(app.reviewed_by_name ? [['审批人', app.reviewed_by_name]] : [])
+  ]);
+  const rejectBlock = app.status === 'rejected' && app.reject_reason
+    ? `<div class="details-list"><div class="detail-item"><strong>驳回原因</strong><p class="text-red">${shown(app.reject_reason)}</p></div></div>` : '';
+  const customReqs = app.initiation_requirements ?? [];
+  const customBlock = customReqs.length
+    ? `<div class="details-list"><div class="detail-item"><strong>自定义立项需求（${customReqs.length} 项）</strong>${customReqs.map(req =>
+        `<p class="muted text-small">${text((req.step_name ? req.step_name + ' · ' : '') + (req.description || req.deliverable || ''))}${req.planned_hours != null ? `（${req.planned_hours} 小时）` : ''}</p>`).join('')}</div></div>`
+    : '';
+  const fileNames = [
+    ...Object.values(app.initiation_files ?? {}).flat(),
+    ...customReqs.flatMap(req => req.files ?? [])
+  ].map(file => file.name);
+  const filesBlock = fileNames.length
+    ? `<div class="details-list"><div class="detail-item"><strong>附带立项交付文件（${fileNames.length} 份）</strong><p class="muted text-small">${text(fileNames.join('、'))}</p></div></div>`
+    : '';
+  const footer = isPending
+    ? `<div class="dialog-actions"><button type="button" class="button danger" data-proj-app-action="reject">驳回</button><button type="button" class="button success" data-proj-app-action="approve">通过</button></div>`
+    : '';
+  modal('项目创建申请', app.name, `<div class="stack">${info}${rejectBlock}${customBlock}${filesBlock}</div>${footer}`, false, '', true);
+  dialog.querySelector('[data-proj-app-action="approve"]')?.addEventListener('click', () => approveProjectApplication(app.id, () => projectApplicationDetail(app.id)));
+  dialog.querySelector('[data-proj-app-action="reject"]')?.addEventListener('click', () => rejectProjectApplication(app.id, () => projectApplicationDetail(app.id)));
+}
+
+function approveProjectApplication(id, onCancel) {
+  const app = state.projectApplications.find(item => same(item.id, id));
+  if (!demandApprover() || !app || app.status !== 'pending') return;
+  modalForm('审批通过项目申请', `确定审批通过「${app.applicant_name}」申请新建的${app.project_type}「${app.name}（${app.device_type}）」？通过后将自动创建项目并派发立项任务。`, '', async () => {
+    const result = await post('/api/admin/project-applications/review', { applicationId: app.id, decision: 'approve' });
+    state.projectApplications = state.projectApplications.map(item => same(item.id, app.id) ? result.application : item);
+    if (result.catalog) state.projectCatalog = result.catalog;
+    updateSidebarBadges();
+    render();
+    void refresh();
+    toast('项目申请已审批通过并创建项目。');
+  }, { submit: '确认通过', submitClass: 'success', onCancel });
+}
+
+function rejectProjectApplication(id, onCancel) {
+  const app = state.projectApplications.find(item => same(item.id, id));
+  if (!demandApprover() || !app || app.status !== 'pending') return;
+  modalForm('驳回项目申请', `确定驳回「${app.applicant_name}」申请新建的「${app.name}」？`,
+    area('驳回原因（选填）', 'reason', '', false), async values => {
+      const result = await post('/api/admin/project-applications/review', { applicationId: app.id, decision: 'reject', reason: optional(values.reason) });
+      state.projectApplications = state.projectApplications.map(item => same(item.id, app.id) ? result.application : item);
+      updateSidebarBadges();
+      render();
+      toast('项目申请已驳回。');
+    }, { danger: true, submit: '确认驳回', onCancel });
+}
+
+async function markMessageRead(id) {
+  const msg = state.messages.find(item => same(item.id, id));
+  if (!msg || msg.read_at) return;
+  const result = await post('/api/messages/read', { id: msg.id });
+  msg.read_at = new Date().toISOString();
+  state.unreadMessages = Number(result.unreadCount) || 0;
+  updateSidebarBadges();
+  if (state.page === 'messages') render();
+}
+
+async function markAllMessagesRead() {
+  if (!state.unreadMessages) return;
+  const result = await post('/api/messages/read', { all: true });
+  const nowIso = new Date().toISOString();
+  for (const msg of state.messages) if (!msg.read_at) msg.read_at = nowIso;
+  state.unreadMessages = Number(result.unreadCount) || 0;
+  updateSidebarBadges();
+  if (state.page === 'messages') render();
+  toast('已全部标为已读。');
+}
+
+async function openMessageTarget(id) {
+  const msg = state.messages.find(item => same(item.id, id));
+  if (!msg) return;
+  void markMessageRead(msg.id);
+  if (msg.target_type === 'demand' && msg.target_id != null) {
+    await openLinkedDemand(msg.target_id);
+  } else if (msg.target_type === 'project' && msg.target_id != null) {
+    history.pushState({ fromProjectList: true }, '', '/?project=' + encodeURIComponent(String(msg.target_id)));
+    navigate('projectDetail');
+  } else if (msg.target_type === 'project_application' && demandApprover()) {
+    state.approvalTab = 'projects';
+    navigate('demandApprovals');
+  }
+}
+
 function approveDemand(id, onCancel) {
   const demand = getRow('demands', id);
   if (!demandApprover() || demand.approval_status !== 'pending') return;
@@ -3439,6 +3677,16 @@ const actions = {
   'demand-new': () => demandForm(), 'demand-detail': demandDetail,
   'demand-approve': id => approveDemand(id),
   'demand-reject': id => rejectDemand(id),
+  'approval-tab': tab => {
+    state.approvalTab = tab === 'projects' ? 'projects' : 'demands';
+    render();
+  },
+  'project-app-detail': id => projectApplicationDetail(id),
+  'project-app-approve': id => approveProjectApplication(id),
+  'project-app-reject': id => rejectProjectApplication(id),
+  'message-open': id => openMessageTarget(id),
+  'message-read': id => markMessageRead(id),
+  'messages-read-all': () => markAllMessagesRead(),
   'demand-task': openLinkedTask,
   'project-req-demand': openLinkedDemand,
   'project-load': loadProjects,
@@ -3520,10 +3768,11 @@ document.addEventListener('click', async event => {
   if (button.dataset.auth) return setAuthMode(button.dataset.auth);
   if (button.dataset.page) return navigate(button.dataset.page);
   if (state.user && state.page === 'tasks' && Object.hasOwn(taskSortDefaults, button.dataset.taskSort)) return toggleTaskSort(button);
-  if (button.dataset.listStep && state.user && Object.hasOwn(pagedLists, state.page)) {
+  const activeKey = activePagedListKey();
+  if (button.dataset.listStep && state.user && activeKey) {
     const hadFocus = document.activeElement === button;
-    state.listPages[state.page] += Number(button.dataset.listStep);
-    const pager = updatePagedList(state.page);
+    state.listPages[activeKey] += Number(button.dataset.listStep);
+    const pager = updatePagedList(activeKey);
     if (hadFocus && button.disabled) pager.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
     return;
   }
@@ -3538,9 +3787,10 @@ function updateFilter(event) {
   const key = event.target.dataset.filter;
   if (!Object.hasOwn(state.filters, key)) return;
   state.filters[key] = event.target.value;
-  if (Object.hasOwn(pagedLists, state.page)) {
-    state.listPages[state.page] = 1;
-    updatePagedList(state.page);
+  const activeKey = activePagedListKey();
+  if (activeKey) {
+    state.listPages[activeKey] = 1;
+    updatePagedList(activeKey);
   } else {
     $('#people-rows').innerHTML = peopleRows() || emptyRow(visiblePeopleHeaders().length, '没有匹配的人员档案。');
   }
