@@ -23,7 +23,7 @@ const defaultProjectStage = '立项';
 const demandCodePrefix = 'REQ';
 const legacyDemandPrefix = /^FAE-/;
 const catalogKinds = new Set(['proposer', 'device_type', 'project_stage', 'project_manager', 'npi_manager']);
-const projectMetadataKeys = ['projectStages', 'projectRequirements', 'projectDescriptions', 'projectDeviceTypes'];
+const projectMetadataKeys = ['projectStages', 'projectRequirements', 'projectDescriptions', 'projectDeviceTypes', 'projectManagers', 'projectNpiManagers'];
 const taskProgressFields = new Set(['status', 'result']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at', 'completed_at'];
 const taskClassificationFields = ['pri', 'device_type'];
@@ -178,12 +178,30 @@ function projectDeviceType(db, name) {
   return name != null && Object.hasOwn(deviceTypes, name) ? deviceTypes[name] : null;
 }
 
+function projectManager(db, name) {
+  const managers = db.projectManagers ?? {};
+  return name != null && Object.hasOwn(managers, name) ? managers[name] : null;
+}
+
+function projectNpiManager(db, name) {
+  const managers = db.projectNpiManagers ?? {};
+  return name != null && Object.hasOwn(managers, name) ? managers[name] : null;
+}
+
+function projectAttachments(db, name) {
+  return db.attachments
+    .filter(file => file.state === 'bound' && file.kind === 'project' && file.project_name === name)
+    .map(({ id, kind, name: fileName, size, created_at }) => ({ id, kind, name: fileName, size, created_at: created_at ?? null }));
+}
+
 function projectSummary(db, name) {
   return {
     name,
     stage: projectStage(db, name),
     description: projectDescription(db, name),
-    device_type: projectDeviceType(db, name)
+    device_type: projectDeviceType(db, name),
+    project_manager: projectManager(db, name),
+    npi_manager: projectNpiManager(db, name)
   };
 }
 
@@ -249,7 +267,9 @@ function projectCatalog(db) {
   return {
     projects: db.demandOptions.proj.map(name => projectSummary(db, name)),
     stages: projectStageOptions(db),
-    deviceTypes: db.demandOptions.device_type
+    deviceTypes: db.demandOptions.device_type,
+    projectManagers: db.demandOptions.project_manager ?? [],
+    npiManagers: db.demandOptions.npi_manager ?? []
   };
 }
 
@@ -807,6 +827,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         project: projectSummary(db, name),
         stages: projectStageOptions(db),
         deviceTypes: db.demandOptions.device_type,
+        projectManagers: db.demandOptions.project_manager ?? [],
+        npiManagers: db.demandOptions.npi_manager ?? [],
+        attachments: projectAttachments(db, name),
         requirements: projectRequirementRows(db, name)
       };
     },
@@ -845,9 +868,15 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     changeProjectTemplateRequirement: input => store.update(db => changeProjectTemplateRequirement(db, input)),
 
-    changeProject({ action, name, stage, newName, description, device_type: deviceType }) {
+    changeProject({ action, name, stage, newName, description, device_type: deviceType, project_manager: manager, npi_manager: npi }) {
       if (!['create', 'update', 'rename', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
-      if (action === 'create') name = optionalText(name);
+      if (action === 'create') {
+        name = optionalText(name);
+        manager = optionalText(manager);
+        npi = optionalText(npi);
+        if (!manager) throw new RequestError(400, '请选择项目经理。');
+        if (!npi) throw new RequestError(400, '请选择 NPI。');
+      }
       if (typeof name !== 'string' || !name) throw new RequestError(400, '请填写项目名称。');
       let nextName;
       if (action === 'rename') {
@@ -863,13 +892,24 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           description = optionalText(description, 10000);
         }
         if (deviceType !== undefined) deviceType = optionalText(deviceType);
+        if (manager !== undefined) manager = optionalText(manager);
+        if (npi !== undefined) npi = optionalText(npi);
       }
-      return store.update(db => {
+      let removedAttachments = false;
+      const result = store.update(db => {
         const names = db.demandOptions.proj;
         const index = names.indexOf(name);
         if (action === 'create') {
           if (index !== -1) throw new RequestError(409, '项目名称已存在。');
+          if (!(db.demandOptions.project_manager ?? []).includes(manager)) {
+            throw new RequestError(409, '项目经理已不可选，请刷新后重试。');
+          }
+          if (!(db.demandOptions.npi_manager ?? []).includes(npi)) {
+            throw new RequestError(409, 'NPI 已不可选，请刷新后重试。');
+          }
           names.push(name);
+          db.projectManagers = { ...db.projectManagers, [name]: manager };
+          db.projectNpiManagers = { ...db.projectNpiManagers, [name]: npi };
           initializeProjectRequirements(db, name);
           syncProjectStageDemands(db, name, defaultProjectStage);
         } else {
@@ -898,6 +938,26 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
                 db.projectDeviceTypes = { ...db.projectDeviceTypes, [name]: deviceType };
               }
             }
+            if (manager !== undefined) {
+              if (manager !== null && manager !== projectManager(db, name) && !(db.demandOptions.project_manager ?? []).includes(manager)) {
+                throw new RequestError(409, '项目经理已不可选，请刷新后重试。');
+              }
+              if (manager === null) {
+                if (db.projectManagers) delete db.projectManagers[name];
+              } else {
+                db.projectManagers = { ...db.projectManagers, [name]: manager };
+              }
+            }
+            if (npi !== undefined) {
+              if (npi !== null && npi !== projectNpiManager(db, name) && !(db.demandOptions.npi_manager ?? []).includes(npi)) {
+                throw new RequestError(409, 'NPI 已不可选，请刷新后重试。');
+              }
+              if (npi === null) {
+                if (db.projectNpiManagers) delete db.projectNpiManagers[name];
+              } else {
+                db.projectNpiManagers = { ...db.projectNpiManagers, [name]: npi };
+              }
+            }
           } else if (action === 'rename') {
             if (nextName !== name) {
               if (names.includes(nextName)) throw new RequestError(409, '项目名称已存在。');
@@ -907,6 +967,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
                 if (!values || !Object.hasOwn(values, name)) continue;
                 db[key] = { ...values, [nextName]: values[name] };
                 delete db[key][name];
+              }
+              for (const file of db.attachments) {
+                if (file.kind === 'project' && file.project_name === name) file.project_name = nextName;
               }
               const timestamp = now();
               for (const task of db.tasks) {
@@ -929,10 +992,51 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             for (const key of projectMetadataKeys) {
               if (db[key]) delete db[key][name];
             }
+            for (const file of db.attachments) {
+              if (file.kind === 'project' && file.project_name === name && file.state === 'bound') {
+                file.state = 'deleting';
+                removedAttachments = true;
+              }
+            }
           }
         }
         return projectCatalog(db);
       });
+      if (removedAttachments) void cleanupAttachments?.();
+      return result;
+    },
+
+    appendProjectAttachments(user, { name, files }) {
+      if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以上传项目文件。');
+      if (typeof name !== 'string' || !name) throw new RequestError(400, '未指定项目。');
+      if (!Array.isArray(files) || !files.length) throw new RequestError(400, '请至少选择一个文件。');
+      store.update(db => {
+        if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
+        bindAttachments(db, user, { id: name }, 'project', files, { targetKey: 'project_name' });
+      });
+      return { attachments: projectAttachments(store.read(), name) };
+    },
+
+    deleteProjectAttachment(user, { name, fileId }) {
+      if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以删除项目文件。');
+      if (typeof name !== 'string' || !name) throw new RequestError(400, '未指定项目。');
+      if (typeof fileId !== 'string' || !fileId.trim()) throw new RequestError(400, '文件编号无效。');
+      store.update(db => {
+        if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
+        const file = db.attachments.find(item => item.kind === 'project' && item.project_name === name &&
+          item.id === fileId && item.state === 'bound');
+        if (!file) throw new RequestError(404, '未找到这份项目文件。');
+        file.state = 'deleting';
+      });
+      void cleanupAttachments?.();
+      return { attachments: projectAttachments(store.read(), name) };
+    },
+
+    projectAttachmentForDownload(user, fileId) {
+      if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以下载项目文件。');
+      const file = store.read().attachments.find(item => item.kind === 'project' && item.id === fileId && item.state === 'bound');
+      if (!file) throw new RequestError(404, '未找到这份项目文件。');
+      return file;
     },
 
     changeDemandOptions({ kind, action, name }) {

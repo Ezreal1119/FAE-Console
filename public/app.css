@@ -266,6 +266,7 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .import-drop:hover, .import-drop.dragging { background: #e9efff; border-color: var(--brand); }
 .import-drop > span { color: var(--muted); font-size: .85rem; }
 .file-upload-field { display: grid; gap: 8px; }
+.project-files-section { display: grid; gap: 10px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
 .file-upload-title { color: #43516b; font-size: .9rem; font-weight: 600; }
 .file-drop { min-height: 112px; width: 100%; }
 .file-selected-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }

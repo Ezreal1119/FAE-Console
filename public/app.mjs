@@ -825,8 +825,8 @@ function projectsPage() {
   if (!state.projectCatalog) return header + panel('项目列表', projectLoading(state.projectCatalogError, 'project-load'));
   const rows = state.projectCatalog.projects.toSorted((a, b) => sortZh(a.name, b.name)).map(project => `<tr>
     <td><a class="link" data-project-link="projectDetail" href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td>
-    <td>${shown(project.stage)}</td><td>${shown(project.device_type)}</td>${descCell(project.description)}</tr>`).join('');
-  return header + panel('项目列表', table(['项目名称', '项目阶段', '设备类型', '项目描述'], rows, '暂无项目。', 'project-rows'));
+    <td>${shown(project.stage)}</td><td>${shown(project.device_type)}</td><td>${shown(project.project_manager)}</td><td>${shown(project.npi_manager)}</td>${descCell(project.description)}</tr>`).join('');
+  return header + panel('项目列表', table(['项目名称', '项目阶段', '设备类型', '项目经理', 'NPI', '项目描述'], rows, '暂无项目。', 'project-rows'));
 }
 
 function projectLoading(error, retry) {
@@ -845,6 +845,25 @@ function nextProjectStage(project, stages) {
   return index >= 0 && index < stages.length - 1 ? stages[index + 1] : null;
 }
 
+function projectSelectOptions(values, kind, current, placeholder) {
+  const list = catalogOptionNames(values ?? [], kind);
+  return option('', current, placeholder) +
+    (current && !list.includes(current) ? option(current, current, current + '（已从基础配置移除）') : '') +
+    list.map(item => option(item, current)).join('');
+}
+
+function projectFilesListMarkup(attachments) {
+  const list = [...(attachments ?? [])].sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
+  if (!list.length) return '<p class="muted text-small">暂无项目文件。</p>';
+  return `<div class="upload-history-list">${list.map(file => `<div class="upload-history-item">
+    <div class="upload-history-meta"><strong>${text(file.name)}</strong><time class="muted text-small">${text(attachmentUploadTime(file.created_at))}</time></div>
+    <div class="upload-history-actions">
+      <a class="button" href="/api/admin/project-attachments/${encodeURIComponent(file.id)}" download>下载</a>
+      <button type="button" class="button danger" data-project-file-delete="${text(file.id)}">删除</button>
+    </div>
+  </div>`).join('')}</div>`;
+}
+
 function projectDetailPage() {
   const name = linkedProjectName();
   const detailActions = state.projectDetail
@@ -858,23 +877,36 @@ function projectDetailPage() {
   const { project } = state.projectDetail;
   const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
   const nextStage = nextProjectStage(project, stages);
-  const deviceTypes = catalogOptionNames(state.projectDetail.deviceTypes, 'device_type');
-  const deviceType = project.device_type ?? '';
-  const deviceOptions = option('', deviceType, '请选择设备类型') +
-    (deviceType && !deviceTypes.includes(deviceType) ? option(deviceType, deviceType, deviceType + '（已从基础配置移除）') : '') +
-    deviceTypes.map(type => option(type, deviceType)).join('');
+  const deviceOptions = projectSelectOptions(state.projectDetail.deviceTypes, 'device_type', project.device_type ?? '', '请选择设备类型');
+  const managerOptions = projectSelectOptions(state.projectDetail.projectManagers, 'project_manager', project.project_manager ?? '', '请选择项目经理');
+  const npiOptions = projectSelectOptions(state.projectDetail.npiManagers, 'npi_manager', project.npi_manager ?? '', '请选择 NPI');
   const advanceButton = nextStage
     ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
     : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
   const config = `<form id="project-stage-form" class="stack">
-    <label class="project-device-type">设备类型<select name="device_type">${deviceOptions}</select></label>
+    <div class="form-grid">
+      <label>设备类型<select name="device_type">${deviceOptions}</select></label>
+      <label>项目经理<select name="project_manager">${managerOptions}</select></label>
+      <label>NPI<select name="npi_manager">${npiOptions}</select></label>
+    </div>
     ${area('项目描述', 'description', project.description, false)}
     <p class="form-error" role="alert" hidden></p>
     <div class="actions">
       <button type="submit" class="button primary">保存</button>
       ${advanceButton}
     </div>
-  </form>`;
+  </form>
+  <div class="project-files-section" data-project-file-upload>
+    <p class="file-upload-title">项目文件（每次最多 12 个，每个最多 50 MB）</p>
+    <input type="file" multiple hidden data-project-file-input>
+    <button type="button" class="import-drop file-drop" data-project-file-drop>
+      <strong>点击选择文件，或拖拽文件到这里</strong>
+      <span>支持多选，每次最多 12 个，单个不超过 50 MB</span>
+    </button>
+    <p class="muted text-small" data-project-upload-progress role="status" hidden></p>
+    <p class="form-error" data-project-file-error role="alert" hidden></p>
+    <div id="project-files-list">${projectFilesListMarkup(state.projectDetail.attachments)}</div>
+  </div>`;
 
   return header + panel('项目配置', config, projectStageBadge(project.stage)) +
     panel('阶段需求', projectRequirementTabs(state.projectDetail.requirements, selectedRequirementStage(project)),
@@ -991,6 +1023,8 @@ async function changeProject(action, name, payload = {}) {
       state.projectDetail.project = result.projects.find(project => project.name === nextName);
       state.projectDetail.stages = result.stages;
       state.projectDetail.deviceTypes = result.deviceTypes;
+      state.projectDetail.projectManagers = result.projectManagers;
+      state.projectDetail.npiManagers = result.npiManagers;
       render();
     }
     await refresh();
@@ -1009,6 +1043,8 @@ async function changeProject(action, name, payload = {}) {
     state.projectDetail.project = result.projects.find(project => project.name === name);
     state.projectDetail.stages = result.stages;
     state.projectDetail.deviceTypes = result.deviceTypes;
+    state.projectDetail.projectManagers = result.projectManagers;
+    state.projectDetail.npiManagers = result.npiManagers;
     if (payload.stage !== undefined) {
       state.projectStageTab = null;
       render();
@@ -1022,14 +1058,27 @@ async function changeProject(action, name, payload = {}) {
   toast(message);
 }
 
-function projectForm(initialName = '') {
+function projectForm(initial = {}) {
   if (!admin() || !state.projectCatalog) return;
-  modalForm('新建项目', '', field('项目名称', 'name', initialName, 'required maxlength="100"'), async values => {
+  const values0 = typeof initial === 'string' ? { name: initial } : (initial ?? {});
+  const managers = catalogOptionNames(state.projectCatalog.projectManagers ?? [], 'project_manager');
+  const npis = catalogOptionNames(state.projectCatalog.npiManagers ?? [], 'npi_manager');
+  const missingHint = (!managers.length || !npis.length)
+    ? '<p class="muted text-small">请先在「基础配置」中添加项目经理和 NPI 经理选项。</p>' : '';
+  const fields = field('项目名称', 'name', values0.name ?? '', 'required maxlength="100"') +
+    `<label>项目经理（必填）<select name="project_manager" required>${option('', values0.project_manager ?? '', '请选择项目经理')}${managers.map(item => option(item, values0.project_manager ?? '')).join('')}</select></label>` +
+    `<label>NPI（必填）<select name="npi_manager" required>${option('', values0.npi_manager ?? '', '请选择 NPI')}${npis.map(item => option(item, values0.npi_manager ?? '')).join('')}</select></label>` +
+    missingHint;
+  modalForm('新建项目', '', fields, async values => {
     const name = trimmed(values.name);
+    const projectManager = trimmed(values.project_manager);
+    const npiManager = trimmed(values.npi_manager);
     if (!name) throw new Error('请填写项目名称。');
+    if (!projectManager) throw new Error('请选择项目经理。');
+    if (!npiManager) throw new Error('请选择 NPI。');
     modalForm('确认新建项目', `是否确定新建项目「${name}」？系统将自动创建立项阶段及默认阶段需求清单。`, '', async () => {
-      await changeProject('create', name);
-    }, { submit: '确定新建', onCancel: () => projectForm(name) });
+      await changeProject('create', name, { project_manager: projectManager, npi_manager: npiManager });
+    }, { submit: '确定新建', onCancel: () => projectForm({ name, project_manager: projectManager, npi_manager: npiManager }) });
     return false;
   }, { submit: '确定新建' });
 }
@@ -1062,10 +1111,87 @@ function projectConfigChanges(form, project) {
   if (!form) return {};
   const description = optional(form.elements.description.value);
   const deviceType = optional(form.elements.device_type.value);
+  const projectManager = optional(form.elements.project_manager?.value);
+  const npiManager = optional(form.elements.npi_manager?.value);
   const changes = {};
   if (description !== optional(project.description)) changes.description = description;
   if (deviceType !== optional(project.device_type)) changes.device_type = deviceType;
+  if (form.elements.project_manager && projectManager !== optional(project.project_manager)) changes.project_manager = projectManager;
+  if (form.elements.npi_manager && npiManager !== optional(project.npi_manager)) changes.npi_manager = npiManager;
   return changes;
+}
+
+async function uploadProjectFiles(incoming) {
+  const detail = state.projectDetail;
+  if (!admin() || state.page !== 'projectDetail' || !detail) return;
+  const projectName = detail.project.name;
+  const section = content.querySelector('[data-project-file-upload]');
+  const drop = section?.querySelector('[data-project-file-drop]');
+  const progress = section?.querySelector('[data-project-upload-progress]');
+  const errorEl = section?.querySelector('[data-project-file-error]');
+  if (!section || !drop || drop.disabled) return;
+  const valid = [];
+  formError(errorEl, '');
+  for (const file of [...incoming].filter(item => item?.name)) {
+    if (valid.length >= 12) { formError(errorEl, '每次最多上传 12 个文件。'); break; }
+    if (!file.size || file.size > 50 * 1024 * 1024) { formError(errorEl, '请选择不超过 50 MB 的非空文件。'); continue; }
+    if (!file.name.trim() || file.name.length > 255 || /[\x00-\x1f\x7f/\\]/.test(file.name)) {
+      formError(errorEl, '文件名称无效，请重新命名后上传。'); continue;
+    }
+    valid.push(file);
+  }
+  if (!valid.length) return;
+  const session = state.user;
+  const uploaded = [];
+  drop.disabled = true;
+  try {
+    for (const [index, file] of valid.entries()) {
+      if (state.user !== session || state.projectDetail !== detail) return;
+      progress.textContent = `正在上传文件 ${index + 1} / ${valid.length}…`;
+      progress.hidden = false;
+      const { id } = await request('/api/upload?kind=project', { method: 'POST', file });
+      uploaded.push({ id, name: file.name });
+    }
+    const result = await post('/api/admin/projects/attachments', { name: projectName, files: uploaded });
+    if (state.user === session && state.projectDetail === detail) {
+      detail.attachments = result.attachments;
+      const listEl = $('#project-files-list');
+      if (listEl) listEl.innerHTML = projectFilesListMarkup(result.attachments);
+    }
+    toast('项目文件已上传。');
+  } catch (error) {
+    if (uploaded.length && state.user === session) {
+      void post('/api/upload/discard', { ids: uploaded.map(item => item.id) }).catch(() => {});
+    }
+    if (state.user === session && state.projectDetail === detail && errorEl) formError(errorEl, error.message);
+    else toast(error.message);
+  } finally {
+    if (progress) progress.hidden = true;
+    if (drop) drop.disabled = false;
+  }
+}
+
+async function deleteProjectFile(button) {
+  const detail = state.projectDetail;
+  if (!admin() || state.page !== 'projectDetail' || !detail || button.disabled) return;
+  const fileId = button.dataset.projectFileDelete;
+  const file = (detail.attachments ?? []).find(item => item.id === fileId);
+  if (!file || !window.confirm(`确定删除项目文件「${file.name}」？`)) return;
+  const session = state.user;
+  button.disabled = true;
+  try {
+    const result = await post('/api/admin/projects/attachments/delete', { name: detail.project.name, fileId });
+    if (state.user === session && state.projectDetail === detail) {
+      detail.attachments = result.attachments;
+      const listEl = $('#project-files-list');
+      if (listEl) listEl.innerHTML = projectFilesListMarkup(result.attachments);
+    }
+    toast('项目文件已删除。');
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function projectDeleteForm(name) {
@@ -3063,11 +3189,45 @@ content.addEventListener('input', updateFilter);
 content.addEventListener('click', event => {
   const tab = event.target.closest('[data-project-stage-tab]');
   if (tab) selectProjectStageTab(tab);
+  const drop = event.target.closest('[data-project-file-drop]');
+  if (drop && !drop.disabled) {
+    const input = drop.closest('[data-project-file-upload]')?.querySelector('[data-project-file-input]');
+    input?.click();
+    return;
+  }
+  const removeFile = event.target.closest('[data-project-file-delete]');
+  if (removeFile) {
+    void deleteProjectFile(removeFile);
+    return;
+  }
   const link = event.target.closest('[data-project-link]');
   if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   history.pushState({ fromProjectList: true }, '', link.href);
   navigate(link.dataset.projectLink);
+});
+content.addEventListener('change', event => {
+  if (!event.target.matches('[data-project-file-input]')) return;
+  const files = event.target.files;
+  void uploadProjectFiles(files);
+  event.target.value = '';
+});
+content.addEventListener('dragover', event => {
+  const drop = event.target.closest('[data-project-file-drop]');
+  if (!drop) return;
+  event.preventDefault();
+  if (!drop.disabled) drop.classList.add('dragging');
+});
+content.addEventListener('dragleave', event => {
+  const drop = event.target.closest('[data-project-file-drop]');
+  if (drop && !drop.contains(event.relatedTarget)) drop.classList.remove('dragging');
+});
+content.addEventListener('drop', event => {
+  const drop = event.target.closest('[data-project-file-drop]');
+  if (!drop) return;
+  event.preventDefault();
+  drop.classList.remove('dragging');
+  if (!drop.disabled) void uploadProjectFiles(event.dataTransfer?.files || []);
 });
 window.addEventListener('popstate', () => {
   if (!admin()) return;

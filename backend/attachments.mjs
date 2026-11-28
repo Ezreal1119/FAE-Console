@@ -4,7 +4,7 @@ import { RequestError } from './store.mjs';
 export const attachmentLimit = 50 * 1024 * 1024;
 const batchLimit = 12;
 const expiry = 24 * 60 * 60 * 1000;
-const kinds = new Set(['requirement', 'delivery']);
+const kinds = new Set(['requirement', 'delivery', 'project']);
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
 export function attachmentKind(kind) {

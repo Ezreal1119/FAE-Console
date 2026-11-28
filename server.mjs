@@ -76,6 +76,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
   ['/api/admin/projects/requirements/push', 'POST'],
+  ['/api/admin/projects/attachments', 'POST'], ['/api/admin/projects/attachments/delete', 'POST'],
   ['/api/admin/projects/requirement-template', 'GET'], ['/api/admin/projects/requirement-template/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/demands/attachments', 'POST'], ['/api/demands/attachments/delete', 'POST'],
@@ -232,6 +233,8 @@ function privateApi(url, session, body) {
     case '/api/admin/projects/change': return records.changeProject(body);
     case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
     case '/api/admin/projects/requirements/push': return records.pushProjectRequirement(session.user, body);
+    case '/api/admin/projects/attachments': return records.appendProjectAttachments(session.user, body);
+    case '/api/admin/projects/attachments/delete': return records.deleteProjectAttachment(session.user, body);
     case '/api/admin/projects/requirement-template': return records.projectRequirementTemplate();
     case '/api/admin/projects/requirement-template/change': return records.changeProjectTemplateRequirement(body);
     case '/api/demand-options': return records.demandChoices();
@@ -259,7 +262,7 @@ function privateApi(url, session, body) {
   }
 }
 
-async function handleApi(req, res, url, attachmentRoute, demandAttachmentRoute) {
+async function handleApi(req, res, url, attachmentRoute, demandAttachmentRoute, projectAttachmentRoute) {
   const path = url.pathname;
   if (path === '/api/version') {
     return sendJson(res, 200, { ok: true, version: appVersion });
@@ -284,6 +287,7 @@ async function handleApi(req, res, url, attachmentRoute, demandAttachmentRoute) 
   }
   if (attachmentRoute) return await download(res, records.attachmentForDownload(session.user, attachmentRoute[1], attachmentRoute[2]));
   if (demandAttachmentRoute) return await download(res, records.demandAttachmentForDownload(session.user, demandAttachmentRoute[1], demandAttachmentRoute[2]));
+  if (projectAttachmentRoute) return await download(res, records.projectAttachmentForDownload(session.user, projectAttachmentRoute[1]));
   if (path === '/api/admin/member-import-template') {
     const template = await readFile(new URL('./backend/templates/member-import.xlsx', import.meta.url));
     res.writeHead(200, {
@@ -344,12 +348,13 @@ const server = createServer(async (req, res) => {
     }
     const attachmentRoute = path.match(/^\/api\/attachments\/(\d+)(?:\/([a-f0-9-]{36}))?$/);
     const demandAttachmentRoute = path.match(/^\/api\/demand-attachments\/(\d+)\/([a-f0-9-]{36})$/);
-    const method = apiRoutes.get(path) || (attachmentRoute || demandAttachmentRoute ? 'GET' : undefined);
+    const projectAttachmentRoute = path.match(/^\/api\/admin\/project-attachments\/([a-f0-9-]{36})$/);
+    const method = apiRoutes.get(path) || (attachmentRoute || demandAttachmentRoute || projectAttachmentRoute ? 'GET' : undefined);
     if (!method) throw new RequestError(404, '页面或接口不存在。');
     if (req.method !== method) throw new RequestError(405, '请求方法不受支持。');
     if (method === 'POST') checkOrigin(req);
 
-    await handleApi(req, res, url, attachmentRoute, demandAttachmentRoute);
+    await handleApi(req, res, url, attachmentRoute, demandAttachmentRoute, projectAttachmentRoute);
   } catch (error) {
     if (res.destroyed) return;
     if (res.headersSent) return res.destroy();
