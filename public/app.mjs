@@ -31,13 +31,14 @@ const defaultFilters = {
   taskQuery: '', taskStatus: '未完成', taskPriority: '', taskStage: '', taskTeam: '', taskScope: 'mine',
   demandQuery: '', demandType: '', approvalQuery: '', approvalStatus: '',
   projectApprovalQuery: '', projectApprovalStatus: '',
+  extensionApprovalQuery: '', extensionApprovalStatus: '',
   messageQuery: '', messageCategory: '',
   peopleQuery: '', peopleTeam: ''
 };
 const listPageSize = 10;
-const firstListPages = { home: 1, tasks: 1, demands: 1, demandApprovals: 1, projectApprovals: 1, messages: 1 };
+const firstListPages = { home: 1, tasks: 1, demands: 1, demandApprovals: 1, projectApprovals: 1, extensionApprovals: 1, messages: 1 };
 const state = {
-  user: null, tasks: [], demands: [], profiles: [], accounts: [], messages: [], unreadMessages: 0, projectApplications: [],
+  user: null, tasks: [], demands: [], profiles: [], accounts: [], messages: [], unreadMessages: 0, projectApplications: [], taskExtensions: [],
   page: 'home', mode: 'login', approvalTab: 'demands',
   registrationEnabled: false,
   filters: { ...defaultFilters },
@@ -209,6 +210,7 @@ function showAuth(error = '') {
   state.messages = [];
   state.unreadMessages = 0;
   state.projectApplications = [];
+  state.taskExtensions = [];
   state.approvalTab = 'demands';
   state.demandCatalog = null;
   state.demandCatalogError = '';
@@ -296,7 +298,8 @@ function updateSidebarBadges() {
   if (appBadge) {
     const pendingDemands = state.demands.filter(row => row.approval_status === 'pending').length;
     const pendingProjects = state.projectApplications.filter(row => row.status === 'pending').length;
-    const total = demandApprover() ? pendingDemands + pendingProjects : 0;
+    const pendingExtensions = state.taskExtensions.filter(row => row.status === 'pending').length;
+    const total = demandApprover() ? pendingDemands + pendingProjects + pendingExtensions : 0;
     appBadge.hidden = total <= 0;
     appBadge.textContent = total > 99 ? '99+' : String(total);
   }
@@ -445,7 +448,10 @@ async function refresh() {
     ['messages', '消息', request('/api/messages')]
   ];
   if (admin()) requests.push(['accounts', '账号', request('/api/admin/accounts')]);
-  if (demandApprover()) requests.push(['projectApplications', '项目审批', request('/api/admin/project-applications')]);
+  if (demandApprover()) {
+    requests.push(['projectApplications', '项目审批', request('/api/admin/project-applications')]);
+    requests.push(['taskExtensions', '延期审批', request('/api/admin/task-extensions')]);
+  }
   const results = await Promise.allSettled(requests.map(row => row[2]));
   if (session !== state.user || version !== refreshVersion) return;
   state.workDataLoaded = true;
@@ -463,6 +469,12 @@ async function refresh() {
     if (field === 'projectApplications') {
       if (result.status === 'fulfilled' && Array.isArray(result.value?.applications)) {
         state.projectApplications = result.value.applications;
+      }
+      return;
+    }
+    if (field === 'taskExtensions') {
+      if (result.status === 'fulfilled' && Array.isArray(result.value?.applications)) {
+        state.taskExtensions = result.value.applications;
       }
       return;
     }
@@ -829,29 +841,68 @@ function projectApprovalRows(apps) {
   }).join('');
 }
 
+const extensionApprovalHeaders = ['任务编号', '项目', '负责人', '延长工时', '调整后计划完成', '延期原因', '申请人', '提交时间', '审批状态', '操作'];
+function filteredExtensionApprovals() {
+  const targetStatus = approvalStatusFilterMap[state.filters.extensionApprovalStatus] || '';
+  return state.taskExtensions
+    .filter(row => {
+      if (targetStatus && (row.status || 'pending') !== targetStatus) return false;
+      return hasText(state.filters.extensionApprovalQuery, row.task_code, row.proj, row.owner_name, row.applicant_name, row.reason);
+    })
+    .toSorted((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+}
+function extensionApprovalRows(apps) {
+  return apps.map(app => {
+    const isPending = app.status === 'pending';
+    const ops = isPending
+      ? `<div class="row-actions">${action('通过', 'task-ext-approve', app.id, 'link')}${action('驳回', 'task-ext-reject', app.id, 'link danger')}</div>`
+      : `<span class="muted text-small">${shown(app.reviewed_by_name)}</span>`;
+    return `<tr>
+      <td>${action(app.task_code, 'task-ext-detail', app.id, 'link task-code')}</td>
+      <td>${shown(app.proj)}</td>
+      <td>${shown(app.owner_name)}</td>
+      <td class="number">+${text(app.extend_hours)}h</td>
+      <td class="task-date">${shown(app.new_planned_due_at ? formatPlanningTime(app.new_planned_due_at) : '—')}</td>
+      ${descCell(app.reason)}
+      <td>${shown(app.applicant_name)}</td>
+      <td class="task-date">${shown(attachmentUploadTime(app.created_at))}</td>
+      <td>${approvalStatusBadge(app.status)}</td>
+      <td>${ops}</td>
+    </tr>`;
+  }).join('');
+}
+
 function demandApprovalsPage() {
   const pendingDemands = state.demands.filter(row => row.approval_status === 'pending').length;
   const pendingProjects = state.projectApplications.filter(row => row.status === 'pending').length;
-  const tab = state.approvalTab === 'projects' ? 'projects' : 'demands';
+  const pendingExtensions = state.taskExtensions.filter(row => row.status === 'pending').length;
+  const tab = state.approvalTab === 'projects' ? 'projects' : state.approvalTab === 'extensions' ? 'extensions' : 'demands';
   const demandBadge = pendingDemands ? `<span class="tab-badge">${pendingDemands > 99 ? '99+' : pendingDemands}</span>` : '';
   const projectBadge = pendingProjects ? `<span class="tab-badge">${pendingProjects > 99 ? '99+' : pendingProjects}</span>` : '';
+  const extensionBadge = pendingExtensions ? `<span class="tab-badge">${pendingExtensions > 99 ? '99+' : pendingExtensions}</span>` : '';
   const tabs = `<div class="catalog-tabs" role="group" aria-label="审批类型">
     <button type="button" class="button" data-action="approval-tab" data-id="demands" aria-pressed="${tab === 'demands'}">需求审批${demandBadge}</button>
     <button type="button" class="button" data-action="approval-tab" data-id="projects" aria-pressed="${tab === 'projects'}">项目审批${projectBadge}</button>
+    <button type="button" class="button" data-action="approval-tab" data-id="extensions" aria-pressed="${tab === 'extensions'}">延期审批${extensionBadge}</button>
   </div>`;
-  const header = heading('审批中心', '集中处理需求申请与新建项目申请，按提交时间倒序展示。', action('刷新', 'refresh')) + tabs;
+  const header = heading('审批中心', '集中处理需求申请、新建项目申请与任务延期申请，按提交时间倒序展示。', action('刷新', 'refresh')) + tabs;
   if (tab === 'projects') {
     const statusFilter = filterSelect('projectApprovalStatus', '按审批状态筛选', ['待审批', '已通过', '已驳回'], '全部状态');
     const toolbar = `<div class="toolbar">${search('projectApprovalQuery', '搜索项目名称、类型、设备类型、经理或申请人')}${statusFilter}</div>`;
     return header + pagedListPanel('projectApprovals', toolbar);
+  }
+  if (tab === 'extensions') {
+    const statusFilter = filterSelect('extensionApprovalStatus', '按审批状态筛选', ['待审批', '已通过', '已驳回'], '全部状态');
+    const toolbar = `<div class="toolbar">${search('extensionApprovalQuery', '搜索任务编号、项目、负责人、原因或申请人')}${statusFilter}</div>`;
+    return header + pagedListPanel('extensionApprovals', toolbar);
   }
   const statusFilter = filterSelect('approvalStatus', '按审批状态筛选', ['待审批', '已通过', '已驳回'], '全部状态');
   const toolbar = `<div class="toolbar">${search('approvalQuery', '搜索需求编码、项目、申请人或说明')}${statusFilter}</div>`;
   return header + pagedListPanel('demandApprovals', toolbar);
 }
 
-const messageCategoryLabels = { task_notice: '任务通知', demand_approval: '需求审批', project_approval: '项目审批' };
-const messageCategoryFilterMap = { 任务通知: 'task_notice', 需求审批: 'demand_approval', 项目审批: 'project_approval' };
+const messageCategoryLabels = { task_notice: '任务通知', demand_approval: '需求审批', project_approval: '项目审批', task_extension: '延期审批' };
+const messageCategoryFilterMap = { 任务通知: 'task_notice', 需求审批: 'demand_approval', 项目审批: 'project_approval', 延期审批: 'task_extension' };
 const messageHeaders = ['状态', '类别', '消息内容', '时间', '操作'];
 function filteredMessages() {
   const cat = messageCategoryFilterMap[state.filters.messageCategory] || '';
@@ -864,7 +915,8 @@ function messageRows(list) {
   return list.map(item => {
     const unread = !item.read_at;
     const statusTag = unread ? '<span class="tag danger">未读</span>' : '<span class="tag">已读</span>';
-    const viewBtn = (item.target_type === 'task' || item.target_type === 'demand' || item.target_type === 'project' || (item.target_type === 'project_application' && demandApprover()))
+    const viewBtn = (item.target_type === 'task' || item.target_type === 'demand' || item.target_type === 'project' ||
+      ((item.target_type === 'project_application' || item.target_type === 'task_extension') && demandApprover()))
       ? action('查看', 'message-open', item.id, 'link') : '';
     const readBtn = unread ? action('标为已读', 'message-read', item.id, 'link') : '';
     const ops = (viewBtn || readBtn) ? `<div class="row-actions">${viewBtn}${readBtn}</div>` : '—';
@@ -878,7 +930,7 @@ function messageRows(list) {
   }).join('');
 }
 function messagesPage() {
-  const categoryFilter = filterSelect('messageCategory', '按消息类别筛选', ['任务通知', '需求审批', '项目审批'], '全部类别');
+  const categoryFilter = filterSelect('messageCategory', '按消息类别筛选', ['任务通知', '需求审批', '项目审批', '延期审批'], '全部类别');
   const toolbar = `<div class="toolbar">${search('messageQuery', '搜索消息标题、内容或处理人')}${categoryFilter}</div>`;
   const readAllBtn = `<button type="button" class="button" data-action="messages-read-all"${state.unreadMessages ? '' : ' disabled'}>全部标为已读</button>`;
   return heading('消息中心', '记录任务派发、转交、完成及审批通知（永久留痕）。', action('刷新', 'refresh') + readAllBtn) +
@@ -903,10 +955,13 @@ const pagedLists = {
   demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' },
   demandApprovals: { id: 'approval', title: '需求审批列表', headers: demandApprovalHeaders, items: filteredDemandApprovals, rows: demandApprovalRows, empty: '暂无需求审批记录。' },
   projectApprovals: { id: 'project-approval', title: '项目审批列表', headers: projectApprovalHeaders, items: filteredProjectApprovals, rows: projectApprovalRows, empty: '暂无项目审批记录。' },
+  extensionApprovals: { id: 'extension-approval', title: '延期审批列表', headers: extensionApprovalHeaders, items: filteredExtensionApprovals, rows: extensionApprovalRows, empty: '暂无延期审批记录。' },
   messages: { id: 'message', title: '消息列表', headers: messageHeaders, items: filteredMessages, rows: messageRows, empty: '暂无消息记录。' }
 };
 function activePagedListKey() {
-  if (state.page === 'demandApprovals') return state.approvalTab === 'projects' ? 'projectApprovals' : 'demandApprovals';
+  if (state.page === 'demandApprovals') {
+    return state.approvalTab === 'projects' ? 'projectApprovals' : state.approvalTab === 'extensions' ? 'extensionApprovals' : 'demandApprovals';
+  }
   return Object.hasOwn(pagedLists, state.page) ? state.page : null;
 }
 function listPage(key) {
@@ -2171,7 +2226,12 @@ function taskDialogLeadingActions(task) {
   const canDelete = demandApprover();
   const remove = canDelete ? '<button type="button" class="button danger" data-task-dialog-action="delete">删除</button>' : '';
   const transfer = canTransferTask(task) ? '<button type="button" class="button" data-task-dialog-action="transfer">转交负责人</button>' : '';
-  return remove + transfer;
+  const extend = task.canExtend
+    ? (task.hasPendingExtension
+      ? '<button type="button" class="button" disabled title="该任务已有待审批的延期申请">延期审批中</button>'
+      : '<button type="button" class="button" data-task-dialog-action="extend">延长交期</button>')
+    : '';
+  return remove + transfer + extend;
 }
 function updateTaskUploadHistoryCount(task) {
   const count = task.attachments.filter(file => file.kind === 'delivery').length;
@@ -2400,6 +2460,78 @@ function taskDetail(id) {
     await saveQueue;
     if (state.user) taskTransferForm(task.id, { returnToDetail: true });
   });
+  form.querySelector('[data-task-dialog-action="extend"]')?.addEventListener('click', async () => {
+    await saveQueue;
+    if (state.user) taskExtendForm(task.id, { returnToDetail: true });
+  });
+}
+
+function taskExtendForm(id, { returnToDetail = false } = {}) {
+  const task = getRow('tasks', id);
+  if (!task.canExtend) return;
+  if (task.hasPendingExtension) {
+    toast('该任务已有待审批的延期申请，请等待审批完成。');
+    return;
+  }
+  const isApprover = demandApprover();
+  const currentHours = Number(task.planned_hours) || 0;
+  const currentDueText = task.planned_due_at ? formatPlanningTime(task.planned_due_at) : '—';
+  const fields = details([
+    ['当前负责人', task.owner_name || '—'],
+    ['当前计划投入工时', currentHours + 'h'],
+    ['当前计划完成时间', currentDueText]
+  ]) +
+    '<div class="field"><label>延长小时数（必填，最多两位小数）</label><input type="number" name="extendHours" min="0.01" step="0.5" placeholder="例如：4" required></div>' +
+    '<div class="field"><label>调整后计划完成时间（动态计算）</label><input type="text" data-extend-due-preview readonly value="请输入延长小时数"></div>' +
+    area('延期原因（必填）', 'reason', '', true);
+  const form = modalForm(
+    `延长交期 · ${task.code}`,
+    isApprover ? '延长后将立即更新该任务的计划投入工时和计划完成时间。' : '提交后将进入审批中心，审批通过后生效。',
+    fields,
+    async values => {
+      const hours = Number(values.extendHours);
+      if (!Number.isFinite(hours) || hours < 0.01 || hours !== Number(hours.toFixed(2))) {
+        throw new Error('请填写有效的延长小时数，最小 0.01 小时，最多两位小数。');
+      }
+      const extReason = optional(values.reason);
+      if (!extReason) throw new Error('请填写延期原因。');
+      const current = getRow('tasks', task.id);
+      const result = await post('/api/tasks/extend', {
+        taskId: task.id,
+        extendHours: hours,
+        reason: extReason,
+        expectedVersion: current.version
+      });
+      if (result.task) await applySavedTask(result.task);
+      if (result.applied) {
+        toast('已延长任务交期。');
+      } else {
+        toast('延期申请已提交，等待审批。');
+      }
+      if (returnToDetail && state.user) {
+        taskDetail(task.id);
+        return false;
+      }
+    },
+    {
+      submit: isApprover ? '确定延期' : '提交申请',
+      onCancel: returnToDetail ? () => taskDetail(task.id) : undefined
+    }
+  );
+  const hoursInput = form.querySelector('input[name="extendHours"]');
+  const previewInput = form.querySelector('[data-extend-due-preview]');
+  const updatePreview = () => {
+    const val = Number(hoursInput.value);
+    if (!hoursInput.value || !Number.isFinite(val) || val < 0.01 || val !== Number(val.toFixed(2))) {
+      previewInput.value = hoursInput.value ? '请输入有效的小时数（最小 0.01，最多两位小数）' : '请输入延长小时数';
+      return;
+    }
+    const nextDue = plannedCompletion(task.planned_due_at, val, '立即');
+    const nextHours = Number((currentHours + val).toFixed(2));
+    previewInput.value = nextDue ? `${formatPlanningTime(nextDue)}（总计划投入 ${nextHours}h）` : '超出可计算时间范围';
+  };
+  hoursInput?.addEventListener('input', updatePreview);
+  hoursInput?.focus();
 }
 async function openLinkedTask(id) {
   const session = state.user;
@@ -3197,6 +3329,60 @@ function rejectProjectApplication(id, onCancel) {
     }, { danger: true, submit: '确认驳回', onCancel });
 }
 
+function taskExtensionDetail(id) {
+  const app = state.taskExtensions.find(item => same(item.id, id));
+  if (!app) { toast('未找到这条延期申请。'); return; }
+  const isPending = app.status === 'pending';
+  const info = details([
+    ['任务编号', app.task_code],
+    ['项目', app.proj || '—'],
+    ['当前负责人', app.owner_name || '—'],
+    ['延长工时', `+${app.extend_hours}h`],
+    ['计划投入工时变更', `${app.prev_planned_hours ?? 0}h → ${app.new_planned_hours ?? 0}h`],
+    ['计划完成时间变更', `${app.prev_planned_due_at ? formatPlanningTime(app.prev_planned_due_at) : '—'} → ${app.new_planned_due_at ? formatPlanningTime(app.new_planned_due_at) : '—'}`],
+    ['申请人', app.applicant_name || '—'],
+    ['提交时间', attachmentUploadTime(app.created_at)],
+    ['审批状态', approvalStatusBadge(app.status), true],
+    ...(app.reviewed_by_name ? [['审批人', app.reviewed_by_name]] : [])
+  ]);
+  const reasonBlock = `<div class="details-list"><div class="detail-item"><strong>延期原因</strong><p class="muted">${shown(app.reason)}</p></div></div>`;
+  const rejectBlock = app.status === 'rejected' && app.reject_reason
+    ? `<div class="details-list"><div class="detail-item"><strong>驳回原因</strong><p class="text-red">${shown(app.reject_reason)}</p></div></div>` : '';
+  const footer = isPending
+    ? `<div class="dialog-actions"><button type="button" class="button danger" data-task-ext-action="reject">驳回</button><button type="button" class="button success" data-task-ext-action="approve">通过</button></div>`
+    : '';
+  modal('任务延期申请', app.task_code, `<div class="stack">${info}${reasonBlock}${rejectBlock}</div>${footer}`, false, '', true);
+  dialog.querySelector('[data-task-ext-action="approve"]')?.addEventListener('click', () => approveTaskExtension(app.id, () => taskExtensionDetail(app.id)));
+  dialog.querySelector('[data-task-ext-action="reject"]')?.addEventListener('click', () => rejectTaskExtension(app.id, () => taskExtensionDetail(app.id)));
+}
+
+function approveTaskExtension(id, onCancel) {
+  const app = state.taskExtensions.find(item => same(item.id, id));
+  if (!demandApprover() || !app || app.status !== 'pending') return;
+  modalForm('审批通过延期申请', `确定审批通过「${app.applicant_name}」对任务「${app.task_code}」的延期申请（+${app.extend_hours}h）？通过后将立即更新该任务的计划投入工时与计划完成时间。`, '', async () => {
+    const result = await post('/api/admin/task-extensions/review', { applicationId: app.id, decision: 'approve' });
+    state.taskExtensions = state.taskExtensions.map(item => same(item.id, app.id) ? result.application : item);
+    if (result.task) updateRow('tasks', normalizeTask(result.task));
+    updateSidebarBadges();
+    render();
+    toast('延期申请已审批通过。');
+  }, { submit: '确认通过', submitClass: 'success', onCancel });
+}
+
+function rejectTaskExtension(id, onCancel) {
+  const app = state.taskExtensions.find(item => same(item.id, id));
+  if (!demandApprover() || !app || app.status !== 'pending') return;
+  modalForm('驳回延期申请', `确定驳回「${app.applicant_name}」对任务「${app.task_code}」的延期申请（+${app.extend_hours}h）？`,
+    area('驳回原因（选填）', 'reason', '', false), async values => {
+      const result = await post('/api/admin/task-extensions/review', { applicationId: app.id, decision: 'reject', reason: optional(values.reason) });
+      state.taskExtensions = state.taskExtensions.map(item => same(item.id, app.id) ? result.application : item);
+      if (result.task) updateRow('tasks', normalizeTask(result.task));
+      updateSidebarBadges();
+      render();
+      toast('延期申请已驳回。');
+    }, { danger: true, submit: '确认驳回', onCancel });
+}
+
 async function markMessageRead(id) {
   const msg = state.messages.find(item => same(item.id, id));
   if (!msg || msg.read_at) return;
@@ -3231,6 +3417,9 @@ async function openMessageTarget(id) {
     navigate('projectDetail');
   } else if (msg.target_type === 'project_application' && demandApprover()) {
     state.approvalTab = 'projects';
+    navigate('demandApprovals');
+  } else if (msg.target_type === 'task_extension' && demandApprover()) {
+    state.approvalTab = 'extensions';
     navigate('demandApprovals');
   }
 }
@@ -3690,12 +3879,15 @@ const actions = {
   'demand-approve': id => approveDemand(id),
   'demand-reject': id => rejectDemand(id),
   'approval-tab': tab => {
-    state.approvalTab = tab === 'projects' ? 'projects' : 'demands';
+    state.approvalTab = tab === 'projects' ? 'projects' : tab === 'extensions' ? 'extensions' : 'demands';
     render();
   },
   'project-app-detail': id => projectApplicationDetail(id),
   'project-app-approve': id => approveProjectApplication(id),
   'project-app-reject': id => rejectProjectApplication(id),
+  'task-ext-detail': id => taskExtensionDetail(id),
+  'task-ext-approve': id => approveTaskExtension(id),
+  'task-ext-reject': id => rejectTaskExtension(id),
   'message-open': id => openMessageTarget(id),
   'message-read': id => markMessageRead(id),
   'messages-read-all': () => markAllMessagesRead(),

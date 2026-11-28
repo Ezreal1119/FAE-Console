@@ -457,11 +457,14 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
   }
   const handledAt = taskHandledAt(user, task);
   const resolvedProject = resolveProjectForRecord(db, row.project_id ?? demand?.project_id, row.proj);
+  const hasPendingExtension = (db.taskExtensions ?? []).some(item => item.task_id === task.id && item.status === 'pending');
   return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
     attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
     canAppendRequirement: canAppendAttachment(user, task, 'requirement'),
     canAppendDelivery: canAppendAttachment(user, task, 'delivery'),
     canDeleteDelivery: canDeleteDeliveryAttachment(user, task),
+    canExtend: canExtendTask(db, user, task),
+    hasPendingExtension,
     project_stage: resolvedProject ? (resolvedProject.stage || defaultProjectStage) : null,
     project_type: row.project_type ?? demand?.project_type ?? resolvedProject?.project_type ?? null,
     demand_code: demand?.code ?? null,
@@ -519,6 +522,36 @@ function notifyUsers(db, recipientIds, { category, event, title, body, actor_nam
       created_at: timestamp
     });
   }
+}
+
+function canExtendTask(db, user, task) {
+  if (!ACTIVE_TASK_STATUSES.includes(task.status) || !task.planned_due_at) return false;
+  if (isDemandApprover(user, db)) return true;
+  return (task.creator_id ?? task.owner_id) === user.id;
+}
+
+function publicTaskExtension(db, app) {
+  const task = db.tasks.find(item => item.id === app.task_id);
+  return {
+    id: app.id,
+    task_id: app.task_id,
+    task_code: task?.code ?? app.task_code,
+    proj: task?.proj ?? app.proj ?? null,
+    owner_name: task ? (taskOwnerName(db, task) || null) : (app.owner_name ?? null),
+    extend_hours: app.extend_hours,
+    reason: app.reason ?? '',
+    prev_planned_hours: app.prev_planned_hours ?? null,
+    new_planned_hours: app.new_planned_hours ?? null,
+    prev_planned_due_at: app.prev_planned_due_at ?? null,
+    new_planned_due_at: app.new_planned_due_at ?? null,
+    applicant_id: app.applicant_id ?? null,
+    applicant_name: app.applicant_name ?? null,
+    status: app.status || 'pending',
+    reviewed_by_name: app.reviewed_by_name ?? null,
+    reviewed_at: app.reviewed_at ?? null,
+    reject_reason: app.reject_reason ?? null,
+    created_at: app.created_at ?? null
+  };
 }
 
 function publicProjectApplication(db, app) {
@@ -1829,6 +1862,192 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       });
       if (removedAttachments) void cleanupAttachments?.();
       return result;
+    },
+
+    extendTask(user, { taskId, extendHours, reason, expectedVersion }) {
+      const id = recordId(taskId);
+      const hours = Number(extendHours);
+      if (!Number.isFinite(hours) || hours < 0.01 || hours !== Number(hours.toFixed(2))) {
+        throw new RequestError(400, '请填写有效的延长小时数，最小 0.01 小时，最多两位小数。');
+      }
+      const extReason = optionalText(reason, 500);
+      if (!extReason) throw new RequestError(400, '请填写延期原因。');
+      const result = store.update(db => {
+        const task = db.tasks.find(item => item.id === id);
+        if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
+        if (!canExtendTask(db, user, task)) {
+          throw new RequestError(403, '仅该任务的派发人或审批人可以延长交期，且任务须处于进行中并已规划。');
+        }
+        if (expectedVersion != null && Number.isSafeInteger(expectedVersion) && (task.revision ?? 0) !== expectedVersion) {
+          throw new RequestError(409, '任务已变化，请刷新后重试。');
+        }
+        db.taskExtensions ??= [];
+        const hasPending = db.taskExtensions.some(item => item.task_id === task.id && item.status === 'pending');
+        const isApprover = isDemandApprover(user, db);
+        if (hasPending) {
+          throw new RequestError(409, isApprover
+            ? '该任务已有待审批的延期申请，请先前往审批中心处理。'
+            : '该任务已有待审批的延期申请，请等待审批完成后再操作。');
+        }
+        const prevDue = task.planned_due_at;
+        const newDue = plannedCompletion(prevDue, hours, '立即');
+        if (!newDue) throw new RequestError(400, '延长时间超出可计算范围，请重新填写。');
+        const prevPlannedHours = Number(task.planned_hours) || 0;
+        const newPlannedHours = Number((prevPlannedHours + hours).toFixed(2));
+        const timestamp = now();
+        const actorName = displayName(db, user);
+
+        if (isApprover) {
+          task.planned_hours = newPlannedHours;
+          task.planned_due_at = newDue;
+          task.revision = (task.revision ?? 0) + 1;
+          task.updated_at = timestamp;
+          appendTaskHistory(db, user, task.id,
+            `延长交期（+${hours}h，计划投入工时：${prevPlannedHours}h → ${newPlannedHours}h，计划完成时间：${formatPlanningTime(prevDue)} → ${formatPlanningTime(newDue)}，原因：${extReason}）`);
+          if (validId(task.assignee_id) && task.assignee_id !== user.id) {
+            notifyUsers(db, [task.assignee_id], {
+              category: 'task_notice',
+              event: 'extended',
+              title: `任务交期已延长：${task.code}`,
+              body: `${actorName} 已将任务「${task.code}」${task.proj ? `（${task.proj}）` : ''}交期延长 ${hours}h，新计划完成时间：${formatPlanningTime(newDue)}，原因：${extReason}。`,
+              actor_name: actorName,
+              target_type: 'task',
+              target_id: task.id
+            });
+          }
+          return { applied: true, task: publicTask(db, user, task) };
+        }
+
+        db.seq.taskExtension ??= 1;
+        const app = {
+          id: db.seq.taskExtension++,
+          task_id: task.id,
+          task_code: task.code,
+          proj: task.proj ?? null,
+          owner_name: taskOwnerName(db, task) || null,
+          assignee_id: task.assignee_id ?? null,
+          extend_hours: hours,
+          reason: extReason,
+          prev_planned_hours: prevPlannedHours,
+          new_planned_hours: newPlannedHours,
+          prev_planned_due_at: prevDue,
+          new_planned_due_at: newDue,
+          applicant_id: user.id,
+          applicant_name: actorName,
+          status: 'pending',
+          reviewed_by_id: null,
+          reviewed_by_name: null,
+          reviewed_at: null,
+          reject_reason: null,
+          created_at: timestamp,
+          updated_at: timestamp
+        };
+        db.taskExtensions.unshift(app);
+        notifyUsers(db, demandApproverIds(db), {
+          category: 'task_extension',
+          event: 'submitted',
+          title: `新的延期审批申请：${task.code}`,
+          body: `${actorName} 申请将任务「${task.code}」${task.proj ? `（${task.proj}）` : ''}交期延长 ${hours}h（预计调整至 ${formatPlanningTime(newDue)}），原因：${extReason}，请前往审批中心处理。`,
+          actor_name: actorName,
+          target_type: 'task_extension',
+          target_id: app.id
+        });
+        return { applied: false, application: publicTaskExtension(db, app), task: publicTask(db, user, task) };
+      });
+      return result;
+    },
+
+    listTaskExtensions(user) {
+      const db = store.read();
+      if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以查看延期审批。');
+      const applications = (db.taskExtensions ?? [])
+        .map(app => publicTaskExtension(db, app))
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+      return { applications };
+    },
+
+    reviewTaskExtension(user, { applicationId, decision, reason }) {
+      const id = recordId(applicationId);
+      if (!['approve', 'reject'].includes(decision)) throw new RequestError(400, '审批操作无效。');
+      const rejectReason = decision === 'reject' ? optionalText(reason, 500) : null;
+      return store.update(db => {
+        if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以审批延期申请。');
+        const app = (db.taskExtensions ?? []).find(item => item.id === id);
+        if (!app) throw new RequestError(404, '未找到这条延期申请。');
+        if (app.status !== 'pending') throw new RequestError(409, '这条延期申请已审批，无需重复操作。');
+        const timestamp = now();
+        const reviewerName = displayName(db, user);
+        let updatedTask = null;
+        if (decision === 'approve') {
+          const task = db.tasks.find(item => item.id === app.task_id);
+          if (!task) throw new RequestError(409, '关联任务已不存在，无法通过延期，请驳回该申请。');
+          if (!ACTIVE_TASK_STATUSES.includes(task.status) || !task.planned_due_at) {
+            throw new RequestError(409, '关联任务已不在进行中状态，无法通过延期，请驳回该申请。');
+          }
+          const prevDue = task.planned_due_at;
+          const newDue = plannedCompletion(prevDue, app.extend_hours, '立即');
+          if (!newDue) throw new RequestError(400, '延长时间超出可计算范围，请驳回该申请。');
+          const prevPlannedHours = Number(task.planned_hours) || 0;
+          const newPlannedHours = Number((prevPlannedHours + app.extend_hours).toFixed(2));
+          task.planned_hours = newPlannedHours;
+          task.planned_due_at = newDue;
+          task.revision = (task.revision ?? 0) + 1;
+          task.updated_at = timestamp;
+          app.prev_planned_hours = prevPlannedHours;
+          app.new_planned_hours = newPlannedHours;
+          app.prev_planned_due_at = prevDue;
+          app.new_planned_due_at = newDue;
+          appendTaskHistory(db, user, task.id,
+            `延长交期（+${app.extend_hours}h，计划投入工时：${prevPlannedHours}h → ${newPlannedHours}h，计划完成时间：${formatPlanningTime(prevDue)} → ${formatPlanningTime(newDue)}，申请人：${app.applicant_name || '—'}，审批人：${reviewerName}，原因：${app.reason}）`);
+          updatedTask = task;
+        }
+        app.status = decision === 'approve' ? 'approved' : 'rejected';
+        app.reviewed_by_id = user.id;
+        app.reviewed_by_name = reviewerName;
+        app.reviewed_at = timestamp;
+        app.reject_reason = rejectReason;
+        app.updated_at = timestamp;
+
+        if (decision === 'approve') {
+          if (validId(app.applicant_id) && app.applicant_id !== user.id) {
+            notifyUsers(db, [app.applicant_id], {
+              category: 'task_extension',
+              event: 'approved',
+              title: `延期申请已通过：${app.task_code}`,
+              body: `${reviewerName} 已通过你对任务「${app.task_code}」${app.proj ? `（${app.proj}）` : ''}的延期申请（+${app.extend_hours}h），新计划完成时间：${formatPlanningTime(app.new_planned_due_at)}。`,
+              actor_name: reviewerName,
+              target_type: 'task',
+              target_id: app.task_id
+            });
+          }
+          if (updatedTask && validId(updatedTask.assignee_id) && updatedTask.assignee_id !== user.id && updatedTask.assignee_id !== app.applicant_id) {
+            notifyUsers(db, [updatedTask.assignee_id], {
+              category: 'task_notice',
+              event: 'extended',
+              title: `任务交期已延长：${updatedTask.code}`,
+              body: `${app.applicant_name || '管理员'} 申请并经 ${reviewerName} 审批通过，任务「${updatedTask.code}」${updatedTask.proj ? `（${updatedTask.proj}）` : ''}交期延长 ${app.extend_hours}h，新计划完成时间：${formatPlanningTime(app.new_planned_due_at)}，原因：${app.reason}。`,
+              actor_name: reviewerName,
+              target_type: 'task',
+              target_id: updatedTask.id
+            });
+          }
+        } else if (validId(app.applicant_id) && app.applicant_id !== user.id) {
+          const taskExists = db.tasks.some(t => t.id === app.task_id);
+          notifyUsers(db, [app.applicant_id], {
+            category: 'task_extension',
+            event: 'rejected',
+            title: `延期申请已驳回：${app.task_code}`,
+            body: `${reviewerName} 驳回了你对任务「${app.task_code}」${app.proj ? `（${app.proj}）` : ''}的延期申请（+${app.extend_hours}h）${rejectReason ? `，驳回原因：${rejectReason}` : ''}。`,
+            actor_name: reviewerName,
+            target_type: taskExists ? 'task' : null,
+            target_id: taskExists ? app.task_id : null
+          });
+        }
+        return {
+          application: publicTaskExtension(db, app),
+          task: updatedTask ? publicTask(db, user, updatedTask) : null
+        };
+      });
     },
 
     listMessages(user) {
