@@ -181,7 +181,7 @@ function canEditProfile(person) {
   return same(person.owner_id, state.user.id) ||
     (admin() && !state.accounts.some(account => account.is_primary_admin && same(account.id, person.owner_id)));
 }
-function canManageDemand(demand) { return admin() || same(demand.creator_id ?? demand.owner_id, state.user.id); }
+function canManageDemand() { return admin(); }
 function canEditTaskClassification(task) {
   const source = task.demand_id == null ? null : state.demands.find(demand => same(demand.id, task.demand_id));
   return source ? canManageDemand(source) : canEditTask(task);
@@ -701,7 +701,8 @@ function demandRows(demands) {
 function demandsPage() {
   const demandType = filterSelect('demandType', '按需求类型筛选', ['项目需求', '非项目需求'], '全部类型');
   const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求编码、项目或任务负责人')}${demandType}</div>`;
-  return heading('需求中心', '登记需求、派发任务并跟踪进度。', action('刷新', 'refresh') + action('＋ 新建需求', 'demand-new', '', 'button primary')) +
+  const actionsHtml = action('刷新', 'refresh') + (admin() ? action('＋ 新建需求', 'demand-new', '', 'button primary') : '');
+  return heading('需求中心', '登记需求、派发任务并跟踪进度。', actionsHtml) +
     pagedListPanel('demands', toolbar);
 }
 
@@ -1844,8 +1845,10 @@ function taskDispatchTime(task) {
   return Number.isFinite(dispatchedAt) ? dispatchTimeFormat.format(dispatchedAt) : null;
 }
 function taskDemandSection(task, source) {
-  if (!source && !Object.hasOwn(task, 'dispatched_at')) return '';
-  const code = source ? action(source.code, 'demand-detail', source.id, 'link') : '—';
+  if (!source && !task.demand_code && !Object.hasOwn(task, 'dispatched_at')) return '';
+  const demandId = source?.id ?? task.demand_id;
+  const demandCode = source?.code ?? task.demand_code;
+  const code = demandId != null && demandCode ? action(demandCode, 'project-req-demand', demandId, 'link') : '—';
   const meta = details([
     ['需求编号', code, true],
     ['派发人', task.dispatched_by_name],
@@ -3050,6 +3053,7 @@ function demandDetail(id) {
 }
 
 function demandForm() {
+  if (!admin()) return;
   const initial = { proj: { value: null, label: '' }, proposer: { value: null, label: '' } };
   const form = modalForm('新建需求', '需求编码将在保存后自动生成。',
     `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true, required: true })}${choiceField('需求提出方', 'proposer', { required: true })}</div>` + area('需求说明（必填）', 'descr', '', true) +
