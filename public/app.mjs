@@ -2464,7 +2464,10 @@ function taskExtendForm(id, { returnToDetail = false } = {}) {
     ['当前计划完成时间', currentDueText]
   ]) +
     '<div class="field"><label>延长小时数（必填，最多两位小数）</label><input type="number" name="extendHours" min="0.01" step="0.5" placeholder="例如：4" required></div>' +
-    '<div class="field"><label>调整后计划完成时间（动态计算）</label><input type="text" data-extend-due-preview readonly value="请输入延长小时数"></div>' +
+    '<dl class="form-grid task-form-facts task-schedule-summary">' +
+      '<div><dt>调整后计划投入工时</dt><dd data-extend-hours-preview aria-live="polite">—</dd></div>' +
+      '<div><dt>调整后计划完成时间</dt><dd data-extend-due-preview aria-live="polite">请输入延长小时数</dd></div>' +
+    '</dl>' +
     area('延期原因（必填）', 'reason', '', true);
   const form = modalForm(
     `延长交期 · ${task.code}`,
@@ -2501,16 +2504,19 @@ function taskExtendForm(id, { returnToDetail = false } = {}) {
     }
   );
   const hoursInput = form.querySelector('input[name="extendHours"]');
-  const previewInput = form.querySelector('[data-extend-due-preview]');
+  const hoursPreview = form.querySelector('[data-extend-hours-preview]');
+  const duePreview = form.querySelector('[data-extend-due-preview]');
   const updatePreview = () => {
     const val = Number(hoursInput.value);
     if (!hoursInput.value || !Number.isFinite(val) || val < 0.01 || val !== Number(val.toFixed(2))) {
-      previewInput.value = hoursInput.value ? '请输入有效的小时数（最小 0.01，最多两位小数）' : '请输入延长小时数';
+      hoursPreview.textContent = '—';
+      duePreview.textContent = hoursInput.value ? '请输入有效小时数' : '请输入延长小时数';
       return;
     }
     const nextDue = plannedCompletion(task.planned_due_at, val, '立即');
     const nextHours = Number((currentHours + val).toFixed(2));
-    previewInput.value = nextDue ? `${formatPlanningTime(nextDue)}（总计划投入 ${nextHours}h）` : '超出可计算时间范围';
+    hoursPreview.textContent = nextHours + 'h';
+    duePreview.textContent = nextDue ? formatPlanningTime(nextDue) : '超出可计算时间范围';
   };
   hoursInput?.addEventListener('input', updatePreview);
   hoursInput?.focus();
