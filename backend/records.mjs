@@ -406,13 +406,17 @@ function enrichedProjectRequirements(db, project) {
     rows.map(row => {
       const demand = demandsByCode.get(row.code);
       const task = demand ? tasksByDemandId.get(demand.id) : null;
+      const pendingPushApproval = (db.projectApplications ?? []).some(item =>
+        item.kind === 'push_requirement' && item.project_id === project.id &&
+        item.stage === stage && item.requirement_code === row.code && item.status === 'pending');
       return {
         ...row,
         demand_id: demand?.id ?? null,
         demand_code: demand?.code ?? null,
         task_id: task?.id ?? null,
         task_code: task?.code ?? null,
-        task_status: task?.status ?? null
+        task_status: task?.status ?? null,
+        pending_push_approval: pendingPushApproval
       };
     })
   ]));
@@ -574,10 +578,13 @@ function publicTaskExtension(db, app) {
 function publicProjectApplication(db, app) {
   return {
     id: app.id,
-    kind: app.kind === 'advance' ? 'advance' : 'create',
+    kind: app.kind === 'advance' ? 'advance' : app.kind === 'push_requirement' ? 'push_requirement' : 'create',
     project_id: app.project_id ?? null,
     from_stage: app.from_stage ?? null,
     to_stage: app.to_stage ?? null,
+    stage: app.stage ?? null,
+    requirement_code: app.requirement_code ?? null,
+    requirement_summary: app.requirement_summary ?? null,
     name: app.name,
     device_type: app.device_type ?? null,
     project_type: app.project_type || DEFAULT_PROJECT_TYPE,
@@ -1539,14 +1546,68 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         const row = db.projectRequirements?.[String(project.id)]?.[stage]?.rows?.find(item => item.code === code);
         if (!row) throw new RequestError(404, '未找到这条阶段需求，请刷新后重试。');
         if (projectDemandAlreadyPushed(db, project, row)) {
-          return { alreadyPushed: true, demand: null, task: null, requirements: enrichedProjectRequirements(db, project) };
+          return { alreadyPushed: true, pendingApproval: false, demand: null, task: null, application: null, requirements: enrichedProjectRequirements(db, project) };
+        }
+        db.projectApplications ??= [];
+        const hasPending = db.projectApplications.some(item =>
+          item.kind === 'push_requirement' && item.project_id === project.id &&
+          item.stage === stage && item.requirement_code === row.code && item.status === 'pending');
+        const isApprover = isDemandApprover(user, db);
+        if (hasPending) {
+          throw new RequestError(409, isApprover
+            ? '该条阶段需求已有待审批的推送申请，请先前往审批中心处理。'
+            : '该条阶段需求已有待审批的推送申请，请等待审批完成后再操作。');
+        }
+        if (!isApprover) {
+          db.seq.projectApplication ??= 1;
+          const timestamp = now();
+          const applicantName = displayName(db, user);
+          const reqSummary = [row.step_name, row.description, row.deliverable].filter(Boolean).join(' · ') || row.code;
+          const app = {
+            id: db.seq.projectApplication++,
+            kind: 'push_requirement',
+            project_id: project.id,
+            stage,
+            requirement_code: row.code,
+            requirement_summary: reqSummary,
+            name: project.name,
+            device_type: project.device_type ?? null,
+            project_type: project.project_type || DEFAULT_PROJECT_TYPE,
+            project_manager: project.project_manager ?? null,
+            npi_manager_id: validId(project.npi_manager_id) ? project.npi_manager_id : null,
+            initiation_files: {},
+            initiation_requirements: [],
+            applicant_id: user.id,
+            applicant_name: applicantName,
+            status: 'pending',
+            reviewed_by_id: null,
+            reviewed_by_name: null,
+            reviewed_at: null,
+            reject_reason: null,
+            created_project_id: null,
+            created_at: timestamp,
+            updated_at: timestamp
+          };
+          db.projectApplications.unshift(app);
+          notifyUsers(db, demandApproverIds(db), {
+            category: 'project_approval',
+            event: 'push_submitted',
+            title: `新的阶段需求推送申请：${project.name}`,
+            body: `${applicantName} 申请推送「${project.name} · ${stage}」的阶段需求「${row.code}」（${reqSummary}），请前往审批中心处理。`,
+            actor_name: applicantName,
+            target_type: 'project_application',
+            target_id: app.id
+          });
+          return { alreadyPushed: false, pendingApproval: true, demand: null, task: null, application: publicProjectApplication(db, app), requirements: enrichedProjectRequirements(db, project) };
         }
         const entry = pushSingleProjectRequirement(db, project, row, recordTaskChange);
-        return { alreadyPushed: false, demand: entry?.demand ?? null, task: entry?.task ?? null, requirements: enrichedProjectRequirements(db, project) };
+        return { alreadyPushed: false, pendingApproval: false, demand: entry?.demand ?? null, task: entry?.task ?? null, application: null, requirements: enrichedProjectRequirements(db, project) };
       });
       const db = store.read();
       return {
         alreadyPushed: result.alreadyPushed,
+        pendingApproval: result.pendingApproval,
+        application: result.application,
         demand: result.demand ? publicRecord(db, user, 'demands', result.demand) : null,
         task: result.task ? publicTask(db, user, result.task, result.demand) : null,
         requirements: result.requirements
@@ -1558,6 +1619,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         throw new RequestError(400, '推送参数无效。');
       }
       const result = store.update(db => {
+        if (!isDemandApprover(user, db)) {
+          throw new RequestError(403, '仅超级管理员或指定审批人可以一键推送阶段需求。');
+        }
         const project = findProject(db, { projectId, id, name });
         if (!project) throw new RequestError(404, '未找到此项目。');
         const created = syncProjectStageDemands(db, project, stage, recordTaskChange);
@@ -1718,30 +1782,16 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           if (!project) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
           if (action === 'update') {
             const nextDevice = deviceType !== undefined ? deviceType : project.device_type;
-            const nextType = projectType !== undefined ? projectType : (project.project_type || DEFAULT_PROJECT_TYPE);
+            if (projectType !== undefined && projectType !== (project.project_type || DEFAULT_PROJECT_TYPE)) {
+              throw new RequestError(400, '项目创建后项目类型不可修改。');
+            }
+            const nextType = project.project_type || DEFAULT_PROJECT_TYPE;
             const tuple = projectTupleKey(project.name, nextDevice, nextType);
             if (db.projects.some(item => item.id !== project.id && projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
               throw new RequestError(409, '相同项目名称、设备类型和项目类型的项目已存在。');
             }
             if (description !== undefined) project.description = description;
             if (deviceType !== undefined) project.device_type = deviceType;
-            if (projectType !== undefined && projectType !== project.project_type) {
-              project.project_type = projectType;
-              const timestamp = now();
-              for (const demand of db.demands) {
-                if (demand.project_id === project.id || demand.source_project_id === project.id) {
-                  demand.project_type = projectType;
-                  demand.updated_at = timestamp;
-                }
-              }
-              for (const task of db.tasks) {
-                if (task.project_id === project.id) {
-                  task.project_type = projectType;
-                  task.revision = (task.revision ?? 0) + 1;
-                  task.updated_at = timestamp;
-                }
-              }
-            }
             if (manager !== undefined) {
               if (manager !== null && manager !== project.project_manager && !(db.demandOptions.project_manager ?? []).includes(manager)) {
                 throw new RequestError(409, '项目经理已不可选，请刷新后重试。');
@@ -1819,6 +1869,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
               }
             }
           } else if (action === 'rename') {
+            if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以重命名项目。');
             if (nextName !== project.name) {
               const tuple = projectTupleKey(nextName, project.device_type, project.project_type);
               if (db.projects.some(item => item.id !== project.id && projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
@@ -1847,6 +1898,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
               }
             }
           } else if (action === 'remove') {
+            if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以删除项目。');
             db.projects = db.projects.filter(item => item.id !== project.id);
             syncDemandOptionProjects(db);
             if (db.projectRequirements) delete db.projectRequirements[String(project.id)];
@@ -1886,7 +1938,46 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         const timestamp = now();
         const reviewerName = displayName(db, user);
         const isAdvance = app.kind === 'advance';
+        const isPushRequirement = app.kind === 'push_requirement';
         let createdProject = null;
+        if (isPushRequirement) {
+          if (decision === 'approve') {
+            const project = (db.projects ?? []).find(item => item.id === app.project_id);
+            if (!project) throw new RequestError(409, '关联项目已不存在，无法审批通过，请驳回该申请。');
+            const row = db.projectRequirements?.[String(project.id)]?.[app.stage]?.rows?.find(item => item.code === app.requirement_code);
+            if (!row) throw new RequestError(409, '关联阶段需求已不存在，无法审批通过，请驳回该申请。');
+            if (projectDemandAlreadyPushed(db, project, row)) {
+              throw new RequestError(409, '该阶段需求已被推送，无需重复操作，请驳回该申请。');
+            }
+            pushSingleProjectRequirement(db, project, row, recordTaskChange);
+            createdProject = projectSummary(db, project);
+          }
+          app.status = decision === 'approve' ? 'approved' : 'rejected';
+          app.reviewed_by_id = user.id;
+          app.reviewed_by_name = reviewerName;
+          app.reviewed_at = timestamp;
+          app.reject_reason = rejectReason;
+          app.updated_at = timestamp;
+          if (validId(app.applicant_id) && app.applicant_id !== user.id) {
+            const projectExists = (db.projects ?? []).some(item => item.id === app.project_id);
+            notifyUsers(db, [app.applicant_id], {
+              category: 'project_approval',
+              event: decision === 'approve' ? 'push_approved' : 'push_rejected',
+              title: decision === 'approve' ? `阶段需求推送已通过：${app.name}` : `阶段需求推送已驳回：${app.name}`,
+              body: decision === 'approve'
+                ? `${reviewerName} 已审批通过你推送「${app.name} · ${app.stage}」阶段需求「${app.requirement_code}」的申请，需求与任务已自动派发给 NPI。`
+                : `${reviewerName} 驳回了你推送「${app.name} · ${app.stage}」阶段需求「${app.requirement_code}」的申请${rejectReason ? `，驳回原因：${rejectReason}` : ''}。`,
+              actor_name: reviewerName,
+              target_type: projectExists ? 'project' : 'project_application',
+              target_id: projectExists ? app.project_id : app.id
+            });
+          }
+          return {
+            application: publicProjectApplication(db, app),
+            project: createdProject,
+            catalog: projectCatalog(db)
+          };
+        }
         if (isAdvance) {
           if (decision === 'approve') {
             const project = (db.projects ?? []).find(item => item.id === app.project_id);

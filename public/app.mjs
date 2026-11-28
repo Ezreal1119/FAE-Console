@@ -496,8 +496,8 @@ async function refresh() {
 function action(label, name, id = '', className = 'button') {
   return `<button type="button" class="${className}" data-action="${name}" data-id="${text(id)}">${text(label)}</button>`;
 }
-function heading(title, description = '', actions = '') {
-  return `<header class="page-header"><div><h1>${text(title)}</h1>${description ? '<p>' + text(description) + '</p>' : ''}</div><div class="actions">${actions}</div></header>`;
+function heading(title, description = '', actions = '', badge = '') {
+  return `<header class="page-header"><div><h1>${text(title)}${badge ? ' ' + badge : ''}</h1>${description ? '<p>' + text(description) + '</p>' : ''}</div><div class="actions">${actions}</div></header>`;
 }
 function panel(title, body, accessory = '') {
   return `<section class="panel"><header class="panel-header"><h2>${text(title)}</h2>${accessory}</header>${body}</section>`;
@@ -825,8 +825,8 @@ function filteredProjectApprovals() {
   return state.projectApplications
     .filter(row => {
       if (targetStatus && (row.status || 'pending') !== targetStatus) return false;
-      const kindLabel = row.kind === 'advance' ? '推进阶段' : '新建项目';
-      return hasText(state.filters.projectApprovalQuery, kindLabel, row.name, row.project_type, row.device_type, row.from_stage, row.to_stage, row.project_manager, row.npi_manager, row.applicant_name);
+      const kindLabel = row.kind === 'advance' ? '推进阶段' : row.kind === 'push_requirement' ? '推送需求' : '新建项目';
+      return hasText(state.filters.projectApprovalQuery, kindLabel, row.name, row.project_type, row.device_type, row.from_stage, row.to_stage, row.stage, row.requirement_code, row.requirement_summary, row.project_manager, row.npi_manager, row.applicant_name);
     })
     .toSorted((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
 }
@@ -834,8 +834,17 @@ function projectApprovalRows(apps) {
   return apps.map(app => {
     const isPending = app.status === 'pending';
     const isAdvance = app.kind === 'advance';
-    const kindTag = isAdvance ? '<span class="tag start">推进阶段</span>' : '<span class="tag">新建项目</span>';
-    const stageOrManager = isAdvance ? `${app.from_stage || '—'} → ${app.to_stage || '—'}` : (app.project_manager || '—');
+    const isPush = app.kind === 'push_requirement';
+    const kindTag = isAdvance
+      ? '<span class="tag start">推进阶段</span>'
+      : isPush
+        ? '<span class="tag test">推送需求</span>'
+        : '<span class="tag">新建项目</span>';
+    const stageOrManager = isAdvance
+      ? `${app.from_stage || '—'} → ${app.to_stage || '—'}`
+      : isPush
+        ? `${app.stage || '—'} · ${app.requirement_code || '—'}`
+        : (app.project_manager || '—');
     const ops = isPending
       ? `<div class="row-actions">${action('通过', 'project-app-approve', app.id, 'link')}${action('驳回', 'project-app-reject', app.id, 'link danger')}</div>`
       : `<span class="muted text-small">${shown(app.reviewed_by_name)}</span>`;
@@ -1138,13 +1147,17 @@ function projectNpiOptions(people, currentId, currentName) {
 
 function projectDetailPage() {
   const isAdminUser = admin();
-  const detailActions = isAdminUser && state.projectDetail
+  const isApprover = demandApprover();
+  const detailActions = isApprover && state.projectDetail
     ? action('重命名项目', 'project-rename', state.projectDetail.project.id) +
       action('删除项目', 'project-remove', state.projectDetail.project.id, 'button danger') +
       action('返回项目中心', 'project-list')
     : action('返回项目中心', 'project-list');
   const titleName = state.projectDetail?.project.name || (/^\d+$/.test(linkedProjectName() || '') ? PAGE_TITLES.projectDetail : linkedProjectName()) || PAGE_TITLES.projectDetail;
-  const header = heading(titleName, '', detailActions);
+  const typeBadge = state.projectDetail?.project
+    ? `<span class="tag start" style="vertical-align:middle;margin-left:10px;font-weight:500;">${text(state.projectDetail.project.project_type || '标准项目')}</span>`
+    : '';
+  const header = heading(titleName, '', detailActions, typeBadge);
   if (!state.projectDetail) return header + panel('项目详情', projectLoading(state.projectDetailError, 'project-detail-load'));
 
   const { project } = state.projectDetail;
@@ -1153,8 +1166,6 @@ function projectDetailPage() {
     const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
     const nextStage = nextProjectStage(project, stages);
     const deviceOptions = projectSelectOptions(state.projectDetail.deviceTypes, 'device_type', project.device_type ?? '', '请选择设备类型');
-    const projectTypeOptions = (state.projectDetail.projectTypes ?? PROJECT_TYPES)
-      .map(type => option(type, project.project_type || '标准项目')).join('');
     const managerOptions = projectSelectOptions(state.projectDetail.projectManagers, 'project_manager', project.project_manager ?? '', '请选择项目经理');
     const npiOptions = projectNpiOptions(state.projectDetail.people, project.npi_manager_id, project.npi_manager);
     const advanceButton = !nextStage
@@ -1165,7 +1176,6 @@ function projectDetailPage() {
     config = `<form id="project-stage-form" class="stack">
       <div class="form-grid">
         <label>设备类型<select name="device_type">${deviceOptions}</select></label>
-        <label>项目类型<select name="project_type">${projectTypeOptions}</select></label>
         <label>项目经理<select name="project_manager">${managerOptions}</select></label>
         <label>NPI<select name="npi_manager_id">${npiOptions}</select></label>
       </div>
@@ -1189,7 +1199,7 @@ function projectDetailPage() {
     </div>`;
   } else {
     config = `<div class="stack">
-      ${details([['设备类型', project.device_type], ['项目类型', project.project_type], ['项目经理', project.project_manager], ['NPI', project.npi_manager]])}
+      ${details([['设备类型', project.device_type], ['项目经理', project.project_manager], ['NPI', project.npi_manager]])}
       ${details([['项目描述', project.description]], 'stack')}
     </div>
     <div class="project-files-section">
@@ -1199,9 +1209,11 @@ function projectDetailPage() {
   }
 
   const { requirements } = state.projectDetail;
+  const reqActions = isAdminUser
+    ? '<div class="actions">' + (isApprover ? action('一键推送', 'project-requirement-push-stage') : '') + action('＋ 新增需求', 'project-requirement-add') + '</div>'
+    : '';
   return header + panel('项目配置', config, projectStageBadge(project.stage)) +
-    panel('阶段需求', projectRequirementTabs(requirements, selectedRequirementStage(requirements, project)),
-      isAdminUser ? '<div class="actions">' + action('一键推送', 'project-requirement-push-stage') + action('＋ 新增需求', 'project-requirement-add') + '</div>' : '');
+    panel('阶段需求', projectRequirementTabs(requirements, selectedRequirementStage(requirements, project)), reqActions);
 }
 
 function projectConfigPage() {
@@ -1810,6 +1822,11 @@ function projectRequirementForm(code) {
     toast(action === 'remove' ? '需求已删除。' : '需求已保存。');
   }
   const canPush = Boolean(row && !isTemplate);
+  const pushLeading = canPush
+    ? (row.pending_push_approval
+      ? '<button type="button" class="button" disabled title="该需求已有待审批的推送申请">推送审批中</button>'
+      : '<button type="button" class="button" data-action-push>推送需求</button>')
+    : '';
   const form = modalForm(row ? '编辑阶段需求' : '新增阶段需求', subtitle, fields, async (values, remove) => {
     if (!remove && !trimmed(values.description) && !trimmed(values.deliverable)) throw new Error('请填写需求说明或交付内容。');
     const operation = remove ? 'remove' : row ? 'update' : 'add';
@@ -1828,17 +1845,21 @@ function projectRequirementForm(code) {
   }, {
     secondarySubmit: row ? '删除' : undefined,
     hideCancel: !isTemplate,
-    leadingActions: canPush ? '<button type="button" class="button" data-action-push>推送需求</button>' : ''
+    leadingActions: pushLeading
   });
   if (isTemplate && row) form.querySelector('[value="secondary"]').formNoValidate = true;
-  if (canPush) {
+  if (canPush && !row.pending_push_approval) {
     const pushBtn = form.querySelector('[data-action-push]');
     pushBtn.addEventListener('click', () => {
       if (row.pushed || row.demand_id) {
         modal('提示', '', '<p>该需求已经推送过，无需重复推送。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
         return;
       }
-      modalForm('确认推送需求', `确定将「${subtitle}」推送到需求中心并派发给 NPI 吗？`, '', async () => {
+      const isApprover = demandApprover();
+      const promptText = isApprover
+        ? `确定将「${subtitle}」推送到需求中心并派发给 NPI 吗？`
+        : `提交后将进入审批中心，审批通过后将自动将「${subtitle}」推送到需求中心并派发给 NPI。`;
+      modalForm(isApprover ? '确认推送需求' : '申请推送需求', promptText, '', async () => {
         const result = await post('/api/admin/projects/requirements/push', { projectId: project.id, stage, code: row.code });
         if (state.page === page && state.projectDetail === detail && result.requirements) {
           detail.requirements = result.requirements;
@@ -1848,16 +1869,20 @@ function projectRequirementForm(code) {
           modal('提示', '', '<p>该需求已经推送过，无需重复推送。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
           return false;
         }
+        if (result.pendingApproval) {
+          toast('推送需求申请已提交，等待审批。');
+          return;
+        }
         if (result.demand) updateRow('demands', result.demand);
         if (result.task) updateRow('tasks', normalizeTask(result.task));
         toast(result.task ? '已推送到需求中心并派发给 NPI。' : '已推送到需求中心。');
-      }, { submit: '确认推送', onCancel: () => projectRequirementForm(code) });
+      }, { submit: isApprover ? '确认推送' : '提交申请', onCancel: () => projectRequirementForm(code) });
     });
   }
 }
 
 function projectRequirementPushStage() {
-  if (!admin() || state.page !== 'projectDetail' || !state.projectDetail) return;
+  if (!demandApprover() || state.page !== 'projectDetail' || !state.projectDetail) return;
   const detail = state.projectDetail;
   const { project, requirements } = detail;
   const stage = selectedRequirementStage(requirements, project);
@@ -3307,10 +3332,12 @@ function projectApplicationDetail(id) {
   if (!app) { toast('未找到这条项目申请。'); return; }
   const isPending = app.status === 'pending';
   const isAdvance = app.kind === 'advance';
+  const isPush = app.kind === 'push_requirement';
   const info = details([
-    ['申请类型', isAdvance ? '推进阶段' : '新建项目'],
+    ['申请类型', isAdvance ? '推进阶段' : isPush ? '推送需求' : '新建项目'],
     ['项目名称', app.name],
     ...(isAdvance ? [['推进阶段', `${app.from_stage || '—'} → ${app.to_stage || '—'}`]] : []),
+    ...(isPush ? [['所属阶段', app.stage || '—'], ['需求编号', app.requirement_code || '—']] : []),
     ['项目类型', app.project_type],
     ['设备类型', app.device_type],
     ['项目经理', app.project_manager],
@@ -3320,6 +3347,8 @@ function projectApplicationDetail(id) {
     ['审批状态', approvalStatusBadge(app.status), true],
     ...(app.reviewed_by_name ? [['审批人', app.reviewed_by_name]] : [])
   ]);
+  const summaryBlock = isPush && app.requirement_summary
+    ? `<div class="details-list"><div class="detail-item"><strong>阶段需求内容</strong><p class="muted">${shown(app.requirement_summary)}</p></div></div>` : '';
   const rejectBlock = app.status === 'rejected' && app.reject_reason
     ? `<div class="details-list"><div class="detail-item"><strong>驳回原因</strong><p class="text-red">${shown(app.reject_reason)}</p></div></div>` : '';
   const customReqs = app.initiation_requirements ?? [];
@@ -3337,7 +3366,7 @@ function projectApplicationDetail(id) {
   const footer = isPending
     ? `<div class="dialog-actions"><button type="button" class="button danger" data-proj-app-action="reject">驳回</button><button type="button" class="button success" data-proj-app-action="approve">通过</button></div>`
     : '';
-  modal(isAdvance ? '推进项目申请' : '项目创建申请', app.name, `<div class="stack">${info}${rejectBlock}${customBlock}${filesBlock}</div>${footer}`, false, '', true);
+  modal(isAdvance ? '推进项目申请' : isPush ? '推送需求申请' : '项目创建申请', app.name, `<div class="stack">${info}${summaryBlock}${rejectBlock}${customBlock}${filesBlock}</div>${footer}`, false, '', true);
   dialog.querySelector('[data-proj-app-action="approve"]')?.addEventListener('click', () => approveProjectApplication(app.id, () => projectApplicationDetail(app.id)));
   dialog.querySelector('[data-proj-app-action="reject"]')?.addEventListener('click', () => rejectProjectApplication(app.id, () => projectApplicationDetail(app.id)));
 }
@@ -3346,17 +3375,20 @@ function approveProjectApplication(id, onCancel) {
   const app = state.projectApplications.find(item => same(item.id, id));
   if (!demandApprover() || !app || app.status !== 'pending') return;
   const isAdvance = app.kind === 'advance';
+  const isPush = app.kind === 'push_requirement';
   const promptText = isAdvance
     ? `确定审批通过「${app.applicant_name}」将项目「${app.name}」从「${app.from_stage}」推进至「${app.to_stage}」的申请？通过后将自动推进项目并派发新阶段任务。`
-    : `确定审批通过「${app.applicant_name}」申请新建的${app.project_type}「${app.name}（${app.device_type}）」？通过后将自动创建项目并派发立项任务。`;
-  modalForm(isAdvance ? '审批通过推进申请' : '审批通过项目申请', promptText, '', async () => {
+    : isPush
+      ? `确定审批通过「${app.applicant_name}」推送「${app.name} · ${app.stage}」阶段需求「${app.requirement_code}」的申请？通过后将自动生成需求并派发给 NPI。`
+      : `确定审批通过「${app.applicant_name}」申请新建的${app.project_type}「${app.name}（${app.device_type}）」？通过后将自动创建项目并派发立项任务。`;
+  modalForm(isAdvance ? '审批通过推进申请' : isPush ? '审批通过推送申请' : '审批通过项目申请', promptText, '', async () => {
     const result = await post('/api/admin/project-applications/review', { applicationId: app.id, decision: 'approve' });
     state.projectApplications = state.projectApplications.map(item => same(item.id, app.id) ? result.application : item);
     if (result.catalog) state.projectCatalog = result.catalog;
     updateSidebarBadges();
     render();
     void refresh();
-    toast(isAdvance ? '推进申请已审批通过并派发新阶段任务。' : '项目申请已审批通过并创建项目。');
+    toast(isAdvance ? '推进申请已审批通过并派发新阶段任务。' : isPush ? '推送申请已审批通过并派发给 NPI。' : '项目申请已审批通过并创建项目。');
   }, { submit: '确认通过', submitClass: 'success', onCancel });
 }
 
@@ -3364,16 +3396,19 @@ function rejectProjectApplication(id, onCancel) {
   const app = state.projectApplications.find(item => same(item.id, id));
   if (!demandApprover() || !app || app.status !== 'pending') return;
   const isAdvance = app.kind === 'advance';
+  const isPush = app.kind === 'push_requirement';
   const promptText = isAdvance
     ? `确定驳回「${app.applicant_name}」将项目「${app.name}」推进至「${app.to_stage}」的申请？`
-    : `确定驳回「${app.applicant_name}」申请新建的「${app.name}」？`;
-  modalForm(isAdvance ? '驳回推进申请' : '驳回项目申请', promptText,
+    : isPush
+      ? `确定驳回「${app.applicant_name}」推送「${app.name} · ${app.stage}」阶段需求「${app.requirement_code}」的申请？`
+      : `确定驳回「${app.applicant_name}」申请新建的「${app.name}」？`;
+  modalForm(isAdvance ? '驳回推进申请' : isPush ? '驳回推送申请' : '驳回项目申请', promptText,
     area('驳回原因（选填）', 'reason', '', false), async values => {
       const result = await post('/api/admin/project-applications/review', { applicationId: app.id, decision: 'reject', reason: optional(values.reason) });
       state.projectApplications = state.projectApplications.map(item => same(item.id, app.id) ? result.application : item);
       updateSidebarBadges();
       render();
-      toast(isAdvance ? '推进申请已驳回。' : '项目申请已驳回。');
+      toast(isAdvance ? '推进申请已驳回。' : isPush ? '推送申请已驳回。' : '项目申请已驳回。');
     }, { danger: true, submit: '确认驳回', onCancel });
 }
 
