@@ -1,7 +1,9 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { attachmentKind, bindAttachments } from './attachments.mjs';
 import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
-import { changeProjectRequirement, initializeProjectRequirements, projectRequirementRows } from './project-requirements.mjs';
+import {
+  changeProjectRequirement, changeProjectTemplateRequirement, initializeProjectRequirements, projectRequirementRows, projectTemplateRows
+} from './project-requirements.mjs';
 import { RequestError } from './store.mjs';
 import { ACTIVE_TASK_STATUSES, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
 
@@ -742,6 +744,10 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
     },
 
     changeProjectRequirement: input => store.update(db => changeProjectRequirement(db, input)),
+
+    projectRequirementTemplate: () => ({ requirements: projectTemplateRows(store.read()) }),
+
+    changeProjectTemplateRequirement: input => store.update(db => changeProjectTemplateRequirement(db, input)),
 
     changeProject({ action, name, stage, newName, description, device_type: deviceType }) {
       if (!['create', 'update', 'rename', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');

@@ -18,10 +18,12 @@ const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
 const TASK_KINDS = { L: '临时任务', W: '工作任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态' };
-const npiStages = ['EVT', 'DVT', 'PVT', 'MP'];
+const npiStages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
+const projectPages = ['projects', 'projectDetail', 'projectConfig'];
+const pageQueryKeys = { taskLink: 'task', projectDetail: 'project', projectConfig: 'project-config' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
   taskQuery: '', taskStatus: '未完成', taskPriority: '', taskStage: '', taskTeam: '', taskScope: 'mine',
@@ -39,6 +41,7 @@ const state = {
   catalog: { teams: [], roles: [] },
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proposer',
   projectCatalog: null, projectCatalogError: '', projectDetail: null, projectDetailError: '', projectStageTab: null,
+  projectTemplate: null, projectTemplateError: '',
   guidelines: undefined, guidelinesError: '', guidelinesPending: false,
   loadWarnings: [], workDataLoaded: false
 };
@@ -46,6 +49,7 @@ let toastTimer;
 let demandCatalogLoad;
 let projectCatalogLoad;
 let projectDetailLoad;
+let projectTemplateLoad;
 let guidelinesLoad;
 let guidelinesReachedEnd = false;
 let refreshVersion = 0;
@@ -203,6 +207,8 @@ function showAuth(error = '') {
   state.projectDetail = null;
   state.projectDetailError = '';
   state.projectStageTab = null;
+  state.projectTemplate = null;
+  state.projectTemplateError = '';
   state.guidelines = undefined;
   state.guidelinesError = '';
   state.guidelinesPending = false;
@@ -285,6 +291,12 @@ function linkedTaskId() {
 function linkedProjectName() {
   return new URLSearchParams(location.search).get('project');
 }
+function linkedProjectPage() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('project')) return 'projectDetail';
+  if (params.get('project-config') === '1') return 'projectConfig';
+  return null;
+}
 async function enter(user, guidelinesPending) {
   state.user = user;
   state.filters.taskScope = admin() ? 'all' : 'mine';
@@ -301,11 +313,12 @@ async function enter(user, guidelinesPending) {
 }
 async function enterWorkspace() {
   if (linkedTaskId() !== null) state.page = 'taskLink';
-  else if (admin() && linkedProjectName() !== null) state.page = 'projectDetail';
+  else if (admin()) state.page = linkedProjectPage() ?? state.page;
   showWorkspace();
   content.innerHTML = '<p class="empty">正在读取工作数据…</p>';
   if (state.guidelinesPending) openGuidelinesNotice();
   if (state.page === 'projectDetail') await loadProjectDetail();
+  else if (state.page === 'projectConfig') await loadProjectTemplate();
   else await refresh();
 }
 async function refresh() {
@@ -333,7 +346,7 @@ async function refresh() {
     }
   });
   showWorkspace();
-  if (!['projects', 'projectDetail'].includes(state.page)) render();
+  if (!projectPages.includes(state.page)) render();
 }
 
 function action(label, name, id = '', className = 'button') {
@@ -719,10 +732,12 @@ async function changeDemandOption(kind, operation, name) {
 }
 
 function projectsPage() {
-  const header = heading(PAGE_TITLES.projects, '', state.projectCatalog ? action('＋ 新建项目', 'project-new', '', 'button primary') : '');
+  const configLink = '<a class="button" data-project-link="projectConfig" href="/?project-config=1">项目配置</a>';
+  const header = heading(PAGE_TITLES.projects, '', configLink +
+    (state.projectCatalog ? action('＋ 新建项目', 'project-new', '', 'button primary') : ''));
   if (!state.projectCatalog) return header + panel('项目列表', projectLoading(state.projectCatalogError, 'project-load'));
   const rows = state.projectCatalog.projects.toSorted((a, b) => sortZh(a.name, b.name)).map(project => `<tr>
-    <td><a class="link" data-project-link href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td>
+    <td><a class="link" data-project-link="projectDetail" href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td>
     <td>${shown(project.stage)}</td><td>${shown(project.device_type)}</td>${descCell(project.description)}</tr>`).join('');
   return header + panel('项目列表', table(['项目名称', '项目阶段', '设备类型', '项目描述'], rows, '暂无项目。', 'project-rows'));
 }
@@ -774,22 +789,41 @@ function projectDetailPage() {
     </div>
   </form>`;
 
-  const selected = state.projectStageTab ?? (npiStages.includes(project.stage) ? project.stage : npiStages[0]);
-  const tabs = npiStages.map(stage => `<button type="button" class="button" role="tab" id="npi-tab-${stage}" data-project-stage-tab="${stage}"
-    aria-controls="npi-panel-${stage}" aria-selected="${stage === selected}" tabindex="${stage === selected ? 0 : -1}">${stage}</button>`).join('');
-  const stagePanels = npiStages.map(stage => `<div class="project-stage-table" role="tabpanel" tabindex="0" id="npi-panel-${stage}"
-    aria-labelledby="npi-tab-${stage}"${stage === selected ? '' : ' hidden'}>${projectRequirementsTable(stage)}</div>`).join('');
   return header + panel('项目配置', config, projectStageBadge(project.stage)) +
-    panel('阶段需求', `<div class="catalog-tabs" role="tablist" aria-label="项目阶段需求">${tabs}</div>` +
-      stagePanels, action('＋ 新增需求', 'project-requirement-add'));
+    panel('阶段需求', projectRequirementTabs(state.projectDetail.requirements, selectedRequirementStage(project)),
+      action('＋ 新增需求', 'project-requirement-add'));
 }
 
-function projectRequirementsTable(stage) {
-  const rows = state.projectDetail.requirements[stage].map(item => `<tr>
-    <td><button type="button" class="link" data-action="project-requirement-edit" data-id="${text(item.code)}" aria-label="编辑需求 ${text(item.code)}">${text(item.code)}</button></td>
-    <td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
-    <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td></tr>`).join('');
-  return table(['编号', '需求说明', '交付内容', '计划投入工时'], rows, '本阶段暂无需求。');
+function projectConfigPage() {
+  const header = heading(PAGE_TITLES.projectConfig, '模板用于初始化之后新建项目的阶段需求。', action('返回项目列表', 'project-list'));
+  if (!state.projectTemplate) return header + panel('阶段需求模板', projectLoading(state.projectTemplateError, 'project-template-load'));
+  return header + panel('阶段需求模板', projectRequirementTabs(state.projectTemplate.requirements, selectedRequirementStage(), true),
+    action('＋ 新增需求', 'project-requirement-add'));
+}
+
+function selectedRequirementStage(project) {
+  return state.projectStageTab ?? (project ? (npiStages.includes(project.stage) ? project.stage : 'EVT') : npiStages[0]);
+}
+
+function projectRequirementTabs(requirements, selected, isTemplate = false) {
+  const tabs = npiStages.map(stage => `<button type="button" class="button" role="tab" id="npi-tab-${stage}" data-project-stage-tab="${stage}"
+    aria-controls="npi-panel-${stage}" aria-selected="${stage === selected}" tabindex="${stage === selected ? 0 : -1}">${stage}</button>`).join('');
+  const stagePanels = npiStages.map(stage => `<div class="project-stage-table${isTemplate ? ' project-template-table' : ''}" role="tabpanel"
+    tabindex="0" id="npi-panel-${stage}" aria-labelledby="npi-tab-${stage}"${stage === selected ? '' : ' hidden'}>
+    ${projectRequirementsTable(requirements[stage], isTemplate)}</div>`).join('');
+  return `<div class="catalog-tabs" role="tablist" aria-label="项目阶段需求">${tabs}</div>` + stagePanels;
+}
+
+function projectRequirementsTable(requirements, isTemplate) {
+  const headers = ['编号', '需求说明', '交付内容', '计划投入工时'];
+  if (isTemplate) headers.push('操作');
+  const rows = requirements.map(item => {
+    const code = text(item.code);
+    const edit = `<button type="button" class="link" data-action="project-requirement-edit" data-id="${code}" aria-label="编辑需求 ${code}">${isTemplate ? '编辑' : code}</button>`;
+    return `<tr><td>${isTemplate ? code : edit}</td><td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
+      <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : ''}</tr>`;
+  }).join('');
+  return table(headers, rows, '本阶段暂无需求。');
 }
 
 function selectProjectStageTab(tab, focus = true) {
@@ -838,6 +872,23 @@ async function loadProjectDetail() {
     if (current()) state.projectDetail = result;
   } catch (error) {
     if (current()) state.projectDetailError = error.message;
+  }
+  if (current()) render();
+}
+
+async function loadProjectTemplate() {
+  const session = state.user;
+  state.projectTemplate = null;
+  state.projectTemplateError = '';
+  render();
+  const pending = request('/api/admin/projects/requirement-template', { signal: AbortSignal.timeout(10000) });
+  projectTemplateLoad = pending;
+  const current = () => projectTemplateLoad === pending && session === state.user && state.page === 'projectConfig';
+  try {
+    const result = await pending;
+    if (current()) state.projectTemplate = result;
+  } catch (error) {
+    if (current()) state.projectTemplateError = error.message;
   }
   if (current()) render();
 }
@@ -937,24 +988,28 @@ function projectDeleteForm(name) {
 }
 
 function projectRequirementForm(code) {
-  if (!state.projectDetail) return;
-  const { project, requirements } = state.projectDetail;
-  const stage = state.projectStageTab ?? (npiStages.includes(project.stage) ? project.stage : npiStages[0]);
+  const page = state.page;
+  const isTemplate = page === 'projectConfig';
+  const detail = isTemplate ? state.projectTemplate : state.projectDetail;
+  if (!detail) return;
+  const { project, requirements } = detail;
+  const stage = selectedRequirementStage(project);
   const row = requirements[stage].find(item => item.code === code);
   if (code && !row) return;
-  const subtitle = project.name + ' · ' + (row?.code ?? stage);
+  const subtitle = (project?.name ?? '项目模板') + ' · ' + (row?.code ?? stage);
   const fields = area('需求说明', 'description', row?.description) + area('交付内容', 'deliverable', row?.deliverable) +
     field('计划投入工时（小时）', 'hours', row?.planned_hours, 'type="number" min="0" step="any" inputmode="decimal"');
   async function save(action, values = {}) {
-    const result = await post('/api/admin/projects/requirements/change', {
-      name: project.name, stage, action, code: row?.code, revision: row?.revision,
+    const endpoint = isTemplate ? '/api/admin/projects/requirement-template/change' : '/api/admin/projects/requirements/change';
+    const result = await post(endpoint, {
+      name: project?.name, stage, action, code: row?.code, revision: row?.revision,
       description: values.description, deliverable: values.deliverable,
       planned_hours: values.hours ? Number(values.hours) : null
     });
-    if (state.page === 'projectDetail' && state.projectDetail?.project.name === project.name) {
-      state.projectDetail.requirements = result.requirements;
+    if (state.page === page && (isTemplate ? state.projectTemplate : state.projectDetail) === detail) {
+      detail.requirements = result.requirements;
       for (const phase of npiStages) {
-        document.getElementById('npi-panel-' + phase).innerHTML = projectRequirementsTable(phase);
+        document.getElementById('npi-panel-' + phase).innerHTML = projectRequirementsTable(result.requirements[phase], isTemplate);
       }
     }
     toast(action === 'remove' ? '需求已删除。' : '需求已保存。');
@@ -1143,11 +1198,11 @@ function openGuidelinesNotice() {
   void loadGuidelines();
 }
 
-const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, projects: projectsPage, projectDetail: projectDetailPage, demandCatalog: demandCatalogPage,
+const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, projects: projectsPage, projectDetail: projectDetailPage, projectConfig: projectConfigPage, demandCatalog: demandCatalogPage,
   people: peoplePage, board: boardPage, guidelines: guidelinesPage };
 function render() {
   if (!state.user) return;
-  const navPage = state.page === 'taskLink' ? 'tasks' : state.page === 'projectDetail' ? 'projects' : state.page;
+  const navPage = state.page === 'taskLink' ? 'tasks' : projectPages.includes(state.page) ? 'projects' : state.page;
   document.querySelectorAll('[data-page]').forEach(button => {
     const active = button.dataset.page === navPage;
     button.classList.toggle('active', active);
@@ -1155,22 +1210,26 @@ function render() {
     else button.removeAttribute('aria-current');
   });
   document.title = PAGE_TITLES[state.page] + ' · 工程小管家';
-  const warnings = state.loadWarnings.length && !['projects', 'projectDetail'].includes(state.page)
+  const warnings = state.loadWarnings.length && !projectPages.includes(state.page)
     ? `<div class="panel actions" role="status"><span class="text-red">${text(state.loadWarnings.join('、'))}加载失败。</span>${action('重新加载', 'refresh', '', 'link')}</div>` : '';
   content.innerHTML = warnings + pages[state.page]();
 }
 function navigate(page) {
-  if (!Object.hasOwn(pages, page) || (['demandCatalog', 'projects', 'projectDetail'].includes(page) && !admin())) return;
-  if (['taskLink', 'projectDetail'].includes(state.page) && page !== state.page) {
+  if (!Object.hasOwn(pages, page) || ((page === 'demandCatalog' || projectPages.includes(page)) && !admin())) return;
+  const queryKey = pageQueryKeys[state.page];
+  if (queryKey && page !== state.page) {
     const url = new URL(location.href);
-    url.searchParams.delete(state.page === 'taskLink' ? 'task' : 'project');
-    history.replaceState(null, '', url);
+    if (url.searchParams.has(queryKey)) {
+      url.searchParams.delete(queryKey);
+      history.replaceState(null, '', url);
+    }
   }
   state.projectStageTab = null;
   state.page = page;
   if (page === 'demandCatalog') void loadDemandCatalog();
   else if (page === 'projects') void loadProjects();
   else if (page === 'projectDetail') void loadProjectDetail();
+  else if (page === 'projectConfig') void loadProjectTemplate();
   else {
     render();
     if (page === 'guidelines') void loadGuidelines();
@@ -2697,6 +2756,7 @@ const actions = {
   },
   'project-load': loadProjects,
   'project-detail-load': loadProjectDetail,
+  'project-template-load': loadProjectTemplate,
   'project-new': () => projectForm(),
   'project-rename': projectRenameForm,
   'project-advance': projectAdvanceForm,
@@ -2796,12 +2856,13 @@ content.addEventListener('click', event => {
   if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   history.pushState({ fromProjectList: true }, '', link.href);
-  navigate('projectDetail');
+  navigate(link.dataset.projectLink);
 });
 window.addEventListener('popstate', () => {
   if (!admin()) return;
-  if (linkedProjectName() !== null) navigate('projectDetail');
-  else if (state.page === 'projectDetail') navigate('projects');
+  const page = linkedProjectPage();
+  if (page) navigate(page);
+  else if (state.page === 'projectDetail' || state.page === 'projectConfig') navigate('projects');
 });
 content.addEventListener('keydown', event => {
   const tab = event.target.closest('[data-project-stage-tab]');

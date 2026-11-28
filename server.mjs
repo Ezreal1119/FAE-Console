@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { isAdmin, openAccounts, sessionSeconds } from './backend/accounts.mjs';
 import { openAttachments } from './backend/attachments.mjs';
 import { MEMBER_IMPORT_LIMIT_BYTES, readMemberWorkbook } from './backend/member-import.mjs';
-import { seedProjectRequirements } from './backend/project-requirements.mjs';
+import { seedProjectRequirements, upgradeProjectRequirementTemplate } from './backend/project-requirements.mjs';
 import { openRecords } from './backend/records.mjs';
 import { openSftpStorage } from './backend/sftp-storage.mjs';
 import { openStore, RequestError } from './backend/store.mjs';
@@ -19,6 +19,7 @@ const trustProxy = process.env.TRUST_PROXY === '1';
 const sessionCookie = 'fae_console_session';
 const dataDirectory = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : fileURLToPath(new URL('./data/', import.meta.url));
 const store = openStore(dataDirectory);
+upgradeProjectRequirementTemplate(store);
 if (!store.read().projectRequirementTemplate) {
   await readFile(resolve(dataDirectory, 'npi-stage-seed.json'), 'utf8')
     .then(source => seedProjectRequirements(store, JSON.parse(source)))
@@ -64,6 +65,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-wecom', 'POST'],
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
+  ['/api/admin/projects/requirement-template', 'GET'], ['/api/admin/projects/requirement-template/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/demands/attachments', 'POST'], ['/api/demands/attachments/delete', 'POST'],
   ['/api/tasks/plan-preview', 'POST'], ['/api/tasks/start', 'POST'], ['/api/tasks/complete', 'POST'], ['/api/tasks/transfer', 'POST'],
@@ -218,6 +220,8 @@ function privateApi(url, session, body) {
     case '/api/admin/projects/detail': return records.projectDetail(url.searchParams.get('name'));
     case '/api/admin/projects/change': return records.changeProject(body);
     case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
+    case '/api/admin/projects/requirement-template': return records.projectRequirementTemplate();
+    case '/api/admin/projects/requirement-template/change': return records.changeProjectTemplateRequirement(body);
     case '/api/demand-options': return records.demandChoices();
     case '/api/admin/demand-options': return records.changeDemandOptions(body);
     case '/api/demands/dispatch': return records.dispatchDemand(session.user, body);
