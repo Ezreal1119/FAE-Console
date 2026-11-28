@@ -359,7 +359,7 @@ function pushSingleProjectRequirement(db, project, reqRow, recordTaskChange, del
     proj: project.name,
     project_id: project.id,
     project_type: project.project_type || DEFAULT_PROJECT_TYPE,
-    proposer: '项目',
+    proposer: '项目部',
     descr: formatProjectRequirementDescription(reqRow),
     code: projectDemandCode(project, reqRow.code, date),
     is_project_demand: true,
