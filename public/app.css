@@ -238,9 +238,9 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .details-list + .task-upload-history-bar, .task-demand-section + .task-upload-history-bar { margin-top: 14px; }
 .stack > .task-upload-history-bar { margin-top: 0; }
 .task-demand-section h3 { font-size: .9rem; color: var(--ink); }
-.task-demand-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, .65fr) minmax(0, 1.15fr); gap: 10px 14px; margin: 0; }
-.task-demand-grid dd { font-size: .88rem; }
-.task-demand-grid .link { text-align: left; font-size: .88rem; word-break: break-word; }
+.task-demand-grid { display: grid; grid-template-columns: minmax(0, 1.85fr) minmax(0, .55fr) minmax(0, 1.05fr); gap: 10px 12px; margin: 0; }
+.task-demand-grid dd { font-size: .84rem; }
+.task-demand-grid .link { text-align: left; font-size: .82rem; white-space: nowrap; }
 .task-demand-files { padding-top: 8px; border-top: 1px solid var(--line); }
 .task-schedule-summary { padding: 12px 14px; border-radius: 8px; background: var(--page); }
 .task-schedule-summary dd { font-variant-numeric: tabular-nums; }

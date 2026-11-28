@@ -23,6 +23,8 @@ const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任�
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理' };
 const npiStages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
+const PROJECT_TYPES = ['标准项目', 'SKD', 'CKD'];
+const PROJECT_TYPE_CONFIG_LABELS = { 标准项目: '标准项目配置', SKD: 'SKD项目配置', CKD: 'CKD项目配置' };
 const projectPages = ['projects', 'projectDetail', 'projectConfig'];
 const pageQueryKeys = { taskLink: 'task', projectDetail: 'project', projectConfig: 'project-config' };
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
@@ -42,7 +44,7 @@ const state = {
   catalog: { teams: [], roles: [] },
   demandCatalog: null, demandCatalogError: '', demandCatalogKind: 'proposer',
   projectCatalog: null, projectCatalogError: '', projectDetail: null, projectDetailError: '', projectStageTab: null,
-  projectTemplate: null, projectTemplateError: '',
+  projectTemplate: null, projectTemplateError: '', projectTemplateType: '标准项目',
   guidelines: undefined, guidelinesError: '', guidelinesPending: false,
   loadWarnings: [], workDataLoaded: false
 };
@@ -210,6 +212,7 @@ function showAuth(error = '') {
   state.projectStageTab = null;
   state.projectTemplate = null;
   state.projectTemplateError = '';
+  state.projectTemplateType = '标准项目';
   state.guidelines = undefined;
   state.guidelinesError = '';
   state.guidelinesPending = false;
@@ -825,10 +828,12 @@ function projectsPage() {
     : '';
   const header = heading(PAGE_TITLES.projects, '', actionsHtml);
   if (!state.projectCatalog) return header + panel('项目列表', projectLoading(state.projectCatalogError, 'project-load'));
-  const rows = state.projectCatalog.projects.toSorted((a, b) => sortZh(a.name, b.name)).map(project => `<tr>
-    <td><a class="link" data-project-link="projectDetail" href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td>
-    <td>${shown(project.stage)}</td><td>${shown(project.device_type)}</td><td>${shown(project.project_manager)}</td><td>${shown(project.npi_manager)}</td>${descCell(project.description)}</tr>`).join('');
-  return header + panel('项目列表', table(['项目名称', '项目阶段', '设备类型', '项目经理', 'NPI', '项目描述'], rows, '暂无项目。', 'project-rows'));
+  const rows = state.projectCatalog.projects
+    .toSorted((a, b) => sortZh(a.name, b.name) || sortZh(a.project_type || '', b.project_type || '') || sortZh(a.device_type || '', b.device_type || ''))
+    .map(project => `<tr>
+    <td><a class="link" data-project-link="projectDetail" href="/?project=${encodeURIComponent(String(project.id))}">${text(project.name)}</a></td>
+    <td>${shown(project.project_type)}</td><td>${shown(project.stage)}</td><td>${shown(project.device_type)}</td><td>${shown(project.project_manager)}</td><td>${shown(project.npi_manager)}</td>${descCell(project.description)}</tr>`).join('');
+  return header + panel('项目列表', table(['项目名称', '项目类型', '项目阶段', '设备类型', '项目经理', 'NPI', '项目描述'], rows, '暂无项目。', 'project-rows'));
 }
 
 function projectLoading(error, retry) {
@@ -877,14 +882,14 @@ function projectNpiOptions(people, currentId, currentName) {
 }
 
 function projectDetailPage() {
-  const name = linkedProjectName();
   const isAdminUser = admin();
   const detailActions = isAdminUser && state.projectDetail
-    ? action('重命名项目', 'project-rename', state.projectDetail.project.name) +
-      action('删除项目', 'project-remove', state.projectDetail.project.name, 'button danger') +
+    ? action('重命名项目', 'project-rename', state.projectDetail.project.id) +
+      action('删除项目', 'project-remove', state.projectDetail.project.id, 'button danger') +
       action('返回项目中心', 'project-list')
     : action('返回项目中心', 'project-list');
-  const header = heading(name || PAGE_TITLES.projectDetail, '', detailActions);
+  const titleName = state.projectDetail?.project.name || (/^\d+$/.test(linkedProjectName() || '') ? PAGE_TITLES.projectDetail : linkedProjectName()) || PAGE_TITLES.projectDetail;
+  const header = heading(titleName, '', detailActions);
   if (!state.projectDetail) return header + panel('项目详情', projectLoading(state.projectDetailError, 'project-detail-load'));
 
   const { project } = state.projectDetail;
@@ -893,6 +898,8 @@ function projectDetailPage() {
     const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
     const nextStage = nextProjectStage(project, stages);
     const deviceOptions = projectSelectOptions(state.projectDetail.deviceTypes, 'device_type', project.device_type ?? '', '请选择设备类型');
+    const projectTypeOptions = (state.projectDetail.projectTypes ?? PROJECT_TYPES)
+      .map(type => option(type, project.project_type || '标准项目')).join('');
     const managerOptions = projectSelectOptions(state.projectDetail.projectManagers, 'project_manager', project.project_manager ?? '', '请选择项目经理');
     const npiOptions = projectNpiOptions(state.projectDetail.people, project.npi_manager_id, project.npi_manager);
     const advanceButton = nextStage
@@ -901,6 +908,7 @@ function projectDetailPage() {
     config = `<form id="project-stage-form" class="stack">
       <div class="form-grid">
         <label>设备类型<select name="device_type">${deviceOptions}</select></label>
+        <label>项目类型<select name="project_type">${projectTypeOptions}</select></label>
         <label>项目经理<select name="project_manager">${managerOptions}</select></label>
         <label>NPI<select name="npi_manager_id">${npiOptions}</select></label>
       </div>
@@ -924,7 +932,7 @@ function projectDetailPage() {
     </div>`;
   } else {
     config = `<div class="stack">
-      ${details([['设备类型', project.device_type], ['项目经理', project.project_manager], ['NPI', project.npi_manager]])}
+      ${details([['设备类型', project.device_type], ['项目类型', project.project_type], ['项目经理', project.project_manager], ['NPI', project.npi_manager]])}
       ${details([['项目描述', project.description]], 'stack')}
     </div>
     <div class="project-files-section">
@@ -941,8 +949,13 @@ function projectDetailPage() {
 function projectConfigPage() {
   const header = heading(PAGE_TITLES.projectConfig, '模板用于初始化之后新建项目的阶段需求。', action('返回项目中心', 'project-list'));
   if (!state.projectTemplate) return header + panel('阶段需求模板', projectLoading(state.projectTemplateError, 'project-template-load'));
-  return header + panel('阶段需求模板', projectRequirementTabs(state.projectTemplate.requirements, selectedRequirementStage(), true),
-    action('＋ 新增需求', 'project-requirement-add'));
+  const currentType = PROJECT_TYPES.includes(state.projectTemplateType) ? state.projectTemplateType : '标准项目';
+  const typeTabs = PROJECT_TYPES.map(type => `<button type="button" class="button" data-action="project-template-type-tab" data-id="${text(type)}" aria-pressed="${type === currentType}">${text(PROJECT_TYPE_CONFIG_LABELS[type] || type)}</button>`).join('');
+  const requirements = state.projectTemplate.templates?.[currentType] ?? state.projectTemplate.requirements;
+  return header +
+    `<div class="catalog-tabs" role="group" aria-label="项目模板类型">${typeTabs}</div>` +
+    panel(PROJECT_TYPE_CONFIG_LABELS[currentType] || currentType, projectRequirementTabs(requirements, selectedRequirementStage(), true),
+      action('＋ 新增需求', 'project-requirement-add'));
 }
 
 function selectedRequirementStage(project) {
@@ -1027,13 +1040,14 @@ async function loadProjects() {
 
 async function loadProjectDetail() {
   const session = state.user;
-  const name = linkedProjectName();
+  const param = linkedProjectName();
   state.projectDetail = null;
   state.projectDetailError = '';
   render();
-  const pending = request('/api/projects/detail?' + new URLSearchParams({ name }), { signal: AbortSignal.timeout(10000) });
+  const query = /^\d+$/.test(param || '') ? { id: param } : { name: param || '' };
+  const pending = request('/api/projects/detail?' + new URLSearchParams(query), { signal: AbortSignal.timeout(10000) });
   projectDetailLoad = pending;
-  const current = () => projectDetailLoad === pending && session === state.user && state.page === 'projectDetail' && name === linkedProjectName();
+  const current = () => projectDetailLoad === pending && session === state.user && state.page === 'projectDetail' && param === linkedProjectName();
   try {
     const result = await pending;
     if (current()) state.projectDetail = result;
@@ -1047,6 +1061,7 @@ async function loadProjectTemplate() {
   const session = state.user;
   state.projectTemplate = null;
   state.projectTemplateError = '';
+  state.projectTemplateType = '标准项目';
   render();
   const pending = request('/api/admin/projects/requirement-template', { signal: AbortSignal.timeout(10000) });
   projectTemplateLoad = pending;
@@ -1060,17 +1075,19 @@ async function loadProjectTemplate() {
   if (current()) render();
 }
 
-async function changeProject(action, name, payload = {}) {
-  const result = await post('/api/admin/projects/change', { action, name, ...payload });
+async function changeProject(action, target, payload = {}) {
+  const body = action === 'create'
+    ? { action, name: target, ...payload }
+    : { action, projectId: Number(target), ...payload };
+  const result = await post('/api/admin/projects/change', body);
   projectCatalogLoad = undefined;
   state.projectCatalog = result;
   if (action === 'rename') {
-    const nextName = payload.newName;
-    if (state.page === 'projectDetail' && state.projectDetail?.project.name === name) {
-      history.replaceState(history.state, '', '/?project=' + encodeURIComponent(nextName.toWellFormed()));
-      state.projectDetail.project = result.projects.find(project => project.name === nextName);
+    if (state.page === 'projectDetail' && same(state.projectDetail?.project.id, target)) {
+      state.projectDetail.project = result.projects.find(project => same(project.id, target));
       state.projectDetail.stages = result.stages;
       state.projectDetail.deviceTypes = result.deviceTypes;
+      state.projectDetail.projectTypes = result.projectTypes;
       state.projectDetail.projectManagers = result.projectManagers;
       state.projectDetail.people = result.people;
       render();
@@ -1087,10 +1104,11 @@ async function changeProject(action, name, payload = {}) {
     return;
   }
   if (state.page === 'projects') render();
-  else if (state.page === 'projectDetail' && state.projectDetail?.project.name === name) {
-    state.projectDetail.project = result.projects.find(project => project.name === name);
+  else if (state.page === 'projectDetail' && same(state.projectDetail?.project.id, target)) {
+    state.projectDetail.project = result.projects.find(project => same(project.id, target));
     state.projectDetail.stages = result.stages;
     state.projectDetail.deviceTypes = result.deviceTypes;
+    state.projectDetail.projectTypes = result.projectTypes;
     state.projectDetail.projectManagers = result.projectManagers;
     state.projectDetail.people = result.people;
     if (payload.stage !== undefined) {
@@ -1111,50 +1129,45 @@ function projectForm(initial = {}) {
   const values0 = typeof initial === 'string' ? { name: initial } : (initial ?? {});
   const managers = catalogOptionNames(state.projectCatalog.projectManagers ?? [], 'project_manager');
   const people = state.projectCatalog.people ?? [];
-  const initItems = state.projectCatalog.initiationRequirements ?? [];
+  const projectTypes = state.projectCatalog.projectTypes ?? PROJECT_TYPES;
+  const initType = projectTypes.includes(values0.project_type) ? values0.project_type : '标准项目';
+  const initByType = state.projectCatalog.initiationRequirementsByType ?? {};
   const selectedFiles = new Map();
   if (values0.selectedFiles instanceof Map) {
     for (const [code, list] of values0.selectedFiles.entries()) selectedFiles.set(code, [...list]);
   }
   const missingHint = !managers.length
     ? '<p class="muted text-small">请先在「基础配置」中添加项目经理选项。</p>' : '';
-  const initFilesMarkup = initItems.length ? `<div class="project-init-files">
-    <p class="file-upload-title">立项交付文件（选填，上传后自动归入对应任务的交付文件）</p>
-    ${initItems.map(item => `<div class="project-init-file-item" data-init-code="${text(item.code)}">
-      <div class="project-init-file-head">
-        <span><strong>${text(item.code)}</strong> · ${text(item.deliverable || item.description)}</span>
-        <button type="button" class="button" data-init-file-pick="${text(item.code)}">选择文件</button>
-      </div>
-      <input type="file" multiple hidden data-init-file-input="${text(item.code)}">
-      <ul class="file-selected-list" data-init-file-list="${text(item.code)}" hidden></ul>
-    </div>`).join('')}
-  </div>` : '';
   const fields = field('项目名称', 'name', values0.name ?? '', 'required maxlength="100"') +
     choiceField('设备类型', 'device_type', { allowCustom: true, required: true }) +
+    `<label>项目类型（必填）<select name="project_type" required>${projectTypes.map(type => option(type, initType)).join('')}</select></label>` +
     `<label>项目经理（必填）<select name="project_manager" required>${option('', values0.project_manager ?? '', '请选择项目经理')}${managers.map(item => option(item, values0.project_manager ?? '')).join('')}</select></label>` +
     choiceField('NPI', 'npi_manager_id', { required: true }) +
-    missingHint + initFilesMarkup;
+    missingHint + '<div id="project-init-files-container"></div>';
   let devicePicker, npiPicker;
   const form = modalForm('新建项目', '', fields, async values => {
     const name = trimmed(values.name);
     const deviceType = optional(devicePicker.value());
+    const projectType = trimmed(values.project_type) || '标准项目';
     const projectManager = trimmed(values.project_manager);
     const npiManagerId = npiPicker.value();
     if (!name) throw new Error('请填写项目名称。');
     if (!deviceType) throw new Error('请选择或输入设备类型。');
+    if (!projectTypes.includes(projectType)) throw new Error('请选择有效的项目类型。');
     if (!projectManager) throw new Error('请选择项目经理。');
     if (!Number.isSafeInteger(npiManagerId)) throw new Error('请选择 NPI。');
     const npiLabel = npiPicker.selection().label || '';
-    const totalFiles = [...selectedFiles.values()].reduce((sum, list) => sum + list.length, 0);
+    const activeCodes = new Set((initByType[projectType] ?? []).map(item => item.code));
+    const activeFiles = new Map([...selectedFiles.entries()].filter(([code, list]) => activeCodes.has(code) && list.length));
+    const totalFiles = [...activeFiles.values()].reduce((sum, list) => sum + list.length, 0);
     const confirmFields = totalFiles ? uploadProgress : '';
-    const confirmForm = modalForm('确认新建项目', `是否确定新建项目「${name}」？系统将自动创建立项阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`, confirmFields, async () => {
+    const confirmForm = modalForm('确认新建项目', `是否确定新建${projectType}「${name}（${deviceType}）」？系统将自动创建立项阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`, confirmFields, async () => {
       const progress = confirmForm.querySelector('[data-upload-progress]');
       const uploadedByCode = {};
       const uploadedIds = [];
       try {
         let doneCount = 0;
-        for (const [code, list] of selectedFiles.entries()) {
-          if (!list.length) continue;
+        for (const [code, list] of activeFiles.entries()) {
           uploadedByCode[code] = [];
           for (const file of list) {
             doneCount++;
@@ -1169,6 +1182,7 @@ function projectForm(initial = {}) {
         }
         await changeProject('create', name, {
           device_type: deviceType,
+          project_type: projectType,
           project_manager: projectManager,
           npi_manager_id: npiManagerId,
           initiation_files: uploadedByCode
@@ -1179,7 +1193,7 @@ function projectForm(initial = {}) {
       } finally {
         if (progress) progress.hidden = true;
       }
-    }, { submit: '确定新建', onCancel: () => projectForm({ name, device_type: deviceType, project_manager: projectManager, npi_manager_id: npiManagerId, npi_label: npiLabel, selectedFiles }) });
+    }, { submit: '确定新建', onCancel: () => projectForm({ name, device_type: deviceType, project_type: projectType, project_manager: projectManager, npi_manager_id: npiManagerId, npi_label: npiLabel, selectedFiles }) });
     return false;
   }, { submit: '确定新建' });
   devicePicker = bindChoice(form.querySelector('[data-choice=device_type]'), {
@@ -1192,6 +1206,7 @@ function projectForm(initial = {}) {
   npiPicker.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
 
   const message = form.querySelector('.form-error');
+  const container = form.querySelector('#project-init-files-container');
   function renderInitFiles(code) {
     const listEl = form.querySelector(`[data-init-file-list="${CSS.escape(code)}"]`);
     if (!listEl) return;
@@ -1202,7 +1217,29 @@ function projectForm(initial = {}) {
       <button type="button" class="link danger" data-init-file-remove="${text(code)}" data-index="${index}">移除</button>
     </li>`).join('');
   }
-  for (const item of initItems) renderInitFiles(item.code);
+  function renderInitSection(type) {
+    const items = initByType[type] ?? [];
+    if (!items.length) {
+      container.innerHTML = '';
+      return;
+    }
+    container.innerHTML = `<div class="project-init-files">
+      <p class="file-upload-title">立项交付文件（选填，上传后自动归入对应任务的交付文件）</p>
+      ${items.map(item => `<div class="project-init-file-item" data-init-code="${text(item.code)}">
+        <div class="project-init-file-head">
+          <span><strong>${text(item.code)}</strong> · ${text(item.deliverable || item.description)}</span>
+          <button type="button" class="button" data-init-file-pick="${text(item.code)}">选择文件</button>
+        </div>
+        <input type="file" multiple hidden data-init-file-input="${text(item.code)}">
+        <ul class="file-selected-list" data-init-file-list="${text(item.code)}" hidden></ul>
+      </div>`).join('')}
+    </div>`;
+    for (const item of items) renderInitFiles(item.code);
+  }
+  renderInitSection(initType);
+  form.elements.project_type.addEventListener('change', () => {
+    renderInitSection(form.elements.project_type.value);
+  });
   form.addEventListener('click', event => {
     const pick = event.target.closest('[data-init-file-pick]');
     if (pick) {
@@ -1238,14 +1275,15 @@ function projectForm(initial = {}) {
   });
 }
 
-function projectRenameForm(name) {
-  if (!admin() || !name) return;
+function projectRenameForm(projectId) {
+  if (!admin() || !projectId || !state.projectDetail) return;
+  const currentName = state.projectDetail.project.name;
   modalForm('重命名项目', '重命名后，关联的任务、需求和阶段需求清单都会同步更新为新名称。',
-    field('新项目名称', 'newName', name, 'required maxlength="100"'), async values => {
+    field('新项目名称', 'newName', currentName, 'required maxlength="100"'), async values => {
       const newName = trimmed(values.newName);
       if (!newName) throw new Error('请填写新的项目名称。');
-      if (newName === name) return;
-      await changeProject('rename', name, { newName });
+      if (newName === currentName) return;
+      await changeProject('rename', projectId, { newName });
     }, { submit: '确认重命名' });
 }
 
@@ -1258,7 +1296,7 @@ function projectAdvanceForm() {
   modalForm('推进项目', `是否确定将项目「${project.name}」推进到下一阶段「${nextStage}」，并触发对应阶段的项目任务？`, '', async () => {
     const form = $('#project-stage-form');
     const payload = { ...projectConfigChanges(form, project), stage: nextStage };
-    await changeProject('update', project.name, payload);
+    await changeProject('update', project.id, payload);
   }, { submit: '确定推进', submitClass: 'success' });
 }
 
@@ -1266,12 +1304,14 @@ function projectConfigChanges(form, project) {
   if (!form) return {};
   const description = optional(form.elements.description.value);
   const deviceType = optional(form.elements.device_type.value);
+  const projectType = optional(form.elements.project_type?.value);
   const projectManager = optional(form.elements.project_manager?.value);
   const npiRaw = form.elements.npi_manager_id?.value;
   const npiManagerId = npiRaw ? Number(npiRaw) : null;
   const changes = {};
   if (description !== optional(project.description)) changes.description = description;
   if (deviceType !== optional(project.device_type)) changes.device_type = deviceType;
+  if (form.elements.project_type && projectType !== (project.project_type || '标准项目')) changes.project_type = projectType;
   if (form.elements.project_manager && projectManager !== optional(project.project_manager)) changes.project_manager = projectManager;
   if (form.elements.npi_manager_id && npiManagerId !== (project.npi_manager_id ?? null)) changes.npi_manager_id = npiManagerId;
   return changes;
@@ -1280,7 +1320,7 @@ function projectConfigChanges(form, project) {
 async function uploadProjectFiles(incoming) {
   const detail = state.projectDetail;
   if (!admin() || state.page !== 'projectDetail' || !detail) return;
-  const projectName = detail.project.name;
+  const projectId = detail.project.id;
   const section = content.querySelector('[data-project-file-upload]');
   const drop = section?.querySelector('[data-project-file-drop]');
   const progress = section?.querySelector('[data-project-upload-progress]');
@@ -1308,7 +1348,7 @@ async function uploadProjectFiles(incoming) {
       const { id } = await request('/api/upload?kind=project', { method: 'POST', file });
       uploaded.push({ id, name: file.name });
     }
-    const result = await post('/api/admin/projects/attachments', { name: projectName, files: uploaded });
+    const result = await post('/api/admin/projects/attachments', { projectId, files: uploaded });
     if (state.user === session && state.projectDetail === detail) {
       detail.attachments = result.attachments;
       const listEl = $('#project-files-list');
@@ -1336,7 +1376,7 @@ async function deleteProjectFile(button) {
   const session = state.user;
   button.disabled = true;
   try {
-    const result = await post('/api/admin/projects/attachments/delete', { name: detail.project.name, fileId });
+    const result = await post('/api/admin/projects/attachments/delete', { projectId: detail.project.id, fileId });
     if (state.user === session && state.projectDetail === detail) {
       detail.attachments = result.attachments;
       const listEl = $('#project-files-list');
@@ -1350,12 +1390,13 @@ async function deleteProjectFile(button) {
   }
 }
 
-function projectDeleteForm(name) {
-  if (!admin() || !name) return;
+function projectDeleteForm(projectId) {
+  if (!admin() || !projectId || !state.projectDetail) return;
+  const name = state.projectDetail.project.name;
   modalForm('删除项目', `确定删除「${name}」及其阶段需求清单？已有任务和需求会保留项目名称。`,
     field('请输入「我确定」以确认删除', 'confirm', '', 'required autocomplete="off" placeholder="请输入：我确定"'), async values => {
       if (trimmed(values.confirm) !== '我确定') throw new Error('请输入「我确定」后再确认删除。');
-      await changeProject('remove', name);
+      await changeProject('remove', projectId);
     }, { danger: true, submit: '确认删除' });
 }
 
@@ -1380,24 +1421,32 @@ function projectRequirementForm(code) {
   const isTemplate = page === 'projectConfig';
   const detail = isTemplate ? state.projectTemplate : state.projectDetail;
   if (!detail) return;
-  const { project, requirements } = detail;
+  const project = isTemplate ? null : detail.project;
+  const templateType = isTemplate ? (PROJECT_TYPES.includes(state.projectTemplateType) ? state.projectTemplateType : '标准项目') : null;
+  const requirements = isTemplate ? (detail.templates?.[templateType] ?? detail.requirements) : detail.requirements;
   const stage = selectedRequirementStage(project);
   const row = requirements[stage].find(item => item.code === code);
   if (code && !row) return;
-  const subtitle = (project?.name ?? '项目模板') + ' · ' + (row?.code ?? stage);
+  const subtitle = (project?.name ?? (PROJECT_TYPE_CONFIG_LABELS[templateType] || '项目模板')) + ' · ' + (row?.code ?? stage);
   const fields = area('需求说明', 'description', row?.description) + area('交付内容', 'deliverable', row?.deliverable) +
     field('计划投入工时（小时）', 'hours', row?.planned_hours, 'type="number" min="0" step="any" inputmode="decimal"');
   async function save(action, values = {}) {
     const endpoint = isTemplate ? '/api/admin/projects/requirement-template/change' : '/api/admin/projects/requirements/change';
     const result = await post(endpoint, {
-      name: project?.name, stage, action, code: row?.code, revision: row?.revision,
+      ...(isTemplate ? { project_type: templateType } : { projectId: project.id }),
+      stage, action, code: row?.code, revision: row?.revision,
       description: values.description, deliverable: values.deliverable,
       planned_hours: values.hours ? Number(values.hours) : null
     });
     if (state.page === page && (isTemplate ? state.projectTemplate : state.projectDetail) === detail) {
-      detail.requirements = result.requirements;
+      if (isTemplate) {
+        if (result.templates) detail.templates = result.templates;
+      } else {
+        detail.requirements = result.requirements;
+      }
       for (const phase of npiStages) {
-        document.getElementById('npi-panel-' + phase).innerHTML = projectRequirementsTable(result.requirements[phase], isTemplate);
+        const panelEl = document.getElementById('npi-panel-' + phase);
+        if (panelEl) panelEl.innerHTML = projectRequirementsTable(result.requirements[phase], isTemplate);
       }
     }
     toast(action === 'remove' ? '需求已删除。' : '需求已保存。');
@@ -1432,7 +1481,7 @@ function projectRequirementForm(code) {
         return;
       }
       modalForm('确认推送需求', `确定将「${subtitle}」推送到需求中心并派发给 NPI 吗？`, '', async () => {
-        const result = await post('/api/admin/projects/requirements/push', { name: project.name, stage, code: row.code });
+        const result = await post('/api/admin/projects/requirements/push', { projectId: project.id, stage, code: row.code });
         if (state.page === page && state.projectDetail === detail && result.requirements) {
           detail.requirements = result.requirements;
           for (const phase of npiStages) {
@@ -1463,7 +1512,7 @@ function projectRequirementPushStage() {
     return;
   }
   modalForm('一键推送阶段需求', `确定将「${project.name} · ${stage}」尚未推送的 ${pending.length} 条需求推送到需求中心并自动派发给 NPI 吗？`, '', async () => {
-    const result = await post('/api/admin/projects/requirements/push-stage', { name: project.name, stage });
+    const result = await post('/api/admin/projects/requirements/push-stage', { projectId: project.id, stage });
     if (state.page === 'projectDetail' && state.projectDetail === detail && result.requirements) {
       detail.requirements = result.requirements;
       for (const phase of npiStages) {
@@ -1819,6 +1868,7 @@ function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
     ['任务类型', TASK_KINDS[task.task_kind]],
     ['设备类型', editable.deviceType ? inlineChoiceControl('设备类型', 'device_type') : task.device_type, Boolean(editable.deviceType)],
     ['项目', editable.proj ? inlineChoiceControl('项目', 'proj') : task.proj, Boolean(editable.proj)],
+    ['项目类型', task.project_type],
     ['项目阶段', `<span data-task-project-stage>${shown(task.project_stage)}</span>`, true],
     ...(!hideOwner ? [['负责人', task.owner_name]] : []),
     ...(!editable.status ? [['状态', statusBadge(task.status), true]] : []),
@@ -3281,6 +3331,12 @@ const actions = {
   'project-load': loadProjects,
   'project-detail-load': loadProjectDetail,
   'project-template-load': loadProjectTemplate,
+  'project-template-type-tab': type => {
+    if (!PROJECT_TYPES.includes(type)) return;
+    state.projectTemplateType = type;
+    state.projectStageTab = null;
+    render();
+  },
   'project-new': () => projectForm(),
   'project-rename': projectRenameForm,
   'project-advance': projectAdvanceForm,
@@ -3449,7 +3505,7 @@ content.addEventListener('submit', async event => {
   const errorMessage = form.querySelector('.form-error');
   submit.disabled = true;
   formError(errorMessage, '');
-  try { await changeProject('update', project.name, changes); }
+  try { await changeProject('update', project.id, changes); }
   catch (error) { formError(errorMessage, error.message); }
   finally { submit.disabled = false; }
 });

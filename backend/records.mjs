@@ -2,7 +2,8 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { attachmentKind, bindAttachments } from './attachments.mjs';
 import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
 import {
-  changeProjectRequirement, changeProjectTemplateRequirement, initializeProjectRequirements, projectRequirementRows, projectTemplateRows
+  allProjectTemplateRows, changeProjectRequirement, changeProjectTemplateRequirement, DEFAULT_PROJECT_TYPE,
+  ensureProjectRequirementTemplates, initializeProjectRequirements, PROJECT_TYPES, projectRequirementRows
 } from './project-requirements.mjs';
 import { RequestError } from './store.mjs';
 import { ACTIVE_TASK_STATUSES, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
@@ -158,29 +159,47 @@ export function backfillTaskCodes(db) {
   }
 }
 
-function projectStage(db, name) {
-  const assignedStages = db.projectStages ?? {};
-  const assigned = name != null && Object.hasOwn(assignedStages, name) ? assignedStages[name] : null;
-  return assigned || (db.demandOptions.proj.includes(name) ? defaultProjectStage : null);
+function projectTupleKey(name, deviceType, projectType) {
+  return JSON.stringify([name ?? '', deviceType ?? '', projectType || DEFAULT_PROJECT_TYPE]);
 }
 
-function projectDescription(db, name) {
-  const descriptions = db.projectDescriptions ?? {};
-  return name != null && Object.hasOwn(descriptions, name) ? descriptions[name] : null;
+function syncDemandOptionProjects(db) {
+  db.demandOptions.proj = [...new Set((db.projects ?? []).map(project => project.name))];
 }
 
 function projectStageOptions(db) {
   return [...new Set([defaultProjectStage, ...db.demandOptions.project_stage])];
 }
 
-function projectDeviceType(db, name) {
-  const deviceTypes = db.projectDeviceTypes ?? {};
-  return name != null && Object.hasOwn(deviceTypes, name) ? deviceTypes[name] : null;
+function findProject(db, query) {
+  const list = db.projects ?? [];
+  if (typeof query === 'number') return list.find(project => project.id === query) ?? null;
+  if (typeof query === 'string') {
+    const byName = list.find(project => project.name === query);
+    if (byName) return byName;
+    if (/^\d+$/.test(query)) return list.find(project => project.id === Number(query)) ?? null;
+    return null;
+  }
+  const { projectId, id, name } = query ?? {};
+  const rawId = projectId ?? id;
+  if (rawId != null && rawId !== '') {
+    const num = Number(rawId);
+    if (validId(num)) return list.find(project => project.id === num) ?? null;
+  }
+  if (typeof name === 'string' && name) {
+    return list.find(project => project.name === name) ?? null;
+  }
+  return null;
 }
 
-function projectManager(db, name) {
-  const managers = db.projectManagers ?? {};
-  return name != null && Object.hasOwn(managers, name) ? managers[name] : null;
+function resolveProjectForRecord(db, projectId, projName) {
+  const list = db.projects ?? [];
+  if (validId(projectId)) return list.find(project => project.id === projectId) ?? null;
+  if (typeof projName === 'string' && projName) {
+    const matches = list.filter(project => project.name === projName);
+    if (matches.length === 1) return matches[0];
+  }
+  return null;
 }
 
 function activePeople(db) {
@@ -193,39 +212,32 @@ function activePeople(db) {
     });
 }
 
-function projectNpiManagerId(db, name) {
-  const managers = db.projectNpiManagers ?? {};
-  const value = name != null && Object.hasOwn(managers, name) ? managers[name] : null;
-  return validId(value) ? value : null;
+function npiManagerNameById(db, id) {
+  if (!validId(id)) return null;
+  const user = db.users.find(account => account.id === id);
+  if (user) return displayName(db, user);
+  const profile = db.profiles.find(row => row.owner_id === id);
+  return profile?.display_name || null;
 }
 
-function projectNpiManagerName(db, name) {
-  const id = projectNpiManagerId(db, name);
-  if (id != null) {
-    const user = db.users.find(account => account.id === id);
-    if (user) return displayName(db, user);
-    const profile = db.profiles.find(row => row.owner_id === id);
-    if (profile?.display_name) return profile.display_name;
-  }
-  const raw = db.projectNpiManagers?.[name];
-  return typeof raw === 'string' && raw ? raw : null;
-}
-
-function projectAttachments(db, name) {
+function projectAttachments(db, project) {
   return db.attachments
-    .filter(file => file.state === 'bound' && file.kind === 'project' && file.project_name === name)
+    .filter(file => file.state === 'bound' && file.kind === 'project' &&
+      (file.project_id === project.id || (file.project_id == null && file.project_name === project.name)))
     .map(({ id, kind, name: fileName, size, created_at }) => ({ id, kind, name: fileName, size, created_at: created_at ?? null }));
 }
 
-function projectSummary(db, name) {
+function projectSummary(db, project) {
   return {
-    name,
-    stage: projectStage(db, name),
-    description: projectDescription(db, name),
-    device_type: projectDeviceType(db, name),
-    project_manager: projectManager(db, name),
-    npi_manager_id: projectNpiManagerId(db, name),
-    npi_manager: projectNpiManagerName(db, name)
+    id: project.id,
+    name: project.name,
+    stage: project.stage || defaultProjectStage,
+    description: project.description ?? null,
+    device_type: project.device_type ?? null,
+    project_type: project.project_type || DEFAULT_PROJECT_TYPE,
+    project_manager: project.project_manager ?? null,
+    npi_manager_id: validId(project.npi_manager_id) ? project.npi_manager_id : null,
+    npi_manager: npiManagerNameById(db, project.npi_manager_id)
   };
 }
 
@@ -244,25 +256,37 @@ function projectDemandDate(timestamp) {
   return year + month + day;
 }
 
-function projectDemandAlreadyPushed(db, projectName, reqRow) {
+function projectDemandCode(project, reqCode, date) {
+  const type = project.project_type || DEFAULT_PROJECT_TYPE;
+  return type === DEFAULT_PROJECT_TYPE
+    ? `${project.name}-${reqCode}-${date}`
+    : `${project.name}-${type}-${reqCode}-${date}`;
+}
+
+function demandMatchesProject(demand, project) {
+  if (demand.source_project_id != null) return demand.source_project_id === project.id;
+  return demand.source_project === project.name;
+}
+
+function projectDemandAlreadyPushed(db, project, reqRow) {
   return Boolean(reqRow.pushed) || db.demands.some(demand =>
-    demand.source_project === projectName && demand.source_requirement_code === reqRow.code
+    demandMatchesProject(demand, project) && demand.source_requirement_code === reqRow.code
   );
 }
 
-function autoDispatchProjectDemand(db, projectName, demand, reqRow, adminUser, timestamp, recordTaskChange, deliveryFiles = [], uploader = null) {
-  const npiId = projectNpiManagerId(db, projectName);
+function autoDispatchProjectDemand(db, project, demand, reqRow, adminUser, timestamp, recordTaskChange, deliveryFiles = [], uploader = null) {
+  const npiId = validId(project.npi_manager_id) ? project.npi_manager_id : null;
   if (npiId == null) return null;
   const activeProfile = db.profiles.find(person => person.owner_id === npiId && person.status !== '已离职' && person.display_name);
   if (!activeProfile || !db.users.some(user => user.id === npiId)) return null;
   const dispatcher = adminUser ?? { id: npiId, name: '管理员' };
-  const deviceType = projectDeviceType(db, projectName);
+  const deviceType = project.device_type ?? null;
   const estimatedHours = typeof reqRow.planned_hours === 'number' && Number.isFinite(reqRow.planned_hours) && reqRow.planned_hours > 0
     ? Number(reqRow.planned_hours.toFixed(2)) : null;
   const due = estimatedHours != null ? plannedCompletion(timestamp, estimatedHours, defaultPriority) : null;
   const taskPatch = {
     assignee_id: npiId,
-    proj: projectName,
+    proj: project.name,
     device_type: deviceType,
     pri: defaultPriority,
     desc: demand.descr,
@@ -271,6 +295,8 @@ function autoDispatchProjectDemand(db, projectName, demand, reqRow, adminUser, t
   };
   const taskRow = insertRecord(db, dispatcher, 'tasks', taskPatch, recordTaskChange, {
     demand_id: demand.id,
+    project_id: project.id,
+    project_type: project.project_type || DEFAULT_PROJECT_TYPE,
     dispatch_key: randomUUID(),
     task_kind: 'P',
     requirement_owner_id: demand.creator_id ?? demand.owner_id
@@ -288,8 +314,8 @@ function autoDispatchProjectDemand(db, projectName, demand, reqRow, adminUser, t
   return taskRow;
 }
 
-function pushSingleProjectRequirement(db, projectName, reqRow, recordTaskChange, deliveryFiles = [], uploader = null) {
-  if (projectDemandAlreadyPushed(db, projectName, reqRow)) return null;
+function pushSingleProjectRequirement(db, project, reqRow, recordTaskChange, deliveryFiles = [], uploader = null) {
+  if (projectDemandAlreadyPushed(db, project, reqRow)) return null;
   const adminUser = db.users.find(isPrimaryAdmin) ?? db.users.find(isAdmin);
   const adminId = adminUser?.id ?? null;
   const timestamp = now();
@@ -299,12 +325,15 @@ function pushSingleProjectRequirement(db, projectName, reqRow, recordTaskChange,
     owner_id: adminId,
     creator_id: adminId,
     owner_name: '管理员',
-    proj: projectName,
+    proj: project.name,
+    project_id: project.id,
+    project_type: project.project_type || DEFAULT_PROJECT_TYPE,
     proposer: '项目',
     descr: formatProjectRequirementDescription(reqRow),
-    code: `${projectName}-${reqRow.code}-${date}`,
+    code: projectDemandCode(project, reqRow.code, date),
     is_project_demand: true,
-    source_project: projectName,
+    source_project_id: project.id,
+    source_project: project.name,
     source_requirement_code: reqRow.code,
     planned_hours: reqRow.planned_hours ?? null,
     created_at: timestamp,
@@ -312,26 +341,26 @@ function pushSingleProjectRequirement(db, projectName, reqRow, recordTaskChange,
   };
   db.demands.unshift(demand);
   reqRow.pushed = true;
-  const task = autoDispatchProjectDemand(db, projectName, demand, reqRow, adminUser, timestamp, recordTaskChange, deliveryFiles, uploader);
+  const task = autoDispatchProjectDemand(db, project, demand, reqRow, adminUser, timestamp, recordTaskChange, deliveryFiles, uploader);
   return { demand, task };
 }
 
-function syncProjectStageDemands(db, projectName, stage, recordTaskChange, deliveryFilesByCode = {}, uploader = null) {
-  const rows = db.projectRequirements?.[projectName]?.[stage]?.rows ?? [];
+function syncProjectStageDemands(db, project, stage, recordTaskChange, deliveryFilesByCode = {}, uploader = null) {
+  const rows = db.projectRequirements?.[String(project.id)]?.[stage]?.rows ?? [];
   const created = [];
   for (const row of rows) {
     const files = Array.isArray(deliveryFilesByCode?.[row.code]) ? deliveryFilesByCode[row.code] : [];
-    const entry = pushSingleProjectRequirement(db, projectName, row, recordTaskChange, files, uploader);
+    const entry = pushSingleProjectRequirement(db, project, row, recordTaskChange, files, uploader);
     if (entry) created.push(entry);
   }
   return created;
 }
 
-function enrichedProjectRequirements(db, name) {
-  const grouped = projectRequirementRows(db, name);
+function enrichedProjectRequirements(db, project) {
+  const grouped = projectRequirementRows(db, project.id);
   const demandsByCode = new Map();
   for (const demand of db.demands) {
-    if (demand.source_project === name && demand.source_requirement_code && !demandsByCode.has(demand.source_requirement_code)) {
+    if (demandMatchesProject(demand, project) && demand.source_requirement_code && !demandsByCode.has(demand.source_requirement_code)) {
       demandsByCode.set(demand.source_requirement_code, demand);
     }
   }
@@ -359,15 +388,19 @@ function enrichedProjectRequirements(db, name) {
 }
 
 function projectCatalog(db) {
+  const templates = allProjectTemplateRows(db);
+  const initiationRequirementsByType = Object.fromEntries(PROJECT_TYPES.map(type => [
+    type,
+    (templates[type]?.立项 ?? []).map(({ code, description, deliverable }) => ({ code, description, deliverable }))
+  ]));
   return {
-    projects: db.demandOptions.proj.map(name => projectSummary(db, name)),
+    projects: (db.projects ?? []).map(project => projectSummary(db, project)),
     stages: projectStageOptions(db),
     deviceTypes: db.demandOptions.device_type,
+    projectTypes: PROJECT_TYPES,
     projectManagers: db.demandOptions.project_manager ?? [],
     people: activePeople(db),
-    initiationRequirements: (db.projectRequirementTemplate?.立项?.rows ?? []).map(({ code, description, deliverable }) => ({
-      code, description, deliverable
-    }))
+    initiationRequirementsByType
   };
 }
 
@@ -391,12 +424,15 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
       : db.profiles.find(profile => profile.owner_id === dispatcherId)?.display_name || null;
   }
   const handledAt = taskHandledAt(user, task);
+  const resolvedProject = resolveProjectForRecord(db, row.project_id ?? demand?.project_id, row.proj);
   return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
     attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
     canAppendRequirement: canAppendAttachment(user, task, 'requirement'),
     canAppendDelivery: canAppendAttachment(user, task, 'delivery'),
     canDeleteDelivery: canDeleteDeliveryAttachment(user, task),
-    project_stage: projectStage(db, row.proj), handled_by_me: handledAt !== null, handled_at: handledAt || null };
+    project_stage: resolvedProject ? (resolvedProject.stage || defaultProjectStage) : null,
+    project_type: row.project_type ?? demand?.project_type ?? resolvedProject?.project_type ?? null,
+    handled_by_me: handledAt !== null, handled_at: handledAt || null };
 }
 
 function directoryProfile({ id, display_name, emp_no, team, role, status }) {
@@ -412,11 +448,15 @@ function demandRequirementAttachments(db, demandId, linkedTasks) {
 function publicDemand(db, user, row, linkedTasks) {
   const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
   const files = demandRequirementAttachments(db, row.id, linkedTasks);
-  return { ...row, project_stage: projectStage(db, row.proj), responsible: assigned?.display_name || row.responsible || null,
+  const resolvedProject = resolveProjectForRecord(db, row.project_id ?? row.source_project_id, row.proj);
+  return { ...row,
+    project_stage: resolvedProject ? (resolvedProject.stage || defaultProjectStage) : null,
+    project_type: row.project_type ?? resolvedProject?.project_type ?? null,
+    responsible: assigned?.display_name || row.responsible || null,
     is_project_demand: Boolean(row.is_project_demand || row.proposer === '项目'),
     planned_hours: row.planned_hours ?? null,
-    project_device_type: projectDeviceType(db, row.proj),
-    project_npi_manager_id: projectNpiManagerId(db, row.proj),
+    project_device_type: resolvedProject?.device_type ?? null,
+    project_npi_manager_id: validId(resolvedProject?.npi_manager_id) ? resolvedProject.npi_manager_id : null,
     attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
     linked_tasks: linkedTasks.map(task => {
       const summary = { owner_name: taskOwnerName(db, task), initial_receiver_name: task.initial_receiver_name, status: task.status };
@@ -599,14 +639,69 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       }
     });
   }
+  if (!Array.isArray(store.read().projects)) {
+    store.update(db => {
+      db.seq.project ??= 1;
+      const legacyStages = db.projectStages ?? {};
+      const legacyDescriptions = db.projectDescriptions ?? {};
+      const legacyDeviceTypes = db.projectDeviceTypes ?? {};
+      const legacyManagers = db.projectManagers ?? {};
+      const legacyNpi = db.projectNpiManagers ?? {};
+      const legacyReqs = db.projectRequirements ?? {};
+      const nextReqs = {};
+      const idByName = new Map();
+      db.projects = [];
+      for (const projName of [...new Set(db.demandOptions.proj)]) {
+        const id = db.seq.project++;
+        idByName.set(projName, id);
+        db.projects.push({
+          id,
+          name: projName,
+          stage: (Object.hasOwn(legacyStages, projName) && legacyStages[projName]) || defaultProjectStage,
+          description: Object.hasOwn(legacyDescriptions, projName) ? legacyDescriptions[projName] : null,
+          device_type: Object.hasOwn(legacyDeviceTypes, projName) ? legacyDeviceTypes[projName] : null,
+          project_type: DEFAULT_PROJECT_TYPE,
+          project_manager: Object.hasOwn(legacyManagers, projName) ? legacyManagers[projName] : null,
+          npi_manager_id: Object.hasOwn(legacyNpi, projName) && validId(legacyNpi[projName]) ? legacyNpi[projName] : null
+        });
+        if (Object.hasOwn(legacyReqs, projName)) nextReqs[String(id)] = legacyReqs[projName];
+      }
+      db.projectRequirements = nextReqs;
+      for (const file of db.attachments) {
+        if (file.kind === 'project' && file.project_id == null && idByName.has(file.project_name)) {
+          file.project_id = idByName.get(file.project_name);
+        }
+      }
+      const demandProjectMap = new Map();
+      for (const demand of db.demands) {
+        const matchedName = demand.source_project || demand.proj;
+        if (matchedName && idByName.has(matchedName)) {
+          const pid = idByName.get(matchedName);
+          demand.project_id ??= pid;
+          demand.project_type ??= DEFAULT_PROJECT_TYPE;
+          if (demand.source_project === matchedName) demand.source_project_id ??= pid;
+          demandProjectMap.set(demand.id, pid);
+        }
+      }
+      for (const task of db.tasks) {
+        const pid = (task.demand_id != null && demandProjectMap.get(task.demand_id)) ||
+          (task.proj && idByName.get(task.proj)) || null;
+        if (pid != null) {
+          task.project_id ??= pid;
+          task.project_type ??= DEFAULT_PROJECT_TYPE;
+        }
+      }
+      ensureProjectRequirementTemplates(db);
+      syncDemandOptionProjects(db);
+    });
+  }
   if (store.read().projectNpiSeeded !== true) {
     const snapshot = store.read();
     const hong = activePeople(snapshot).find(person => person.emp_no === '801946' || person.name === '洪俊峰');
     if (hong) {
       store.update(db => {
-        db.projectNpiManagers = { ...db.projectNpiManagers };
-        for (const projName of db.demandOptions.proj) {
-          if (!validId(db.projectNpiManagers[projName])) db.projectNpiManagers[projName] = hong.id;
+        for (const project of db.projects ?? []) {
+          if (!validId(project.npi_manager_id)) project.npi_manager_id = hong.id;
         }
         db.projectNpiSeeded = true;
       });
@@ -889,7 +984,10 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         }
         const details = { desc: source.descr ?? null, ...patch, proj: source.proj ?? null, estimated_hours: estimatedHours ?? null };
         const row = insertRecord(db, user, 'tasks', details, recordTaskChange, {
-          demand_id: id, dispatch_key: dispatchKey, task_kind: kind,
+          demand_id: id,
+          project_id: source.project_id ?? source.source_project_id ?? null,
+          project_type: source.project_type ?? null,
+          dispatch_key: dispatchKey, task_kind: kind,
           requirement_owner_id: source.creator_id ?? source.owner_id
         }).row;
         bindAttachments(db, user, row, 'requirement', files, { extra: { demand_id: id } });
@@ -938,45 +1036,51 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     projectCatalog: () => projectCatalog(store.read()),
 
-    projectDetail(name) {
+    projectDetail(query) {
       const db = store.read();
-      if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
+      const project = findProject(db, query);
+      if (!project) throw new RequestError(404, '未找到此项目。');
       return {
-        project: projectSummary(db, name),
+        project: projectSummary(db, project),
         stages: projectStageOptions(db),
         deviceTypes: db.demandOptions.device_type,
+        projectTypes: PROJECT_TYPES,
         projectManagers: db.demandOptions.project_manager ?? [],
         people: activePeople(db),
-        attachments: projectAttachments(db, name),
-        requirements: enrichedProjectRequirements(db, name)
+        attachments: projectAttachments(db, project),
+        requirements: enrichedProjectRequirements(db, project)
       };
     },
 
     changeProjectRequirement: input => store.update(db => {
-      changeProjectRequirement(db, input);
-      return { requirements: enrichedProjectRequirements(db, input.name) };
+      const project = findProject(db, input);
+      if (!project) throw new RequestError(404, '未找到此项目。');
+      changeProjectRequirement(db, { ...input, projectKey: project.id });
+      return { requirements: enrichedProjectRequirements(db, project) };
     }),
 
-    pushProjectRequirement(user, { name, stage, code }) {
-      if (typeof name !== 'string' || !name || typeof stage !== 'string' || !stage || typeof code !== 'string' || !code) {
+    pushProjectRequirement(user, { projectId, id, name, stage, code }) {
+      if (typeof stage !== 'string' || !stage || typeof code !== 'string' || !code) {
         throw new RequestError(400, '推送参数无效。');
       }
       const current = store.read();
-      if (!current.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
-      const existingRow = current.projectRequirements?.[name]?.[stage]?.rows?.find(item => item.code === code);
+      const currentProject = findProject(current, { projectId, id, name });
+      if (!currentProject) throw new RequestError(404, '未找到此项目。');
+      const existingRow = current.projectRequirements?.[String(currentProject.id)]?.[stage]?.rows?.find(item => item.code === code);
       if (!existingRow) throw new RequestError(404, '未找到这条阶段需求，请刷新后重试。');
-      if (projectDemandAlreadyPushed(current, name, existingRow)) {
-        return { alreadyPushed: true, requirements: enrichedProjectRequirements(current, name) };
+      if (projectDemandAlreadyPushed(current, currentProject, existingRow)) {
+        return { alreadyPushed: true, requirements: enrichedProjectRequirements(current, currentProject) };
       }
       const result = store.update(db => {
-        if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
-        const row = db.projectRequirements?.[name]?.[stage]?.rows?.find(item => item.code === code);
+        const project = findProject(db, { projectId: currentProject.id });
+        if (!project) throw new RequestError(404, '未找到此项目。');
+        const row = db.projectRequirements?.[String(project.id)]?.[stage]?.rows?.find(item => item.code === code);
         if (!row) throw new RequestError(404, '未找到这条阶段需求，请刷新后重试。');
-        if (projectDemandAlreadyPushed(db, name, row)) {
-          return { alreadyPushed: true, demand: null, task: null, requirements: enrichedProjectRequirements(db, name) };
+        if (projectDemandAlreadyPushed(db, project, row)) {
+          return { alreadyPushed: true, demand: null, task: null, requirements: enrichedProjectRequirements(db, project) };
         }
-        const entry = pushSingleProjectRequirement(db, name, row, recordTaskChange);
-        return { alreadyPushed: false, demand: entry?.demand ?? null, task: entry?.task ?? null, requirements: enrichedProjectRequirements(db, name) };
+        const entry = pushSingleProjectRequirement(db, project, row, recordTaskChange);
+        return { alreadyPushed: false, demand: entry?.demand ?? null, task: entry?.task ?? null, requirements: enrichedProjectRequirements(db, project) };
       });
       const db = store.read();
       return {
@@ -987,14 +1091,15 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       };
     },
 
-    pushProjectStageRequirements(user, { name, stage }) {
-      if (typeof name !== 'string' || !name || typeof stage !== 'string' || !stage) {
+    pushProjectStageRequirements(user, { projectId, id, name, stage }) {
+      if (typeof stage !== 'string' || !stage) {
         throw new RequestError(400, '推送参数无效。');
       }
       const result = store.update(db => {
-        if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
-        const created = syncProjectStageDemands(db, name, stage, recordTaskChange);
-        return { created, requirements: enrichedProjectRequirements(db, name) };
+        const project = findProject(db, { projectId, id, name });
+        if (!project) throw new RequestError(404, '未找到此项目。');
+        const created = syncProjectStageDemands(db, project, stage, recordTaskChange);
+        return { created, requirements: enrichedProjectRequirements(db, project) };
       });
       const db = store.read();
       return {
@@ -1005,24 +1110,29 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       };
     },
 
-    projectRequirementTemplate: () => ({ requirements: projectTemplateRows(store.read()) }),
+    projectRequirementTemplate: () => ({
+      templates: allProjectTemplateRows(store.read()),
+      projectTypes: PROJECT_TYPES
+    }),
 
     changeProjectTemplateRequirement: input => store.update(db => changeProjectTemplateRequirement(db, input)),
 
-    changeProject(user, { action, name, stage, newName, description, device_type: deviceType, project_manager: manager, npi_manager_id: npiId, initiation_files: initiationFiles } = {}) {
+    changeProject(user, { action, projectId, id, name, stage, newName, description, device_type: deviceType, project_type: projectType, project_manager: manager, npi_manager_id: npiId, initiation_files: initiationFiles } = {}) {
       if (!['create', 'update', 'rename', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
       if (action === 'create') {
         name = optionalText(name);
         deviceType = optionalText(deviceType);
+        projectType = optionalText(projectType) || DEFAULT_PROJECT_TYPE;
         manager = optionalText(manager);
+        if (!name) throw new RequestError(400, '请填写项目名称。');
         if (!deviceType) throw new RequestError(400, '请填写或选择设备类型。');
+        if (!PROJECT_TYPES.includes(projectType)) throw new RequestError(400, '请选择有效的项目类型。');
         if (!manager) throw new RequestError(400, '请选择项目经理。');
         if (!validId(npiId)) throw new RequestError(400, '请选择 NPI。');
         if (initiationFiles !== undefined && (!initiationFiles || typeof initiationFiles !== 'object' || Array.isArray(initiationFiles))) {
           throw new RequestError(400, '立项文件参数无效。');
         }
       }
-      if (typeof name !== 'string' || !name) throw new RequestError(400, '请填写项目名称。');
       let nextName;
       if (action === 'rename') {
         nextName = optionalText(newName, 100);
@@ -1033,106 +1143,127 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           if (stage === null) stage = defaultProjectStage;
           if (typeof stage !== 'string') throw new RequestError(400, '请选择项目阶段。');
         }
-        if (description !== undefined) {
-          description = optionalText(description, 10000);
-        }
+        if (description !== undefined) description = optionalText(description, 10000);
         if (deviceType !== undefined) deviceType = optionalText(deviceType);
+        if (projectType !== undefined) {
+          projectType = optionalText(projectType) || DEFAULT_PROJECT_TYPE;
+          if (!PROJECT_TYPES.includes(projectType)) throw new RequestError(400, '请选择有效的项目类型。');
+        }
         if (manager !== undefined) manager = optionalText(manager);
         if (npiId !== undefined && npiId !== null && !validId(npiId)) throw new RequestError(400, 'NPI 人员编号无效。');
       }
       let removedAttachments = false;
       const result = store.update(db => {
-        const names = db.demandOptions.proj;
-        const index = names.indexOf(name);
+        db.projects ??= [];
+        db.seq.project ??= 1;
         if (action === 'create') {
-          if (index !== -1) throw new RequestError(409, '项目名称已存在。');
+          const tuple = projectTupleKey(name, deviceType, projectType);
+          if (db.projects.some(item => projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
+            throw new RequestError(409, '相同项目名称、设备类型和项目类型的项目已存在。');
+          }
           if (!(db.demandOptions.project_manager ?? []).includes(manager)) {
             throw new RequestError(409, '项目经理已不可选，请刷新后重试。');
           }
           taskMember(db, npiId, 'NPI');
-          names.push(name);
-          db.projectDeviceTypes = { ...db.projectDeviceTypes, [name]: deviceType };
-          db.projectManagers = { ...db.projectManagers, [name]: manager };
-          db.projectNpiManagers = { ...db.projectNpiManagers, [name]: npiId };
-          initializeProjectRequirements(db, name);
-          syncProjectStageDemands(db, name, defaultProjectStage, recordTaskChange, initiationFiles ?? {}, user);
+          const project = {
+            id: db.seq.project++,
+            name,
+            stage: defaultProjectStage,
+            description: null,
+            device_type: deviceType,
+            project_type: projectType,
+            project_manager: manager,
+            npi_manager_id: npiId
+          };
+          db.projects.push(project);
+          syncDemandOptionProjects(db);
+          initializeProjectRequirements(db, project.id, project.project_type);
+          syncProjectStageDemands(db, project, defaultProjectStage, recordTaskChange, initiationFiles ?? {}, user);
         } else {
-          if (index === -1) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
+          const project = findProject(db, { projectId, id, name });
+          if (!project) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
           if (action === 'update') {
-            if (description !== undefined) {
-              db.projectDescriptions = { ...db.projectDescriptions };
-              if (description) db.projectDescriptions[name] = description;
-              else delete db.projectDescriptions[name];
+            const nextDevice = deviceType !== undefined ? deviceType : project.device_type;
+            const nextType = projectType !== undefined ? projectType : (project.project_type || DEFAULT_PROJECT_TYPE);
+            const tuple = projectTupleKey(project.name, nextDevice, nextType);
+            if (db.projects.some(item => item.id !== project.id && projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
+              throw new RequestError(409, '相同项目名称、设备类型和项目类型的项目已存在。');
             }
-            if (deviceType !== undefined) {
-              if (deviceType === null) {
-                if (db.projectDeviceTypes) delete db.projectDeviceTypes[name];
-              } else {
-                db.projectDeviceTypes = { ...db.projectDeviceTypes, [name]: deviceType };
+            if (description !== undefined) project.description = description;
+            if (deviceType !== undefined) project.device_type = deviceType;
+            if (projectType !== undefined && projectType !== project.project_type) {
+              project.project_type = projectType;
+              const timestamp = now();
+              for (const demand of db.demands) {
+                if (demand.project_id === project.id || demand.source_project_id === project.id) {
+                  demand.project_type = projectType;
+                  demand.updated_at = timestamp;
+                }
+              }
+              for (const task of db.tasks) {
+                if (task.project_id === project.id) {
+                  task.project_type = projectType;
+                  task.revision = (task.revision ?? 0) + 1;
+                  task.updated_at = timestamp;
+                }
               }
             }
             if (manager !== undefined) {
-              if (manager !== null && manager !== projectManager(db, name) && !(db.demandOptions.project_manager ?? []).includes(manager)) {
+              if (manager !== null && manager !== project.project_manager && !(db.demandOptions.project_manager ?? []).includes(manager)) {
                 throw new RequestError(409, '项目经理已不可选，请刷新后重试。');
               }
-              if (manager === null) {
-                if (db.projectManagers) delete db.projectManagers[name];
-              } else {
-                db.projectManagers = { ...db.projectManagers, [name]: manager };
-              }
+              project.project_manager = manager;
             }
             if (npiId !== undefined) {
               if (npiId === null) {
-                if (db.projectNpiManagers) delete db.projectNpiManagers[name];
+                project.npi_manager_id = null;
               } else {
-                if (npiId !== projectNpiManagerId(db, name)) taskMember(db, npiId, 'NPI');
-                db.projectNpiManagers = { ...db.projectNpiManagers, [name]: npiId };
+                if (npiId !== project.npi_manager_id) taskMember(db, npiId, 'NPI');
+                project.npi_manager_id = npiId;
               }
             }
             if (stage !== undefined) {
               if (!projectStageOptions(db).includes(stage)) {
                 throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
               }
-              const prevStage = projectStage(db, name);
-              db.projectStages = { ...db.projectStages, [name]: stage };
-              if (stage !== prevStage) syncProjectStageDemands(db, name, stage, recordTaskChange);
+              const prevStage = project.stage || defaultProjectStage;
+              project.stage = stage;
+              if (stage !== prevStage) syncProjectStageDemands(db, project, stage, recordTaskChange);
             }
           } else if (action === 'rename') {
-            if (nextName !== name) {
-              if (names.includes(nextName)) throw new RequestError(409, '项目名称已存在。');
-              names[index] = nextName;
-              for (const key of projectMetadataKeys) {
-                const values = db[key];
-                if (!values || !Object.hasOwn(values, name)) continue;
-                db[key] = { ...values, [nextName]: values[name] };
-                delete db[key][name];
+            if (nextName !== project.name) {
+              const tuple = projectTupleKey(nextName, project.device_type, project.project_type);
+              if (db.projects.some(item => item.id !== project.id && projectTupleKey(item.name, item.device_type, item.project_type) === tuple)) {
+                throw new RequestError(409, '相同项目名称、设备类型和项目类型的项目已存在。');
               }
+              const oldName = project.name;
+              project.name = nextName;
+              syncDemandOptionProjects(db);
               for (const file of db.attachments) {
-                if (file.kind === 'project' && file.project_name === name) file.project_name = nextName;
+                if (file.kind === 'project' && file.project_id === project.id) file.project_name = nextName;
               }
               const timestamp = now();
               for (const task of db.tasks) {
-                if (task.proj === name) {
+                if (task.project_id === project.id) {
                   task.proj = nextName;
                   task.revision = (task.revision ?? 0) + 1;
                   task.updated_at = timestamp;
                 }
               }
               for (const demand of db.demands) {
-                if (demand.proj === name || demand.source_project === name) {
-                  if (demand.proj === name) demand.proj = nextName;
-                  if (demand.source_project === name) demand.source_project = nextName;
+                if (demand.project_id === project.id || demand.source_project_id === project.id) {
+                  demand.proj = nextName;
+                  if (demand.source_project === oldName) demand.source_project = nextName;
                   demand.updated_at = timestamp;
                 }
               }
             }
           } else if (action === 'remove') {
-            names.splice(index, 1);
-            for (const key of projectMetadataKeys) {
-              if (db[key]) delete db[key][name];
-            }
+            db.projects = db.projects.filter(item => item.id !== project.id);
+            syncDemandOptionProjects(db);
+            if (db.projectRequirements) delete db.projectRequirements[String(project.id)];
             for (const file of db.attachments) {
-              if (file.kind === 'project' && file.project_name === name && file.state === 'bound') {
+              if (file.kind === 'project' && file.project_id === project.id && file.state === 'bound') {
                 file.state = 'deleting';
                 removedAttachments = true;
               }
@@ -1145,30 +1276,33 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       return result;
     },
 
-    appendProjectAttachments(user, { name, files }) {
+    appendProjectAttachments(user, { projectId, id, name, files }) {
       if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以上传项目文件。');
-      if (typeof name !== 'string' || !name) throw new RequestError(400, '未指定项目。');
       if (!Array.isArray(files) || !files.length) throw new RequestError(400, '请至少选择一个文件。');
-      store.update(db => {
-        if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
-        bindAttachments(db, user, { id: name }, 'project', files, { targetKey: 'project_name' });
+      const project = store.update(db => {
+        const found = findProject(db, { projectId, id, name });
+        if (!found) throw new RequestError(404, '未找到此项目。');
+        bindAttachments(db, user, { id: found.id }, 'project', files, { targetKey: 'project_id', extra: { project_name: found.name } });
+        return found;
       });
-      return { attachments: projectAttachments(store.read(), name) };
+      return { attachments: projectAttachments(store.read(), project) };
     },
 
-    deleteProjectAttachment(user, { name, fileId }) {
+    deleteProjectAttachment(user, { projectId, id, name, fileId }) {
       if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以删除项目文件。');
-      if (typeof name !== 'string' || !name) throw new RequestError(400, '未指定项目。');
       if (typeof fileId !== 'string' || !fileId.trim()) throw new RequestError(400, '文件编号无效。');
-      store.update(db => {
-        if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
-        const file = db.attachments.find(item => item.kind === 'project' && item.project_name === name &&
+      const project = store.update(db => {
+        const found = findProject(db, { projectId, id, name });
+        if (!found) throw new RequestError(404, '未找到此项目。');
+        const file = db.attachments.find(item => item.kind === 'project' &&
+          (item.project_id === found.id || (item.project_id == null && item.project_name === found.name)) &&
           item.id === fileId && item.state === 'bound');
         if (!file) throw new RequestError(404, '未找到这份项目文件。');
         file.state = 'deleting';
+        return found;
       });
       void cleanupAttachments?.();
-      return { attachments: projectAttachments(store.read(), name) };
+      return { attachments: projectAttachments(store.read(), project) };
     },
 
     projectAttachmentForDownload(_user, fileId) {

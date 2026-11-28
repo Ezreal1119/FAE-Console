@@ -233,7 +233,7 @@ function privateApi(url, session, body) {
     case '/api/projects':
     case '/api/admin/projects': return records.projectCatalog();
     case '/api/projects/detail':
-    case '/api/admin/projects/detail': return records.projectDetail(url.searchParams.get('name'));
+    case '/api/admin/projects/detail': return records.projectDetail({ id: url.searchParams.get('id'), name: url.searchParams.get('name') });
     case '/api/admin/projects/change': return records.changeProject(session.user, body);
     case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
     case '/api/admin/projects/requirements/push': return records.pushProjectRequirement(session.user, body);
