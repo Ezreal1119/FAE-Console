@@ -1259,7 +1259,10 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     changeProjectTemplateRequirement: input => store.update(db => changeProjectTemplateRequirement(db, input)),
 
-    changeProject(user, { action, projectId, id, name, stage, newName, description, device_type: deviceType, project_type: projectType, project_manager: manager, npi_manager_id: npiId, initiation_files: initiationFiles } = {}) {
+    changeProject(user, {
+      action, projectId, id, name, stage, newName, description, device_type: deviceType, project_type: projectType,
+      project_manager: manager, npi_manager_id: npiId, initiation_files: initiationFiles, initiation_requirements: initiationRequirements = []
+    } = {}) {
       if (!['create', 'update', 'rename', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
       if (action === 'create') {
         name = optionalText(name);
@@ -1273,6 +1276,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if (!validId(npiId)) throw new RequestError(400, '请选择 NPI。');
         if (initiationFiles !== undefined && (!initiationFiles || typeof initiationFiles !== 'object' || Array.isArray(initiationFiles))) {
           throw new RequestError(400, '立项文件参数无效。');
+        }
+        if (!Array.isArray(initiationRequirements) || (projectType === 'SKD' && initiationRequirements.length)) {
+          throw new RequestError(400, '新增立项需求参数无效。');
         }
       }
       let nextName;
@@ -1319,8 +1325,19 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           };
           db.projects.push(project);
           syncDemandOptionProjects(db);
-          initializeProjectRequirements(db, project.id, project.project_type);
-          syncProjectStageDemands(db, project, firstStage, recordTaskChange, initiationFiles ?? {}, user);
+          const lists = initializeProjectRequirements(db, project.id, project.project_type);
+          const filesByCode = { ...initiationFiles };
+          for (const item of initiationRequirements) {
+            if (!item || typeof item !== 'object' || Array.isArray(item) ||
+                (item.files !== undefined && !Array.isArray(item.files))) {
+              throw new RequestError(400, '新增立项需求或交付文件参数无效。');
+            }
+            const { description, deliverable, planned_hours, step_name, files } = item;
+            changeProjectRequirement(db, { projectKey: project.id, stage: firstStage, action: 'add',
+              description, deliverable, planned_hours, step_name });
+            filesByCode[lists[firstStage].rows.at(-1).code] = files;
+          }
+          syncProjectStageDemands(db, project, firstStage, recordTaskChange, filesByCode, user);
         } else {
           const project = findProject(db, { projectId, id, name });
           if (!project) throw new RequestError(404, '未找到这个项目，请刷新后重试。');

@@ -1202,6 +1202,7 @@ function projectForm(initial = {}) {
   const projectTypes = state.projectCatalog.projectTypes ?? PROJECT_TYPES;
   const initType = projectTypes.includes(values0.project_type) ? values0.project_type : '标准项目';
   const initByType = state.projectCatalog.initiationRequirementsByType ?? {};
+  const draftsByType = values0.draftsByType ?? new Map();
   const selectedFiles = new Map();
   if (values0.selectedFiles instanceof Map) {
     for (const [code, list] of values0.selectedFiles.entries()) selectedFiles.set(code, [...list]);
@@ -1215,7 +1216,9 @@ function projectForm(initial = {}) {
     choiceField('NPI', 'npi_manager_id', { required: true }) +
     missingHint + '<div id="project-init-files-container"></div>';
   let devicePicker, npiPicker;
+  let editingDraft = null;
   const form = modalForm('新建项目', '', fields, async values => {
+    if (editingDraft !== null) throw new Error('请先保存或取消正在编辑的需求。');
     const name = trimmed(values.name);
     const deviceType = optional(devicePicker.value());
     const projectType = trimmed(values.project_type) || '标准项目';
@@ -1227,19 +1230,21 @@ function projectForm(initial = {}) {
     if (!projectManager) throw new Error('请选择项目经理。');
     if (!Number.isSafeInteger(npiManagerId)) throw new Error('请选择 NPI。');
     const npiLabel = npiPicker.selection().label || '';
-    const activeCodes = new Set((initByType[projectType] ?? []).map(item => item.code));
-    const activeFiles = new Map([...selectedFiles.entries()].filter(([code, list]) => activeCodes.has(code) && list.length));
-    const totalFiles = [...activeFiles.values()].reduce((sum, list) => sum + list.length, 0);
+    const drafts = draftsByType.get(projectType) ?? [];
+    const templateCodes = new Set((initByType[projectType] ?? []).map(item => item.code));
+    const activeKeys = new Set([...templateCodes, ...drafts.map(item => item.id)]);
+    const activeFiles = [...selectedFiles].filter(([key, list]) => activeKeys.has(key) && list.length);
+    const totalFiles = activeFiles.reduce((sum, [, list]) => sum + list.length, 0);
     const confirmFields = totalFiles ? uploadProgress : '';
     const firstStage = projectType === 'CKD' ? 'P1' : '立项';
     const confirmForm = modalForm('确认新建项目', `是否确定新建${projectType}「${name}（${deviceType}）」？系统将自动创建${firstStage}阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`, confirmFields, async () => {
       const progress = confirmForm.querySelector('[data-upload-progress]');
-      const uploadedByCode = {};
+      const uploadedByItem = {};
       const uploadedIds = [];
       try {
         let doneCount = 0;
-        for (const [code, list] of activeFiles.entries()) {
-          uploadedByCode[code] = [];
+        for (const [key, list] of activeFiles) {
+          uploadedByItem[key] = [];
           for (const file of list) {
             doneCount++;
             if (progress) {
@@ -1248,7 +1253,7 @@ function projectForm(initial = {}) {
             }
             const { id } = await request('/api/upload?kind=delivery', { method: 'POST', file });
             uploadedIds.push(id);
-            uploadedByCode[code].push({ id, name: file.name });
+            uploadedByItem[key].push({ id, name: file.name });
           }
         }
         await changeProject('create', name, {
@@ -1256,7 +1261,8 @@ function projectForm(initial = {}) {
           project_type: projectType,
           project_manager: projectManager,
           npi_manager_id: npiManagerId,
-          initiation_files: uploadedByCode
+          initiation_files: Object.fromEntries(Object.entries(uploadedByItem).filter(([key]) => templateCodes.has(key))),
+          initiation_requirements: drafts.map(({ id, ...row }) => ({ ...row, files: uploadedByItem[id] ?? [] }))
         });
       } catch (error) {
         if (uploadedIds.length) void post('/api/upload/discard', { ids: uploadedIds }).catch(() => {});
@@ -1264,7 +1270,10 @@ function projectForm(initial = {}) {
       } finally {
         if (progress) progress.hidden = true;
       }
-    }, { submit: '确定新建', onCancel: () => projectForm({ name, device_type: deviceType, project_type: projectType, project_manager: projectManager, npi_manager_id: npiManagerId, npi_label: npiLabel, selectedFiles }) });
+    }, { submit: '确定新建', onCancel: () => projectForm({
+      name, device_type: deviceType, project_type: projectType, project_manager: projectManager, npi_manager_id: npiManagerId,
+      npi_label: npiLabel, selectedFiles, draftsByType
+    }) });
     return false;
   }, { submit: '确定新建' });
   devicePicker = bindChoice(form.querySelector('[data-choice=device_type]'), {
@@ -1276,7 +1285,7 @@ function projectForm(initial = {}) {
   }, { clearable: false });
   npiPicker.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
 
-  const message = form.querySelector('.form-error');
+  const message = form.querySelector(':scope > .form-error');
   const container = form.querySelector('#project-init-files-container');
   function renderInitFiles(code) {
     const listEl = form.querySelector(`[data-init-file-list="${CSS.escape(code)}"]`);
@@ -1289,30 +1298,77 @@ function projectForm(initial = {}) {
     </li>`).join('');
   }
   function renderInitSection(type) {
-    const items = initByType[type] ?? [];
-    if (!items.length) {
+    const drafts = draftsByType.get(type) ?? [];
+    const items = [...(initByType[type] ?? []).map(item => ({ ...item, id: item.code })), ...drafts];
+    const canAdd = type === '标准项目' || type === 'CKD';
+    if (!items.length && !canAdd) {
       container.innerHTML = '';
       return;
     }
     const firstStage = type === 'CKD' ? 'P1' : '立项';
+    const editing = editingDraft !== null;
+    const draft = drafts.find(item => item.id === editingDraft);
+    const disabled = editing ? ' disabled' : '';
+    form.elements.project_type.disabled = editing;
     container.innerHTML = `<div class="project-init-files">
       <p class="file-upload-title">${firstStage}交付文件（选填，上传后自动归入对应任务的交付文件）</p>
-      ${items.map(item => `<div class="project-init-file-item" data-init-code="${text(item.code)}">
+      ${items.map(item => `<div class="project-init-file-item">
         <div class="project-init-file-head">
-          <span><strong>${text(item.code)}</strong> · ${text(item.deliverable || item.step_name || item.description)}</span>
-          <button type="button" class="button" data-init-file-pick="${text(item.code)}">选择文件</button>
+          <span>${item.code ? `<strong>${text(item.code)}</strong> · ` : ''}${text(item.deliverable || item.step_name || item.description)}</span>
+          <div class="actions">
+            <button type="button" class="button" data-init-file-pick="${text(item.id)}">选择文件</button>
+            ${item.code ? '' : `<button type="button" class="button" data-init-requirement="edit" data-id="${text(item.id)}"${disabled}>编辑</button>
+            <button type="button" class="button" data-init-requirement="remove" data-id="${text(item.id)}"${disabled}>移除需求</button>`}
+          </div>
         </div>
-        <input type="file" multiple hidden data-init-file-input="${text(item.code)}">
-        <ul class="file-selected-list" data-init-file-list="${text(item.code)}" hidden></ul>
+        <input type="file" multiple hidden data-init-file-input="${text(item.id)}">
+        <ul class="file-selected-list" data-init-file-list="${text(item.id)}" hidden></ul>
       </div>`).join('')}
+      ${editing ? `<div class="project-init-file-item" data-init-requirement-editor>
+        ${projectRequirementFields(draft, type === 'CKD')}
+        <p class="form-error" role="alert" hidden></p>
+        <div class="actions">
+          <button type="button" class="button primary" data-init-requirement="save">保存需求</button>
+          <button type="button" class="button" data-init-requirement="cancel">取消编辑</button>
+        </div>
+      </div>` : canAdd ? '<div class="actions"><button type="button" class="button" data-init-requirement="add">＋ 新增需求</button></div>' : ''}
     </div>`;
-    for (const item of items) renderInitFiles(item.code);
+    for (const item of items) renderInitFiles(item.id);
   }
   renderInitSection(initType);
   form.elements.project_type.addEventListener('change', () => {
     renderInitSection(form.elements.project_type.value);
   });
   form.addEventListener('click', event => {
+    const draftButton = event.target.closest('[data-init-requirement]');
+    if (draftButton) {
+      const type = form.elements.project_type.value;
+      const drafts = draftsByType.get(type) ?? [];
+      const { initRequirement: operation, id } = draftButton.dataset;
+      if (operation === 'save') {
+        if (!form.elements.hours.reportValidity()) return;
+        const values = projectRequirementValues(Object.fromEntries(new FormData(form)));
+        if (!trimmed(values.description) && !trimmed(values.deliverable)) {
+          formError(container.querySelector('[data-init-requirement-editor] .form-error'), '请填写需求说明或交付内容。');
+          return;
+        }
+        const index = drafts.findIndex(item => item.id === editingDraft);
+        if (index === -1) drafts.push({ id: crypto.randomUUID(), ...values });
+        else drafts[index] = { id: editingDraft, ...values };
+        draftsByType.set(type, drafts);
+      } else if (operation === 'remove') {
+        draftsByType.set(type, drafts.filter(item => item.id !== id));
+        selectedFiles.delete(id);
+      }
+      editingDraft = operation === 'add' ? '' : operation === 'edit' ? id : null;
+      formError(message, '');
+      renderInitSection(type);
+      const focus = editingDraft !== null
+        ? container.querySelector('[data-init-requirement-editor] :is(input, textarea)')
+        : container.querySelector('[data-init-requirement="add"]');
+      focus?.focus();
+      return;
+    }
     const pick = event.target.closest('[data-init-file-pick]');
     if (pick) {
       const code = pick.dataset.initFilePick;
@@ -1487,6 +1543,16 @@ function confirmProjectTemplateChange(label, subtitle) {
   });
 }
 
+function projectRequirementFields(row, hasStepName) {
+  return (hasStepName ? field('步骤名', 'step_name', row?.step_name, 'maxlength="500"') : '') +
+    area('需求说明', 'description', row?.description) + area('交付内容', 'deliverable', row?.deliverable) +
+    field('计划投入工时（小时）', 'hours', row?.planned_hours, 'type="number" min="0" step="any" inputmode="decimal"');
+}
+
+function projectRequirementValues({ step_name, description, deliverable, hours }) {
+  return { step_name, description, deliverable, planned_hours: hours ? Number(hours) : null };
+}
+
 function projectRequirementForm(code) {
   if (!admin()) return;
   const page = state.page;
@@ -1501,16 +1567,13 @@ function projectRequirementForm(code) {
   if (code && !row) return;
   const subtitle = (project?.name ?? (PROJECT_TYPE_CONFIG_LABELS[templateType] || '项目模板')) + ' · ' + (row?.code ?? stage);
   const hasStepName = Object.hasOwn(requirements, 'P1');
-  const fields = (hasStepName ? field('步骤名', 'step_name', row?.step_name, 'maxlength="500"') : '') +
-    area('需求说明', 'description', row?.description) + area('交付内容', 'deliverable', row?.deliverable) +
-    field('计划投入工时（小时）', 'hours', row?.planned_hours, 'type="number" min="0" step="any" inputmode="decimal"');
+  const fields = projectRequirementFields(row, hasStepName);
   async function save(action, values = {}) {
     const endpoint = isTemplate ? '/api/admin/projects/requirement-template/change' : '/api/admin/projects/requirements/change';
     const result = await post(endpoint, {
       ...(isTemplate ? { project_type: templateType } : { projectId: project.id }),
       stage, action, code: row?.code, revision: row?.revision,
-      step_name: values.step_name, description: values.description, deliverable: values.deliverable,
-      planned_hours: values.hours ? Number(values.hours) : null
+      ...projectRequirementValues(values)
     });
     if (state.page === page && (isTemplate ? state.projectTemplate : state.projectDetail) === detail) {
       if (isTemplate) {
