@@ -3071,7 +3071,7 @@ function demandForm() {
   let picker, upload, dispatcherPicker;
   const dispatcherField = isApprover ? choiceField('委托派发人', 'dispatcher_id', { required: true }) : '';
   const form = modalForm('新建需求', '需求编码将在提交后自动生成。提交后项目、提出方和说明不可修改。',
-    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true, required: true })}${choiceField('需求提出方', 'proposer', { required: true })}</div>` +
+    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true, required: true })}${choiceField('需求提出方', 'proposer', { allowCustom: true, required: true })}</div>` +
     dispatcherField +
     area('需求说明（必填）', 'descr', '', true) +
     taskFileField('requirement', false) + uploadProgress +
@@ -3107,7 +3107,7 @@ function demandForm() {
   picker = bindTaskFilePicker(form);
   upload = bindFileUploads(form, () => picker.files());
   const pickers = Object.fromEntries(Object.entries(initial).map(([key, entry]) =>
-    [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: key === 'proj', clearable: false })]));
+    [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: true, clearable: false })]));
   if (isApprover) {
     dispatcherPicker = bindChoice(form.querySelector('[data-choice="dispatcher_id"]'), {
       value: state.user.id, label: myName() || state.user.name

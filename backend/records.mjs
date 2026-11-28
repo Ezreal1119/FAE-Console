@@ -1589,10 +1589,6 @@ function applyPatch(db, user, table, row, patch, recordTaskChange, creating = fa
     row.revision = (row.revision ?? 0) + 1;
     if (!creating && row.demand_id != null) delete patch.proj;
   }
-  if (table === 'demands' && patch.proposer != null && patch.proposer !== row.proposer &&
-      !db.demandOptions.proposer.includes(patch.proposer)) {
-    throw new RequestError(409, '需求提出方已不可选，请重新选择。');
-  }
   Object.assign(row, patch, { updated_at: now() });
   if (table === 'profiles') {
     if (!row.display_name) throw new RequestError(400, '请填写姓名。');
