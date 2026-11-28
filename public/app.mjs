@@ -2353,7 +2353,7 @@ function appendTaskFiles([taskId, kind]) {
 async function applySavedTask(row) {
   const saved = normalizeTask(row);
   updateRow('tasks', saved);
-  if (saved.demand_id != null) await refresh();
+  if (saved.demand_id != null) void refresh();
 }
 
 function taskTransferForm(id, { returnToDetail = false } = {}) {
@@ -2777,7 +2777,7 @@ function confirmDeleteDemand(row, onCancel) {
   if (!canManageDemand(row)) return;
   confirmDelete('删除需求', '确定删除「' + row.code + '」？', async () => {
     await removeRow('demands', row, '需求已删除。');
-    if (state.user) await refresh();
+    if (state.user) void refresh();
   }, onCancel ? { onCancel } : {});
 }
 
@@ -2841,7 +2841,7 @@ function demandDetail(id) {
         updateRow('demands', saved);
         const stageEl = dialog.querySelector('[data-demand-project-stage]');
         if (stageEl) stageEl.textContent = saved.project_stage || '—';
-        if (saved.linked_tasks?.length) await refresh();
+        if (saved.linked_tasks?.length) void refresh();
         toast(toastText);
       } catch (error) {
         rollback?.();
@@ -2918,7 +2918,7 @@ function demandDetail(id) {
           if (!uploaded.length || state.user !== session || !dialog.open || !dialog.contains(form)) return;
           const result = await post('/api/demands/attachments', { demandId: demand.id, files: uploaded });
           updateRow('demands', result.demand);
-          if (result.demand.linked_tasks?.length) await refresh();
+          if (result.demand.linked_tasks?.length) void refresh();
           renderDemandFiles(result.demand);
           toast('已上传需求文件。');
         } catch (error) {
@@ -2942,7 +2942,7 @@ function demandDetail(id) {
         const result = await post('/api/demands/attachments/delete', { demandId: demand.id, fileId });
         if (state.user !== session) return;
         updateRow('demands', result.demand);
-        if (result.demand.linked_tasks?.length) await refresh();
+        if (result.demand.linked_tasks?.length) void refresh();
         renderDemandFiles(result.demand);
         toast('需求文件已删除。');
       } catch (error) {
@@ -3306,7 +3306,10 @@ const actions = {
     const row = getRow('accounts', id);
     confirmDelete('删除成员账号', '确定删除「' + row.account + '」的账号和档案？已登记的任务会保留。', async () => {
       await post('/api/admin/delete-account', { userId: row.id });
-      await refresh();
+      state.accounts = state.accounts.filter(item => !same(item.id, row.id));
+      state.profiles = state.profiles.filter(item => !same(item.owner_id, row.id));
+      render();
+      void refresh();
       toast('账号已删除。');
     });
   },
