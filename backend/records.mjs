@@ -504,6 +504,12 @@ function canManageDemandFiles(db, user, row) {
   return demandDispatcherId(row) === user.id || (row.creator_id ?? row.owner_id) === user.id;
 }
 
+function canDeleteDemand(db, user, row) {
+  if (!isAdmin(user)) return false;
+  if (isDemandApprover(user, db)) return true;
+  return demandApprovalStatus(row) === 'pending' && (row.creator_id ?? row.owner_id) === user.id;
+}
+
 function publicDemand(db, user, row, linkedTasks) {
   const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
   const files = demandRequirementAttachments(db, row.id, linkedTasks);
@@ -519,7 +525,7 @@ function publicDemand(db, user, row, linkedTasks) {
     reject_reason: row.reject_reason ?? null,
     can_dispatch: canDispatchDemand(db, user, row),
     can_manage_files: canManageDemandFiles(db, user, row),
-    can_delete: canManageDemandFiles(db, user, row),
+    can_delete: canDeleteDemand(db, user, row),
     project_stage: resolvedProject ? (resolvedProject.stage || defaultProjectStage) : null,
     project_type: row.project_type ?? resolvedProject?.project_type ?? null,
     responsible: assigned?.display_name || row.responsible || null,
@@ -628,7 +634,7 @@ function canCommentOnTask(db, user, task) {
 function changeable(db, user, table, row, op, patch) {
   if (table === 'demands') {
     if (op === 'update') return false;
-    if (op === 'delete') return canManageDemandFiles(db, user, row);
+    if (op === 'delete') return canDeleteDemand(db, user, row);
     return isAdmin(user);
   }
   if (table === 'profiles') {
