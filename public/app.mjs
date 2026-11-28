@@ -19,7 +19,7 @@ const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
 const TASK_KINDS = { L: '临时任务', W: '工作任务', P: '项目任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目中心', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', demandApprovals: '需求审批', projects: '项目中心', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理' };
 const npiStages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
@@ -30,10 +30,10 @@ const pageQueryKeys = { taskLink: 'task', projectDetail: 'project', projectConfi
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
   taskQuery: '', taskStatus: '未完成', taskPriority: '', taskStage: '', taskTeam: '', taskScope: 'mine',
-  demandQuery: '', demandType: '', peopleQuery: '', peopleTeam: ''
+  demandQuery: '', demandType: '', approvalQuery: '', approvalStatus: '', peopleQuery: '', peopleTeam: ''
 };
 const listPageSize = 10;
-const firstListPages = { home: 1, tasks: 1, demands: 1 };
+const firstListPages = { home: 1, tasks: 1, demands: 1, demandApprovals: 1 };
 const state = {
   user: null, tasks: [], demands: [], profiles: [], accounts: [], page: 'home', mode: 'login',
   registrationEnabled: false,
@@ -65,6 +65,7 @@ function text(value) {
 const shown = value => text(value == null || value === '' ? '—' : value);
 const admin = () => state.user?.role === '管理员';
 const primaryAdmin = () => state.user?.is_primary_admin === true;
+const demandApprover = () => state.user?.can_approve_demands === true;
 const accountRole = account => account.is_primary_admin ? '超级管理员' : account.role;
 const same = (a, b) => a != null && b != null && String(a) === String(b);
 const mineProfile = () => state.profiles.find(person => same(person.owner_id, state.user?.id));
@@ -282,6 +283,7 @@ function showWorkspace() {
   $('#auth-view').hidden = true;
   $('#workspace').hidden = false;
   $('[data-page="demandCatalog"]').hidden = !admin();
+  $('[data-page="demandApprovals"]').hidden = !demandApprover();
   const label = myName() || state.user.account;
   $('#user-name').textContent = label;
   $('#user-account').textContent = state.user.account || '';
@@ -330,6 +332,7 @@ function consumeRestorePage() {
     sessionStorage.removeItem(UPDATE_RESTORE_PAGE_KEY);
     if (!Object.hasOwn(pages, saved)) return null;
     if ((saved === 'demandCatalog' || saved === 'projectConfig') && !admin()) return null;
+    if (saved === 'demandApprovals' && !demandApprover()) return null;
     return saved;
   } catch {
     return null;
@@ -669,7 +672,19 @@ function tasksPage() {
     pagedListPanel('tasks', toolbar);
 }
 
-const demandHeaders = ['需求编码', '项目', '项目阶段', '任务进度', '当前负责人', '提出方', '创建人', '需求说明'];
+const demandHeaders = ['需求编码', '项目', '项目阶段', '任务进度', '当前负责人', '提出方', '派发人', '创建人', '需求说明'];
+const approvalStatusLabels = { pending: '待审批', approved: '已通过', rejected: '已驳回' };
+const approvalStatusFilterMap = { 待审批: 'pending', 已通过: 'approved', 已驳回: 'rejected' };
+function approvalStatusBadge(status) {
+  const key = status || 'approved';
+  const cls = key === 'pending' ? 'test' : key === 'rejected' ? 'danger' : 'done';
+  return `<span class="tag ${cls}">${text(approvalStatusLabels[key] || '已通过')}</span>`;
+}
+function demandProgressBadge(demand, task) {
+  if (demand.approval_status === 'pending') return '<span class="tag test">待审批</span>';
+  if (demand.approval_status === 'rejected') return '<span class="tag danger">已驳回</span>';
+  return task ? statusBadge(task.status) : '<span class="tag">待派发</span>';
+}
 function demandOwner(task) {
   return task?.id && canTransferTask(task)
     ? action(task.owner_name || '设置负责人', 'task-transfer', task.id, 'link') : shown(task?.owner_name);
@@ -679,7 +694,7 @@ function filteredDemands() {
   return state.demands.filter(row => {
     if (state.filters.demandType === '项目需求' && !isProjectDemandRow(row)) return false;
     if (state.filters.demandType === '非项目需求' && isProjectDemandRow(row)) return false;
-    return hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.project_stage, row.descr, row.proposer,
+    return hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.project_stage, row.descr, row.proposer, row.dispatcher_name, row.owner_name,
       ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name]));
   });
 }
@@ -687,23 +702,63 @@ function demandCreator(demand) {
   const mine = same(demand.creator_id ?? demand.owner_id, state.user.id);
   return mine ? `${shown(demand.owner_name)}<span class="tag start self-tag">我</span>` : shown(demand.owner_name);
 }
+function demandDispatcher(demand) {
+  const name = demand.dispatcher_name ?? demand.owner_name;
+  const mine = same(demand.dispatcher_id ?? demand.creator_id ?? demand.owner_id, state.user.id);
+  return mine ? `${shown(name)}<span class="tag start self-tag">我</span>` : shown(name);
+}
 function demandRows(demands) {
   return demands.map(demand => {
     const task = demand.linked_tasks?.[0];
     return `<tr>
     <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td><td>${shown(demand.proj)}</td>
     <td>${shown(demand.project_stage)}</td>
-    <td>${task ? statusBadge(task.status) : '<span class="tag">待派发</span>'}</td>
-    <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${demandCreator(demand)}</td>
+    <td>${demandProgressBadge(demand, task)}</td>
+    <td>${demandOwner(task)}</td><td>${shown(demand.proposer)}</td><td>${demandDispatcher(demand)}</td><td>${demandCreator(demand)}</td>
     ${descCell(demand.descr)}</tr>`;
   }).join('');
 }
 function demandsPage() {
   const demandType = filterSelect('demandType', '按需求类型筛选', ['项目需求', '非项目需求'], '全部类型');
-  const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求编码、项目或任务负责人')}${demandType}</div>`;
+  const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求编码、项目、派发人或任务负责人')}${demandType}</div>`;
   const actionsHtml = action('刷新', 'refresh') + (admin() ? action('＋ 新建需求', 'demand-new', '', 'button primary') : '');
   return heading('需求中心', '登记需求、派发任务并跟踪进度。', actionsHtml) +
     pagedListPanel('demands', toolbar);
+}
+
+const demandApprovalHeaders = ['需求编码', '项目', '提出方', '申请人', '提交时间', '审批状态', '需求说明', '操作'];
+function filteredDemandApprovals() {
+  const targetStatus = approvalStatusFilterMap[state.filters.approvalStatus] || '';
+  return state.demands
+    .filter(row => {
+      if (targetStatus && (row.approval_status || 'approved') !== targetStatus) return false;
+      return hasText(state.filters.approvalQuery, row.code, row.proj, row.proposer, row.owner_name, row.dispatcher_name, row.descr);
+    })
+    .toSorted((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+}
+function demandApprovalRows(demands) {
+  return demands.map(demand => {
+    const isPending = demand.approval_status === 'pending';
+    const ops = isPending
+      ? `<div class="row-actions">${action('通过', 'demand-approve', demand.id, 'link')}${action('驳回', 'demand-reject', demand.id, 'link danger')}</div>`
+      : `<span class="muted text-small">${shown(demand.approved_by_name)}</span>`;
+    return `<tr>
+      <td>${action(demand.code, 'demand-detail', demand.id, 'link')}</td>
+      <td>${shown(demand.proj)}</td>
+      <td>${shown(demand.proposer)}</td>
+      <td>${shown(demand.owner_name)}</td>
+      <td class="task-date">${shown(attachmentUploadTime(demand.created_at))}</td>
+      <td>${approvalStatusBadge(demand.approval_status)}</td>
+      ${descCell(demand.descr)}
+      <td>${ops}</td>
+    </tr>`;
+  }).join('');
+}
+function demandApprovalsPage() {
+  const statusFilter = filterSelect('approvalStatus', '按审批状态筛选', ['待审批', '已通过', '已驳回'], '全部状态');
+  const toolbar = `<div class="toolbar">${search('approvalQuery', '搜索需求编码、项目、申请人或说明')}${statusFilter}</div>`;
+  return heading('需求审批', '审批管理员提交的需求申请，按提交时间倒序展示。', action('刷新', 'refresh')) +
+    pagedListPanel('demandApprovals', toolbar);
 }
 
 function handledTasks() {
@@ -721,7 +776,8 @@ function handledTaskRows(tasks) {
 const pagedLists = {
   home: { id: 'handled', title: '我经手的任务', headers: ['任务编号', '项目', '项目阶段', '状态', '优先级', '计划完成', '当前负责人', '任务描述'], items: handledTasks, rows: handledTaskRows, empty: '暂无经手任务。' },
   tasks: { id: 'task', title: '任务列表', get headers() { return visibleTaskColumns(); }, items: sortedTaskList, rows: taskRows, empty: '没有匹配的任务。' },
-  demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' }
+  demands: { id: 'demand', title: '需求列表', headers: demandHeaders, items: filteredDemands, rows: demandRows, empty: '没有匹配的需求。' },
+  demandApprovals: { id: 'approval', title: '审批列表', headers: demandApprovalHeaders, items: filteredDemandApprovals, rows: demandApprovalRows, empty: '暂无需求审批记录。' }
 };
 function listPage(key) {
   const { items, rows } = pagedLists[key];
@@ -1701,7 +1757,7 @@ function openGuidelinesNotice() {
   void loadGuidelines();
 }
 
-const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, projects: projectsPage, projectDetail: projectDetailPage, projectConfig: projectConfigPage, demandCatalog: demandCatalogPage,
+const pages = { home: workspacePage, tasks: tasksPage, taskLink: taskLinkPage, demands: demandsPage, demandApprovals: demandApprovalsPage, projects: projectsPage, projectDetail: projectDetailPage, projectConfig: projectConfigPage, demandCatalog: demandCatalogPage,
   people: peoplePage, board: boardPage, guidelines: guidelinesPage };
 function render() {
   if (!state.user) return;
@@ -1719,6 +1775,7 @@ function render() {
 }
 function navigate(page) {
   if (!Object.hasOwn(pages, page) || ((page === 'demandCatalog' || page === 'projectConfig') && !admin())) return;
+  if (page === 'demandApprovals' && !demandApprover()) return;
   const queryKey = pageQueryKeys[state.page];
   if (queryKey && page !== state.page) {
     const url = new URL(location.href);
@@ -1736,7 +1793,7 @@ function navigate(page) {
   else {
     render();
     if (page === 'guidelines') void loadGuidelines();
-    if (['home', 'tasks', 'taskLink', 'demands', 'people'].includes(page) ||
+    if (['home', 'tasks', 'taskLink', 'demands', 'demandApprovals', 'people'].includes(page) ||
         (!state.workDataLoaded && ['board', 'account'].includes(page))) void refresh();
   }
 }
@@ -2847,42 +2904,72 @@ function prepareFormChoices(form, applyChoices) {
 }
 
 function confirmDeleteDemand(row, onCancel) {
-  if (!canManageDemand(row)) return;
+  if (!row.can_delete) return;
   confirmDelete('删除需求', '确定删除「' + row.code + '」？', async () => {
     await removeRow('demands', row, '需求已删除。');
     if (state.user) void refresh();
   }, onCancel ? { onCancel } : {});
 }
 
+function approveDemand(id, onCancel) {
+  const demand = getRow('demands', id);
+  if (!demandApprover() || demand.approval_status !== 'pending') return;
+  modalForm('审批通过', `确定审批通过需求「${demand.code}」？通过后将由「${demand.dispatcher_name || demand.owner_name || '申请人'}」进行派发。`, '', async () => {
+    const result = await post('/api/admin/demands/review', { demandId: demand.id, decision: 'approve' });
+    updateRow('demands', result.demand);
+    toast('需求已审批通过。');
+  }, { submit: '确认通过', submitClass: 'success', onCancel });
+}
+
+function rejectDemand(id, onCancel) {
+  const demand = getRow('demands', id);
+  if (!demandApprover() || demand.approval_status !== 'pending') return;
+  modalForm('驳回需求申请', `确定驳回需求「${demand.code}」？`,
+    area('驳回原因（选填）', 'reason', '', false), async values => {
+      const result = await post('/api/admin/demands/review', { demandId: demand.id, decision: 'reject', reason: optional(values.reason) });
+      updateRow('demands', result.demand);
+      toast('需求申请已驳回。');
+    }, { danger: true, submit: '确认驳回', onCancel });
+}
+
 function demandDetail(id) {
   const demand = getRow('demands', id);
   const tasks = demand.linked_tasks || [];
   const task = tasks[0];
-  const canEdit = canManageDemand(demand);
-  const canDispatch = canEdit && !tasks.length;
+  const canManageFiles = Boolean(demand.can_manage_files);
+  const canDelete = Boolean(demand.can_delete) && !tasks.length;
+  const canDispatch = Boolean(demand.can_dispatch) && !tasks.length;
+  const canReview = demandApprover() && demand.approval_status === 'pending';
   const items = tasks.map(row => `<div class="detail-item demand-task-item">
     <div>${row.id ? action(row.code, 'demand-task', row.id, 'link') : '<strong>任务</strong>'}
     <p class="muted text-small">${shown(row.owner_name)}</p></div>${statusBadge(row.status)}</div>`).join('');
   const info = details([
-    ['项目', canEdit ? inlineChoiceControl('项目', 'proj') : demand.proj, canEdit],
+    ['项目', demand.proj],
     ['项目阶段', `<span data-demand-project-stage>${shown(demand.project_stage)}</span>`, true],
-    ['需求提出方', canEdit ? inlineChoiceControl('需求提出方', 'proposer', { allowCustom: false }) : demand.proposer, canEdit],
+    ['需求提出方', demand.proposer],
+    ['审批状态', approvalStatusBadge(demand.approval_status), true],
+    ['派发人', demandDispatcher(demand), true],
     ['创建人', demandCreator(demand), true],
+    ...(demand.approved_by_name ? [['审批人', demand.approved_by_name]] : []),
     ['初始接收人', task?.initial_receiver_name],
     ['当前负责人', demandOwner(task), true]
   ]);
-  const descriptionBlock = canEdit
-    ? area('需求说明', 'descr', demand.descr, false)
-    : `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div></div>`;
-  const linkedBlock = `<div class="details-list"><div class="detail-item"><strong>关联任务</strong>${items || '<p class="muted">待派发</p>'}</div></div>`;
+  const rejectBlock = demand.approval_status === 'rejected' && demand.reject_reason
+    ? `<div class="detail-item"><strong>驳回原因</strong><p class="text-red">${shown(demand.reject_reason)}</p></div>` : '';
+  const descriptionBlock = `<div class="details-list"><div class="detail-item"><strong>需求说明</strong><p class="muted">${shown(demand.descr)}</p></div>${rejectBlock}</div>`;
+  const emptyLinkedText = demand.approval_status === 'pending' ? '待审批' : demand.approval_status === 'rejected' ? '已驳回' : '待派发';
+  const linkedBlock = `<div class="details-list"><div class="detail-item"><strong>关联任务</strong>${items || `<p class="muted">${emptyLinkedText}</p>`}</div></div>`;
   const demandFilesList = '<div class="upload-history-list" data-demand-files></div>';
-  const filesSection = canEdit
+  const filesSection = canManageFiles
     ? taskFileField('requirement') + uploadProgress + demandFilesList
     : (demand.attachments?.length ? `<div class="details-list"><div class="detail-item"><strong>需求文件</strong>${demandFilesList}</div></div>` : '');
-  const leading = canEdit ? '<div class="dialog-actions-start"><button type="button" class="button danger" data-demand-dialog-action="delete">删除</button></div>' : '';
+  const leading = canDelete ? '<div class="dialog-actions-start"><button type="button" class="button danger" data-demand-dialog-action="delete">删除</button></div>' : '';
+  const reviewBtns = canReview
+    ? '<button type="button" class="button danger" data-demand-dialog-action="reject">驳回</button><button type="button" class="button success" data-demand-dialog-action="approve">通过</button>'
+    : '';
   const dispatchBtn = canDispatch ? '<button type="button" class="button primary" data-demand-dialog-action="dispatch">派发任务</button>' : '';
-  const footer = (leading || dispatchBtn) ? `<div class="dialog-actions">${leading}${dispatchBtn}</div>` : '';
-  const body = `<form id="dialog-form"><div class="stack">${info}${descriptionBlock}${linkedBlock}${filesSection}${canEdit ? choiceStatus : ''}</div><p class="form-error" role="alert" hidden></p>${footer}</form>`;
+  const footer = (leading || reviewBtns || dispatchBtn) ? `<div class="dialog-actions">${leading}${reviewBtns}${dispatchBtn}</div>` : '';
+  const body = `<form id="dialog-form"><div class="stack">${info}${descriptionBlock}${linkedBlock}${filesSection}</div><p class="form-error" role="alert" hidden></p>${footer}</form>`;
   modal(demand.code, demand.title, body, false, '', true);
   const form = dialog.querySelector('form');
   form.addEventListener('submit', event => event.preventDefault());
@@ -2894,7 +2981,7 @@ function demandDetail(id) {
     filesContainer.hidden = !files.length;
     filesContainer.innerHTML = files.map(file => {
       const download = `<a class="button" href="${demandAttachmentUrl(row.id, file.id)}" download>下载</a>`;
-      const remove = canEdit ? `<button type="button" class="button danger" data-demand-file-delete="${text(file.id)}">删除</button>` : '';
+      const remove = canManageFiles ? `<button type="button" class="button danger" data-demand-file-delete="${text(file.id)}">删除</button>` : '';
       return `<div class="upload-history-item">
         <div class="upload-history-meta"><strong>${text(file.name)}</strong><time class="muted text-small">${text(attachmentUploadTime(file.created_at))}</time></div>
         <div class="upload-history-actions">${download}${remove}</div>
@@ -2902,83 +2989,7 @@ function demandDetail(id) {
     }).join('');
   }
   renderDemandFiles(demand);
-  let saveQueue = Promise.resolve();
-  let loadChoices;
-  function autoSave(patch, { rollback, message: toastText = '已保存。' } = {}) {
-    const run = async () => {
-      const session = state.user;
-      if (dialog.contains(form)) formError(formMessage, '');
-      try {
-        const saved = await saveRow('demands', patch, demand.id);
-        if (state.user !== session) return;
-        updateRow('demands', saved);
-        const stageEl = dialog.querySelector('[data-demand-project-stage]');
-        if (stageEl) stageEl.textContent = saved.project_stage || '—';
-        if (saved.linked_tasks?.length) void refresh();
-        toast(toastText);
-      } catch (error) {
-        rollback?.();
-        if (dialog.contains(form)) formError(formMessage, error.message);
-        else toast(error.message);
-        if (error.status === 409 && loadChoices) await loadChoices().catch(() => {});
-      }
-    };
-    saveQueue = saveQueue.then(run, run);
-    return saveQueue;
-  }
-  if (canEdit) {
-    const pickers = {
-      proj: bindChoice(form.querySelector('[data-choice="proj"]'), { value: demand.proj || null, label: demand.proj }, {
-        allowCustom: true,
-        clearable: false,
-        onChange: value => {
-          const latest = getRow('demands', demand.id);
-          if (!value) {
-            pickers.proj.setValue(optional(latest.proj));
-            formError(formMessage, '项目不能为空。');
-            return;
-          }
-          if (value === optional(latest.proj)) return;
-          void autoSave({ proj: value }, {
-            rollback: () => { try { pickers.proj.setValue(optional(getRow('demands', demand.id).proj)); } catch { /* ignore */ } }
-          });
-        }
-      }),
-      proposer: bindChoice(form.querySelector('[data-choice="proposer"]'), { value: demand.proposer || null, label: demand.proposer }, {
-        allowCustom: false,
-        clearable: false,
-        onChange: value => {
-          const latest = getRow('demands', demand.id);
-          if (!value) {
-            pickers.proposer.setValue(optional(latest.proposer));
-            formError(formMessage, '需求提出方不能为空。');
-            return;
-          }
-          if (value === optional(latest.proposer)) return;
-          void autoSave({ proposer: value }, {
-            rollback: () => { try { pickers.proposer.setValue(optional(getRow('demands', demand.id).proposer)); } catch { /* ignore */ } }
-          });
-        }
-      })
-    };
-    loadChoices = prepareFormChoices(form, ({ options }) => {
-      for (const [key, picker] of Object.entries(pickers)) {
-        picker.setOptions(catalogChoiceEntries(options[key]));
-      }
-    });
-    const descrField = form.elements.descr;
-    descrField?.addEventListener('blur', () => {
-      let latest;
-      try { latest = getRow('demands', demand.id); } catch { return; }
-      const nextDescr = optional(descrField.value);
-      if (nextDescr === optional(latest.descr)) return;
-      if (!nextDescr) {
-        descrField.value = latest.descr ?? '';
-        formError(formMessage, '需求说明不能为空。');
-        return;
-      }
-      void autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
-    });
+  if (canManageFiles) {
     const upload = bindFileUploads(form, () => []);
     const drop = form.querySelector('.file-drop');
     bindTaskFilePicker(form, {
@@ -3033,31 +3044,27 @@ function demandDetail(id) {
     }
     confirmDeleteDemand(current, () => demandDetail(demand.id));
   });
-  form.querySelector('[data-demand-dialog-action="dispatch"]')?.addEventListener('click', async () => {
-    const descrField = form.elements.descr;
-    if (descrField) {
-      const latest = getRow('demands', demand.id);
-      const nextDescr = optional(descrField.value);
-      if (!nextDescr && optional(latest.descr)) {
-        descrField.value = latest.descr;
-        formError(formMessage, '需求说明不能为空。');
-        return;
-      }
-      if (nextDescr && nextDescr !== optional(latest.descr)) await autoSave({ descr: nextDescr }, { message: '需求说明已保存。' });
-    }
-    await saveQueue;
-    if (!state.user) return;
+  form.querySelector('[data-demand-dialog-action="approve"]')?.addEventListener('click', () => {
+    approveDemand(demand.id, () => demandDetail(demand.id));
+  });
+  form.querySelector('[data-demand-dialog-action="reject"]')?.addEventListener('click', () => {
+    rejectDemand(demand.id, () => demandDetail(demand.id));
+  });
+  form.querySelector('[data-demand-dialog-action="dispatch"]')?.addEventListener('click', () => {
     const current = getRow('demands', demand.id);
-    if (canManageDemand(current) && !current.linked_tasks?.length) taskForm(current);
+    if (current.can_dispatch && !current.linked_tasks?.length) taskForm(current);
   });
 }
 
 function demandForm() {
   if (!admin()) return;
+  const isApprover = demandApprover();
   const initial = { proj: { value: null, label: '' }, proposer: { value: null, label: '' } };
-  let picker, upload;
-  const form = modalForm('新建需求', '需求编码将在提交后自动生成。',
+  let picker, upload, dispatcherPicker;
+  const dispatcherField = isApprover ? choiceField('委托派发人', 'dispatcher_id', { required: true }) : '';
+  const form = modalForm('新建需求', '需求编码将在提交后自动生成。提交后项目、提出方和说明不可修改。',
     `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true, required: true })}${choiceField('需求提出方', 'proposer', { required: true })}</div>` +
+    dispatcherField +
     area('需求说明（必填）', 'descr', '', true) +
     taskFileField('requirement', false) + uploadProgress +
     choiceStatus, async values => {
@@ -3068,10 +3075,16 @@ function demandForm() {
     if (!proj) throw new Error('请填写项目。');
     if (!proposer) throw new Error('请选择需求提出方。');
     if (!descr) throw new Error('请填写需求说明。');
+    const payload = { proj, proposer, descr };
+    if (isApprover) {
+      const dispatcherId = dispatcherPicker.value();
+      if (!Number.isSafeInteger(dispatcherId)) throw new Error('请选择委托派发人。');
+      payload.dispatcher_id = dispatcherId;
+    }
     try {
       const uploaded = await upload('requirement');
       if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
-      let saved = await saveRow('demands', { proj, proposer, descr });
+      let saved = await saveRow('demands', payload);
       if (uploaded.length) {
         const attached = await post('/api/demands/attachments', { demandId: saved.id, files: uploaded });
         saved = attached.demand;
@@ -3081,15 +3094,23 @@ function demandForm() {
       if (error.status === 409) await loadChoices().catch(() => {});
       throw error;
     }
-    toast('需求申请已提交。');
-  }, { submit: '提交申请' });
+    toast(isApprover ? '需求已新建。' : '需求申请已提交，等待审批。');
+  }, { submit: isApprover ? '新建需求' : '提交申请' });
   picker = bindTaskFilePicker(form);
   upload = bindFileUploads(form, () => picker.files());
   const pickers = Object.fromEntries(Object.entries(initial).map(([key, entry]) =>
     [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: key === 'proj', clearable: false })]));
-  const loadChoices = prepareFormChoices(form, ({ options }) => {
+  if (isApprover) {
+    dispatcherPicker = bindChoice(form.querySelector('[data-choice="dispatcher_id"]'), {
+      value: state.user.id, label: myName() || state.user.name
+    }, { clearable: false });
+  }
+  const loadChoices = prepareFormChoices(form, ({ options, admins }) => {
     for (const [key, choice] of Object.entries(pickers)) {
       choice.setOptions(catalogChoiceEntries(options[key]));
+    }
+    if (dispatcherPicker) {
+      dispatcherPicker.setOptions(peopleChoices(admins ?? []).map(({ id, label }) => ({ value: id, label })));
     }
   });
 }
@@ -3342,6 +3363,8 @@ const actions = {
   'task-display-options': taskDisplayOptions,
   'task-transfer': id => taskTransferForm(id),
   'demand-new': () => demandForm(), 'demand-detail': demandDetail,
+  'demand-approve': id => approveDemand(id),
+  'demand-reject': id => rejectDemand(id),
   'demand-task': openLinkedTask,
   'project-req-demand': openLinkedDemand,
   'project-load': loadProjects,

@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { attachmentKind, bindAttachments } from './attachments.mjs';
-import { isAdmin, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
+import { isAdmin, isDemandApprover, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
 import {
   allProjectTemplateRows, changeProjectRequirement, changeProjectTemplateRequirement, DEFAULT_PROJECT_TYPE,
   ensureProjectRequirementTemplates, initializeProjectRequirements, PROJECT_TYPES, projectRequirementRows
@@ -15,7 +15,7 @@ const fields = {
     device_type: 100,
     start_time: 10, end_time: 10, hours: 0, planned_hours: 0, result: 10000, desc: 10000
   },
-  demands: { proj: 100, descr: 10000, proposer: 100 }
+  demands: { proj: 100, descr: 10000, proposer: 100, dispatcher_id: 0 }
 };
 const sequence = { profiles: 'profile', tasks: 'task', demands: 'demand' };
 const statuses = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
@@ -88,8 +88,8 @@ function cleanFields(table, payload) {
         throw new RequestError(400, key === 'hours' ? '投入工时须为非负数。' : '计划工时须为非负数。');
       }
       patch[key] = value;
-    } else if (key === 'assignee_id') {
-      if (value !== null && !validId(value)) throw new RequestError(400, '负责人编号无效。');
+    } else if (key === 'assignee_id' || key === 'dispatcher_id') {
+      if (value !== null && !validId(value)) throw new RequestError(400, key === 'assignee_id' ? '负责人编号无效。' : '委托派发人编号无效。');
       patch[key] = value;
     } else if (key === 'pri') {
       const priority = normalizeTaskPriority(optionalText(value, maximum)) || defaultPriority;
@@ -446,11 +446,72 @@ function demandRequirementAttachments(db, demandId, linkedTasks) {
     (file.demand_id === demandId || linkedIds.has(file.task_id)));
 }
 
+function activeAdmins(db) {
+  const profilesByOwner = new Map(db.profiles.map(profile => [profile.owner_id, profile]));
+  return db.users
+    .filter(user => {
+      if (!isAdmin(user)) return false;
+      const profile = profilesByOwner.get(user.id);
+      return !profile || profile.status !== '已离职';
+    })
+    .map(user => {
+      const profile = profilesByOwner.get(user.id);
+      return {
+        id: user.id,
+        name: profile?.display_name || user.name,
+        emp_no: profile?.emp_no || user.account,
+        is_primary_admin: isPrimaryAdmin(user)
+      };
+    });
+}
+
+function demandApprovalStatus(row) {
+  return row?.approval_status || 'approved';
+}
+
+function demandDispatcherId(row) {
+  return row?.dispatcher_id ?? row?.creator_id ?? row?.owner_id ?? null;
+}
+
+function demandDispatcherName(db, row) {
+  const id = demandDispatcherId(row);
+  if (validId(id)) {
+    const user = db.users.find(account => account.id === id);
+    if (user) return displayName(db, user);
+    const profile = db.profiles.find(item => item.owner_id === id);
+    if (profile?.display_name) return profile.display_name;
+  }
+  return row?.dispatcher_name || row?.owner_name || null;
+}
+
+function canDispatchDemand(db, user, row) {
+  if (!isAdmin(user) || demandApprovalStatus(row) !== 'approved') return false;
+  if (isDemandApprover(user, db)) return true;
+  return demandDispatcherId(row) === user.id;
+}
+
+function canManageDemandFiles(db, user, row) {
+  if (!isAdmin(user)) return false;
+  if (isDemandApprover(user, db)) return true;
+  return demandDispatcherId(row) === user.id || (row.creator_id ?? row.owner_id) === user.id;
+}
+
 function publicDemand(db, user, row, linkedTasks) {
   const assigned = db.profiles.find(profile => profile.owner_id === row.responsible_id);
   const files = demandRequirementAttachments(db, row.id, linkedTasks);
   const resolvedProject = resolveProjectForRecord(db, row.project_id ?? row.source_project_id, row.proj);
+  const status = demandApprovalStatus(row);
+  const dispatcherId = demandDispatcherId(row);
   return { ...row,
+    approval_status: status,
+    dispatcher_id: dispatcherId,
+    dispatcher_name: demandDispatcherName(db, row),
+    approved_by_name: row.approved_by_name ?? null,
+    approved_at: row.approved_at ?? null,
+    reject_reason: row.reject_reason ?? null,
+    can_dispatch: canDispatchDemand(db, user, row),
+    can_manage_files: canManageDemandFiles(db, user, row),
+    can_delete: canManageDemandFiles(db, user, row),
     project_stage: resolvedProject ? (resolvedProject.stage || defaultProjectStage) : null,
     project_type: row.project_type ?? resolvedProject?.project_type ?? null,
     responsible: assigned?.display_name || row.responsible || null,
@@ -557,7 +618,11 @@ function canCommentOnTask(db, user, task) {
 }
 
 function changeable(db, user, table, row, op, patch) {
-  if (table === 'demands') return isAdmin(user);
+  if (table === 'demands') {
+    if (op === 'update') return false;
+    if (op === 'delete') return canManageDemandFiles(db, user, row);
+    return isAdmin(user);
+  }
   if (table === 'profiles') {
     if (row.owner_id === user.id) return op !== 'delete';
     return isAdmin(user) && !db.users.some(account => account.id === row.owner_id && isPrimaryAdmin(account));
@@ -780,14 +845,11 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       const patch = op === 'delete' ? {} : cleanFields(table, payload);
       let extra;
       if (table === 'demands' && op !== 'delete') {
+        if (op === 'update') throw new RequestError(403, '需求提交后项目、提出方和说明不可修改。');
         if (op === 'insert') {
           if (!patch.proj) throw new RequestError(400, '请填写项目。');
           if (!patch.proposer) throw new RequestError(400, '请选择需求提出方。');
           if (!patch.descr) throw new RequestError(400, '请填写需求说明。');
-        } else {
-          if (Object.hasOwn(patch, 'proj') && !patch.proj) throw new RequestError(400, '项目不能为空。');
-          if (Object.hasOwn(patch, 'proposer') && !patch.proposer) throw new RequestError(400, '需求提出方不能为空。');
-          if (Object.hasOwn(patch, 'descr') && !patch.descr) throw new RequestError(400, '需求说明不能为空。');
         }
       }
       if (table === 'tasks' && op !== 'delete') {
@@ -845,6 +907,21 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             if (diffs.length) appendTaskHistory(db, user, updated.row.id, diffs.join('；'));
           }
           return updated;
+        }
+        if (table === 'demands' && op === 'insert') {
+          const isApprover = isDemandApprover(user, db);
+          let dispatcherId = user.id;
+          if (isApprover && patch.dispatcher_id != null) {
+            const candidate = activeAdmins(db).find(adminUser => adminUser.id === patch.dispatcher_id);
+            if (!candidate) throw new RequestError(409, '所选委托派发人不是有效管理员，请重新选择。');
+            dispatcherId = candidate.id;
+          }
+          delete patch.dispatcher_id;
+          extra = {
+            ...extra,
+            approval_status: isApprover ? 'approved' : 'pending',
+            dispatcher_id: dispatcherId
+          };
         }
         const inserted = insertRecord(db, user, table, patch, recordTaskChange, extra);
         if (table === 'tasks') {
@@ -1005,7 +1082,8 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       const { created, demand } = store.update(db => {
         const source = db.demands.find(row => row.id === id);
         if (!source) throw new RequestError(404, '未找到此需求。');
-        if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以派发任务。');
+        if (demandApprovalStatus(source) !== 'approved') throw new RequestError(409, '该需求尚未审批通过，暂不能派发。');
+        if (!canDispatchDemand(db, user, source)) throw new RequestError(403, '只有委托派发人或审批管理员可以派发此需求。');
         const existing = db.tasks.find(row => row.demand_id === id);
         if (existing) {
           if (existing.creator_id === user.id && existing.dispatch_key === dispatchKey) return { created: existing, demand: source };
@@ -1060,7 +1138,28 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     demandChoices() {
       const db = store.read();
-      return { options: db.demandOptions, people: activePeople(db) };
+      return { options: db.demandOptions, people: activePeople(db), admins: activeAdmins(db) };
+    },
+
+    reviewDemand(user, { demandId, decision, reason }) {
+      const id = recordId(demandId);
+      if (!['approve', 'reject'].includes(decision)) throw new RequestError(400, '审批操作无效。');
+      const rejectReason = decision === 'reject' ? optionalText(reason, 500) : null;
+      const row = store.update(db => {
+        if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以审批需求。');
+        const demand = db.demands.find(item => item.id === id);
+        if (!demand) throw new RequestError(404, '未找到此需求。');
+        if (demandApprovalStatus(demand) !== 'pending') throw new RequestError(409, '该需求已审批，无需重复操作。');
+        const timestamp = now();
+        demand.approval_status = decision === 'approve' ? 'approved' : 'rejected';
+        demand.approved_by_id = user.id;
+        demand.approved_by_name = displayName(db, user);
+        demand.approved_at = timestamp;
+        demand.reject_reason = rejectReason;
+        demand.updated_at = timestamp;
+        return demand;
+      });
+      return { demand: publicRecord(store.read(), user, 'demands', row) };
     },
 
     projectCatalog: () => projectCatalog(store.read()),
@@ -1404,11 +1503,11 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     appendDemandAttachments(user, { demandId, files }) {
       const id = recordId(demandId);
-      if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以上传需求文件。');
       if (!Array.isArray(files) || !files.length) throw new RequestError(400, '请至少选择一个文件。');
       const demand = store.update(db => {
         const row = db.demands.find(item => item.id === id);
         if (!row) throw new RequestError(404, '未找到此需求。');
+        if (!canManageDemandFiles(db, user, row)) throw new RequestError(403, '只有委托派发人、创建人或审批管理员可以上传需求文件。');
         const linkedTask = db.tasks.find(task => task.demand_id === id);
         bindAttachments(db, user, row, 'requirement', files, {
           targetKey: 'demand_id',
@@ -1424,11 +1523,11 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
 
     deleteDemandAttachment(user, { demandId, fileId }) {
       const id = recordId(demandId);
-      if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以删除需求文件。');
       if (typeof fileId !== 'string' || !fileId.trim()) throw new RequestError(400, '文件编号无效。');
       const demand = store.update(db => {
         const row = db.demands.find(item => item.id === id);
         if (!row) throw new RequestError(404, '未找到此需求。');
+        if (!canManageDemandFiles(db, user, row)) throw new RequestError(403, '只有委托派发人、创建人或审批管理员可以删除需求文件。');
         const linkedTasks = db.tasks.filter(task => task.demand_id === id);
         const linkedIds = new Set(linkedTasks.map(task => task.id));
         const file = db.attachments.find(item => item.id === fileId && item.kind === 'requirement' && item.state === 'bound' &&

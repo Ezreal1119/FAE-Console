@@ -6,6 +6,11 @@ import { memberImportErrors } from './member-import.mjs';
 export const sessionSeconds = 30 * 86400;
 export const isAdmin = user => user.role === '管理员';
 export const isPrimaryAdmin = user => isAdmin(user) && user.primary_admin === true;
+export const isDemandApprover = (user, db) => {
+  if (!isAdmin(user)) return false;
+  if (isPrimaryAdmin(user) || user.account === '800675') return true;
+  return Boolean(db?.profiles?.some(profile => profile.owner_id === user.id && profile.emp_no === '800675'));
+};
 export const now = () => new Date().toISOString();
 const cryptoOptions = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const derivePassword = promisify(scrypt);
@@ -48,9 +53,13 @@ function verify(password, user) {
   return timingSafeEqual(hash, Buffer.from(user.hash, 'hex'));
 }
 
-function publicAccount(user) {
+function publicAccount(user, db) {
   const { id, account, name, role, must_change_pwd, created_at } = user;
-  return { id, account, name, role, must_change_pwd, created_at, is_primary_admin: isPrimaryAdmin(user) };
+  return {
+    id, account, name, role, must_change_pwd, created_at,
+    is_primary_admin: isPrimaryAdmin(user),
+    can_approve_demands: isDemandApprover(user, db)
+  };
 }
 
 function addMemberAccount(db, account, name, passwordHash, mustChangePassword = false) {
@@ -193,7 +202,7 @@ export function openAccounts(store, settings, { guidelinesEnabled = false } = {}
     },
 
     me(session) {
-      return { user: publicAccount(session.user), guidelinesPending: session.guidelinesPending };
+      return { user: publicAccount(session.user, store.read()), guidelinesPending: session.guidelinesPending };
     },
 
     acknowledgeGuidelines(session) {
