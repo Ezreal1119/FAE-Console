@@ -21,7 +21,7 @@ const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
-const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态' };
+const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理', npi_manager: 'NPI经理' };
 const npiStages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
 const projectPages = ['projects', 'projectDetail', 'projectConfig'];
 const pageQueryKeys = { taskLink: 'task', projectDetail: 'project', projectConfig: 'project-config' };
@@ -789,7 +789,7 @@ function demandCatalogPage() {
       ? `<p class="form-error" role="alert">${text(error)}</p>` + action('重新加载', 'demand-catalog-load', '', 'link')
       : '<p class="empty" role="status">正在加载基础配置…</p>');
   }
-  const rows = catalogOptionNames(state.demandCatalog[kind], kind).map(name => `<tr><td>${text(name)}</td><td>${
+  const rows = catalogOptionNames(state.demandCatalog[kind] ?? [], kind).map(name => `<tr><td>${text(name)}</td><td>${
     action('删除', 'demand-option-remove', JSON.stringify([kind, name]), 'link danger')}</td></tr>`).join('');
   return header + panel(label, table([label, '操作'], rows, '暂无选项。'), action('＋ 新增' + label, 'demand-option-add', kind, 'button primary'));
 }
@@ -2992,7 +2992,7 @@ const actions = {
   },
   'demand-option-remove': id => {
     const [kind, name] = JSON.parse(id);
-    const records = kind === 'proposer' ? '需求' : kind === 'project_stage' ? '项目' : '任务';
+    const records = kind === 'proposer' ? '需求' : ['project_stage', 'project_manager', 'npi_manager'].includes(kind) ? '项目' : '任务';
     confirmDelete('删除' + catalogLabels[kind], '确定删除「' + name + '」？已有' + records + '会保留原值。',
       () => changeDemandOption(kind, 'remove', name));
   },

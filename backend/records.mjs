@@ -22,7 +22,7 @@ const defaultPriority = '中';
 const defaultProjectStage = '立项';
 const demandCodePrefix = 'REQ';
 const legacyDemandPrefix = /^FAE-/;
-const catalogKinds = new Set(['proposer', 'device_type', 'project_stage']);
+const catalogKinds = new Set(['proposer', 'device_type', 'project_stage', 'project_manager', 'npi_manager']);
 const projectMetadataKeys = ['projectStages', 'projectRequirements', 'projectDescriptions', 'projectDeviceTypes'];
 const taskProgressFields = new Set(['status', 'result']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at', 'completed_at'];
@@ -942,7 +942,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       name = optionalText(name);
       if (!name) throw new RequestError(400, '请填写名称。');
       return store.update(db => {
-        const list = db.demandOptions[kind];
+        const list = (db.demandOptions[kind] ??= []);
         const index = list.indexOf(name);
         if (action === 'add') {
           if (index !== -1) throw new RequestError(409, '这个选项已存在。');

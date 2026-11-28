@@ -17,7 +17,9 @@ const defaultProjects = [
 const defaultProjectNames = new Set(defaultProjects);
 const defaultTaskOptions = {
   device_type: ['POS', 'PDA', '手柄', '扫描头', '座充与底座', '扫描枪', '穿戴设备'],
-  project_stage: ['立项', 'EVT', 'DVT', 'PVT', 'MP']
+  project_stage: ['立项', 'EVT', 'DVT', 'PVT', 'MP'],
+  project_manager: [],
+  npi_manager: []
 };
 const taskOptionKinds = Object.keys(defaultTaskOptions);
 const validOptionList = list => Array.isArray(list) && list.every(value => typeof value === 'string');
