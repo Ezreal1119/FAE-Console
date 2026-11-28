@@ -7,7 +7,7 @@ import {
   projectRequirementStages, projectTemplateStages
 } from './project-requirements.mjs';
 import { RequestError } from './store.mjs';
-import { ACTIVE_TASK_STATUSES, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
+import { ACTIVE_TASK_STATUSES, formatPlanningTime, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
 
 const fields = {
   profiles: { display_name: 100, emp_no: 100, role: 100, team: 100, status: 20, contact: 200, duty: 10000, remark: 10000 },
@@ -1176,6 +1176,19 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         const diffs = taskFieldDiffs(before, result.row, ['proj', 'device_type', 'desc']);
         appendTaskHistory(db, user, result.row.id,
           [`开始规划（状态：待规划 → 开发中，计划投入工时：${plannedHours}h）`, ...diffs].join('；'));
+        const dispatcherId = result.row.creator_id ?? result.row.owner_id;
+        if (validId(dispatcherId) && dispatcherId !== user.id) {
+          const actorName = displayName(db, user);
+          notifyUsers(db, [dispatcherId], {
+            category: 'task_notice',
+            event: 'planned',
+            title: `任务已开始规划：${result.row.code}`,
+            body: `${actorName} 已开始规划任务「${result.row.code}」${result.row.proj ? `（${result.row.proj}）` : ''}，计划投入 ${plannedHours}h，计划完成时间 ${formatPlanningTime(due)}。`,
+            actor_name: actorName,
+            target_type: 'task',
+            target_id: result.row.id
+          });
+        }
         return result;
       });
       return { task: publicTask(store.read(), user, row) };
