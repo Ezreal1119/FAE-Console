@@ -1079,6 +1079,19 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           if (taskBefore) {
             const diffs = taskFieldDiffs(taskBefore, { ...updated.row, pri: normalizeTaskPriority(updated.row.pri) });
             if (diffs.length) appendTaskHistory(db, user, updated.row.id, diffs.join('；'));
+            if ((taskBefore.desc ?? null) !== (updated.row.desc ?? null) &&
+                validId(updated.row.assignee_id) && updated.row.assignee_id !== user.id) {
+              const actorName = displayName(db, user);
+              notifyUsers(db, [updated.row.assignee_id], {
+                category: 'task_notice',
+                event: 'desc_updated',
+                title: `任务描述已更新：${updated.row.code}`,
+                body: `${actorName} 更新了任务「${updated.row.code}」${updated.row.proj ? `（${updated.row.proj}）` : ''}的任务描述，请及时查看。`,
+                actor_name: actorName,
+                target_type: 'task',
+                target_id: updated.row.id
+              });
+            }
           }
           return updated;
         }
