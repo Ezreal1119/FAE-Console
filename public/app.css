@@ -267,6 +267,10 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .import-drop > span { color: var(--muted); font-size: .85rem; }
 .file-upload-field { display: grid; gap: 8px; }
 .project-files-section { display: grid; gap: 10px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+.project-init-files { display: grid; gap: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+.project-init-file-item { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); }
+.project-init-file-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: .88rem; }
+.project-init-file-head .button { min-height: 30px; padding: 4px 10px; font-size: .82rem; }
 .file-upload-title { color: #43516b; font-size: .9rem; font-weight: 600; }
 .file-drop { min-height: 112px; width: 100%; }
 .file-selected-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }

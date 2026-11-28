@@ -230,7 +230,7 @@ function privateApi(url, session, body) {
     case '/api/admin/member-role': return accounts.setAdminRole(session.user, body);
     case '/api/admin/projects': return records.projectCatalog();
     case '/api/admin/projects/detail': return records.projectDetail(url.searchParams.get('name'));
-    case '/api/admin/projects/change': return records.changeProject(body);
+    case '/api/admin/projects/change': return records.changeProject(session.user, body);
     case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
     case '/api/admin/projects/requirements/push': return records.pushProjectRequirement(session.user, body);
     case '/api/admin/projects/attachments': return records.appendProjectAttachments(session.user, body);

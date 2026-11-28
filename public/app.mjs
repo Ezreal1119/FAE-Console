@@ -943,15 +943,37 @@ function projectRequirementTabs(requirements, selected, isTemplate = false) {
 }
 
 function projectRequirementsTable(requirements, isTemplate) {
-  const headers = ['编号', '需求说明', '交付内容', '计划投入工时'];
-  if (isTemplate) headers.push('操作');
+  const headers = isTemplate
+    ? ['编号', '需求说明', '交付内容', '计划投入工时', '操作']
+    : ['编号', '需求说明', '交付内容', '计划投入工时', '需求编号', '任务编号'];
   const rows = requirements.map(item => {
     const code = text(item.code);
     const edit = `<button type="button" class="link" data-action="project-requirement-edit" data-id="${code}" aria-label="编辑需求 ${code}">${isTemplate ? '编辑' : code}</button>`;
+    const demandCell = item.demand_id && item.demand_code
+      ? action(item.demand_code, 'project-req-demand', item.demand_id, 'link') : '—';
+    const taskCell = item.task_id && item.task_code
+      ? action(item.task_code, 'demand-task', item.task_id, 'link task-code') : '—';
     return `<tr><td>${isTemplate ? code : edit}</td><td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
-      <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : ''}</tr>`;
+      <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : `<td>${demandCell}</td><td>${taskCell}</td>`}</tr>`;
   }).join('');
   return table(headers, rows, '本阶段暂无需求。');
+}
+
+async function openLinkedDemand(id) {
+  if (state.demands.some(row => same(row.id, id))) {
+    demandDetail(id);
+    return;
+  }
+  const session = state.user;
+  const result = await db('demands', 'select', undefined, id);
+  if (state.user !== session) return;
+  const row = result?.data?.find(item => same(item.id, id));
+  if (!row) {
+    toast('找不到该需求，请刷新后重试。');
+    return;
+  }
+  state.demands = [row, ...state.demands.filter(item => !same(item.id, row.id))];
+  demandDetail(row.id);
 }
 
 function selectProjectStageTab(tab, focus = true) {
@@ -1056,7 +1078,7 @@ async function changeProject(action, name, payload = {}) {
     state.projectDetail.people = result.people;
     if (payload.stage !== undefined) {
       state.projectStageTab = null;
-      render();
+      await loadProjectDetail();
     }
   }
   if (action === 'create' || payload.stage !== undefined) {
@@ -1072,13 +1094,29 @@ function projectForm(initial = {}) {
   const values0 = typeof initial === 'string' ? { name: initial } : (initial ?? {});
   const managers = catalogOptionNames(state.projectCatalog.projectManagers ?? [], 'project_manager');
   const people = state.projectCatalog.people ?? [];
+  const initItems = state.projectCatalog.initiationRequirements ?? [];
+  const selectedFiles = new Map();
+  if (values0.selectedFiles instanceof Map) {
+    for (const [code, list] of values0.selectedFiles.entries()) selectedFiles.set(code, [...list]);
+  }
   const missingHint = !managers.length
     ? '<p class="muted text-small">请先在「基础配置」中添加项目经理选项。</p>' : '';
+  const initFilesMarkup = initItems.length ? `<div class="project-init-files">
+    <p class="file-upload-title">立项交付文件（选填，上传后自动归入对应任务的交付文件）</p>
+    ${initItems.map(item => `<div class="project-init-file-item" data-init-code="${text(item.code)}">
+      <div class="project-init-file-head">
+        <span><strong>${text(item.code)}</strong> · ${text(item.deliverable || item.description)}</span>
+        <button type="button" class="button" data-init-file-pick="${text(item.code)}">选择文件</button>
+      </div>
+      <input type="file" multiple hidden data-init-file-input="${text(item.code)}">
+      <ul class="file-selected-list" data-init-file-list="${text(item.code)}" hidden></ul>
+    </div>`).join('')}
+  </div>` : '';
   const fields = field('项目名称', 'name', values0.name ?? '', 'required maxlength="100"') +
     choiceField('设备类型', 'device_type', { allowCustom: true, required: true }) +
     `<label>项目经理（必填）<select name="project_manager" required>${option('', values0.project_manager ?? '', '请选择项目经理')}${managers.map(item => option(item, values0.project_manager ?? '')).join('')}</select></label>` +
     choiceField('NPI', 'npi_manager_id', { required: true }) +
-    missingHint;
+    missingHint + initFilesMarkup;
   let devicePicker, npiPicker;
   const form = modalForm('新建项目', '', fields, async values => {
     const name = trimmed(values.name);
@@ -1090,9 +1128,41 @@ function projectForm(initial = {}) {
     if (!projectManager) throw new Error('请选择项目经理。');
     if (!Number.isSafeInteger(npiManagerId)) throw new Error('请选择 NPI。');
     const npiLabel = npiPicker.selection().label || '';
-    modalForm('确认新建项目', `是否确定新建项目「${name}」？系统将自动创建立项阶段需求并派发给 NPI。`, '', async () => {
-      await changeProject('create', name, { device_type: deviceType, project_manager: projectManager, npi_manager_id: npiManagerId });
-    }, { submit: '确定新建', onCancel: () => projectForm({ name, device_type: deviceType, project_manager: projectManager, npi_manager_id: npiManagerId, npi_label: npiLabel }) });
+    const totalFiles = [...selectedFiles.values()].reduce((sum, list) => sum + list.length, 0);
+    const confirmFields = totalFiles ? uploadProgress : '';
+    const confirmForm = modalForm('确认新建项目', `是否确定新建项目「${name}」？系统将自动创建立项阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`, confirmFields, async () => {
+      const progress = confirmForm.querySelector('[data-upload-progress]');
+      const uploadedByCode = {};
+      const uploadedIds = [];
+      try {
+        let doneCount = 0;
+        for (const [code, list] of selectedFiles.entries()) {
+          if (!list.length) continue;
+          uploadedByCode[code] = [];
+          for (const file of list) {
+            doneCount++;
+            if (progress) {
+              progress.textContent = `正在上传交付文件 ${doneCount} / ${totalFiles}…`;
+              progress.hidden = false;
+            }
+            const { id } = await request('/api/upload?kind=delivery', { method: 'POST', file });
+            uploadedIds.push(id);
+            uploadedByCode[code].push({ id, name: file.name });
+          }
+        }
+        await changeProject('create', name, {
+          device_type: deviceType,
+          project_manager: projectManager,
+          npi_manager_id: npiManagerId,
+          initiation_files: uploadedByCode
+        });
+      } catch (error) {
+        if (uploadedIds.length) void post('/api/upload/discard', { ids: uploadedIds }).catch(() => {});
+        throw error;
+      } finally {
+        if (progress) progress.hidden = true;
+      }
+    }, { submit: '确定新建', onCancel: () => projectForm({ name, device_type: deviceType, project_manager: projectManager, npi_manager_id: npiManagerId, npi_label: npiLabel, selectedFiles }) });
     return false;
   }, { submit: '确定新建' });
   devicePicker = bindChoice(form.querySelector('[data-choice=device_type]'), {
@@ -1103,6 +1173,52 @@ function projectForm(initial = {}) {
     value: values0.npi_manager_id ?? null, label: values0.npi_label ?? ''
   }, { clearable: false });
   npiPicker.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
+
+  const message = form.querySelector('.form-error');
+  function renderInitFiles(code) {
+    const listEl = form.querySelector(`[data-init-file-list="${CSS.escape(code)}"]`);
+    if (!listEl) return;
+    const files = selectedFiles.get(code) ?? [];
+    listEl.hidden = !files.length;
+    listEl.innerHTML = files.map((file, index) => `<li>
+      <span>${text(file.name)}</span>
+      <button type="button" class="link danger" data-init-file-remove="${text(code)}" data-index="${index}">移除</button>
+    </li>`).join('');
+  }
+  for (const item of initItems) renderInitFiles(item.code);
+  form.addEventListener('click', event => {
+    const pick = event.target.closest('[data-init-file-pick]');
+    if (pick) {
+      const code = pick.dataset.initFilePick;
+      form.querySelector(`[data-init-file-input="${CSS.escape(code)}"]`)?.click();
+      return;
+    }
+    const remove = event.target.closest('[data-init-file-remove]');
+    if (remove) {
+      const code = remove.dataset.initFileRemove;
+      const list = selectedFiles.get(code) ?? [];
+      list.splice(Number(remove.dataset.index), 1);
+      selectedFiles.set(code, list);
+      renderInitFiles(code);
+    }
+  });
+  form.addEventListener('change', event => {
+    if (!event.target.matches('[data-init-file-input]')) return;
+    const code = event.target.dataset.initFileInput;
+    const next = [...(selectedFiles.get(code) ?? [])];
+    formError(message, '');
+    for (const file of [...event.target.files].filter(item => item?.name)) {
+      if (next.length >= 12) { formError(message, '每项最多上传 12 个文件。'); break; }
+      if (!file.size || file.size > 50 * 1024 * 1024) { formError(message, '请选择不超过 50 MB 的非空文件。'); continue; }
+      if (!file.name.trim() || file.name.length > 255 || /[\x00-\x1f\x7f/\\]/.test(file.name)) {
+        formError(message, '文件名称无效，请重新命名后上传。'); continue;
+      }
+      next.push(file);
+    }
+    selectedFiles.set(code, next);
+    renderInitFiles(code);
+    event.target.value = '';
+  });
 }
 
 function projectRenameForm(name) {
@@ -3115,6 +3231,7 @@ const actions = {
   'task-transfer': id => taskTransferForm(id),
   'demand-new': () => demandForm(), 'demand-detail': demandDetail,
   'demand-task': openLinkedTask,
+  'project-req-demand': openLinkedDemand,
   'project-load': loadProjects,
   'project-detail-load': loadProjectDetail,
   'project-template-load': loadProjectTemplate,
