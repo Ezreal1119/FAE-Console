@@ -723,8 +723,8 @@ function projectsPage() {
   if (!state.projectCatalog) return header + panel('项目列表', projectLoading(state.projectCatalogError, 'project-load'));
   const rows = state.projectCatalog.projects.toSorted((a, b) => sortZh(a.name, b.name)).map(project => `<tr>
     <td><a class="link" data-project-link href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td>
-    <td>${shown(project.stage)}</td>${descCell(project.description)}</tr>`).join('');
-  return header + panel('项目列表', table(['项目名称', '项目阶段', '项目描述'], rows, '暂无项目。', 'project-rows'));
+    <td>${shown(project.stage)}</td><td>${shown(project.device_type)}</td>${descCell(project.description)}</tr>`).join('');
+  return header + panel('项目列表', table(['项目名称', '项目阶段', '设备类型', '项目描述'], rows, '暂无项目。', 'project-rows'));
 }
 
 function projectLoading(error, retry) {
@@ -756,6 +756,11 @@ function projectDetailPage() {
   const { project } = state.projectDetail;
   const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
   const nextStage = nextProjectStage(project, stages);
+  const deviceTypes = catalogOptionNames(state.projectDetail.deviceTypes, 'device_type');
+  const deviceType = project.device_type ?? '';
+  const deviceOptions = option('', deviceType, '请选择设备类型') +
+    (deviceType && !deviceTypes.includes(deviceType) ? option(deviceType, deviceType, deviceType + '（已从基础配置移除）') : '') +
+    deviceTypes.map(type => option(type, deviceType)).join('');
   const advanceButton = nextStage
     ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
     : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
@@ -763,6 +768,7 @@ function projectDetailPage() {
     ${area('项目描述', 'description', project.description, false)}
     <p class="form-error" role="alert" hidden></p>
     <div class="project-config-actions">
+      <label>设备类型<select name="device_type">${deviceOptions}</select></label>
       <button type="submit" class="button primary">保存</button>
       ${advanceButton}
     </div>
@@ -846,6 +852,7 @@ async function changeProject(action, name, payload = {}) {
       history.replaceState(history.state, '', '/?project=' + encodeURIComponent(nextName.toWellFormed()));
       state.projectDetail.project = result.projects.find(project => project.name === nextName);
       state.projectDetail.stages = result.stages;
+      state.projectDetail.deviceTypes = result.deviceTypes;
       render();
     }
     await refresh();
@@ -863,13 +870,14 @@ async function changeProject(action, name, payload = {}) {
   else if (state.page === 'projectDetail' && state.projectDetail?.project.name === name) {
     state.projectDetail.project = result.projects.find(project => project.name === name);
     state.projectDetail.stages = result.stages;
+    state.projectDetail.deviceTypes = result.deviceTypes;
     if (payload.stage !== undefined) {
       state.projectStageTab = null;
       render();
     }
   }
   const message = action === 'create' ? '项目已新建。'
-    : payload.stage !== undefined ? '项目阶段已保存。' : '项目描述已保存。';
+    : payload.stage !== undefined ? '项目阶段已保存。' : '项目配置已保存。';
   toast(message);
 }
 
@@ -904,11 +912,19 @@ function projectAdvanceForm() {
   if (!nextStage) return;
   modalForm('推进项目', `是否确定将项目「${project.name}」推进到下一阶段「${nextStage}」，并触发对应阶段的项目任务？`, '', async () => {
     const form = $('#project-stage-form');
-    const description = form ? optional(form.elements.description?.value) : undefined;
-    const payload = { stage: nextStage };
-    if (form && description !== optional(project.description)) payload.description = description;
+    const payload = { ...projectConfigChanges(form, project), stage: nextStage };
     await changeProject('update', project.name, payload);
   }, { submit: '确定推进', submitClass: 'success' });
+}
+
+function projectConfigChanges(form, project) {
+  if (!form) return {};
+  const description = optional(form.elements.description.value);
+  const deviceType = optional(form.elements.device_type.value);
+  const changes = {};
+  if (description !== optional(project.description)) changes.description = description;
+  if (deviceType !== optional(project.device_type)) changes.device_type = deviceType;
+  return changes;
 }
 
 function projectDeleteForm(name) {
@@ -2805,11 +2821,12 @@ content.addEventListener('submit', async event => {
   if (submit.disabled) return;
   const project = state.projectDetail?.project;
   if (!project) return;
-  const description = optional(form.elements.description?.value);
+  const changes = projectConfigChanges(form, project);
+  if (!Object.keys(changes).length) return;
   const errorMessage = form.querySelector('.form-error');
   submit.disabled = true;
   formError(errorMessage, '');
-  try { await changeProject('update', project.name, { description }); }
+  try { await changeProject('update', project.name, changes); }
   catch (error) { formError(errorMessage, error.message); }
   finally { submit.disabled = false; }
 });

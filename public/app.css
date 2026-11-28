@@ -272,7 +272,8 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .project-stage-badge.stage-dvt { background: #fff4e6; color: #d9480f; }
 .project-stage-badge.stage-pvt { background: #f3f0ff; color: #6741d9; }
 .project-stage-badge.stage-mp { background: #e6fcf5; color: #087f5b; }
-.project-config-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.project-config-actions { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
+.project-config-actions label { width: min(100%, 240px); }
 #project-stage-form .form-error { margin-top: 8px; }
 .project-stage-table table { min-width: 620px; table-layout: fixed; }
 .project-stage-table th:first-child { width: 108px; }

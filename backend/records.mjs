@@ -21,6 +21,7 @@ const defaultProjectStage = '立项';
 const demandCodePrefix = 'REQ';
 const legacyDemandPrefix = /^FAE-/;
 const catalogKinds = new Set(['proposer', 'device_type', 'project_stage']);
+const projectMetadataKeys = ['projectStages', 'projectRequirements', 'projectDescriptions', 'projectDeviceTypes'];
 const taskProgressFields = new Set(['status', 'result']);
 const taskScheduleFields = ['due', 'start', 'end', 'start_time', 'end_time', 'planned_hours', 'started_at', 'planned_due_at', 'completed_at'];
 const taskClassificationFields = ['pri', 'device_type'];
@@ -170,14 +171,21 @@ function projectStageOptions(db) {
   return [...new Set([defaultProjectStage, ...db.demandOptions.project_stage])];
 }
 
+function projectSummary(db, name) {
+  const deviceTypes = db.projectDeviceTypes ?? {};
+  return {
+    name,
+    stage: projectStage(db, name),
+    description: projectDescription(db, name),
+    device_type: Object.hasOwn(deviceTypes, name) ? deviceTypes[name] : null
+  };
+}
+
 function projectCatalog(db) {
   return {
-    projects: db.demandOptions.proj.map(name => ({
-      name,
-      stage: projectStage(db, name),
-      description: projectDescription(db, name)
-    })),
-    stages: projectStageOptions(db)
+    projects: db.demandOptions.proj.map(name => projectSummary(db, name)),
+    stages: projectStageOptions(db),
+    deviceTypes: db.demandOptions.device_type
   };
 }
 
@@ -726,15 +734,16 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       const db = store.read();
       if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
       return {
-        project: { name, stage: projectStage(db, name), description: projectDescription(db, name) },
+        project: projectSummary(db, name),
         stages: projectStageOptions(db),
+        deviceTypes: db.demandOptions.device_type,
         requirements: projectRequirementRows(db, name)
       };
     },
 
     changeProjectRequirement: input => store.update(db => changeProjectRequirement(db, input)),
 
-    changeProject({ action, name, stage, newName, description }) {
+    changeProject({ action, name, stage, newName, description, device_type: deviceType }) {
       if (!['create', 'update', 'rename', 'remove'].includes(action)) throw new RequestError(400, '项目操作无效。');
       if (action === 'create') name = optionalText(name);
       if (typeof name !== 'string' || !name) throw new RequestError(400, '请填写项目名称。');
@@ -751,6 +760,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if (description !== undefined) {
           description = optionalText(description, 10000);
         }
+        if (deviceType !== undefined) deviceType = optionalText(deviceType);
       }
       return store.update(db => {
         const names = db.demandOptions.proj;
@@ -773,21 +783,25 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
               if (description) db.projectDescriptions[name] = description;
               else delete db.projectDescriptions[name];
             }
+            if (deviceType !== undefined) {
+              if (deviceType !== null && !db.demandOptions.device_type.includes(deviceType)) {
+                throw new RequestError(409, '设备类型已不可选，请刷新后重试。');
+              }
+              if (deviceType === null) {
+                if (db.projectDeviceTypes) delete db.projectDeviceTypes[name];
+              } else {
+                db.projectDeviceTypes = { ...db.projectDeviceTypes, [name]: deviceType };
+              }
+            }
           } else if (action === 'rename') {
             if (nextName !== name) {
               if (names.includes(nextName)) throw new RequestError(409, '项目名称已存在。');
               names[index] = nextName;
-              if (db.projectStages && Object.hasOwn(db.projectStages, name)) {
-                db.projectStages[nextName] = db.projectStages[name];
-                delete db.projectStages[name];
-              }
-              if (db.projectRequirements && Object.hasOwn(db.projectRequirements, name)) {
-                db.projectRequirements[nextName] = db.projectRequirements[name];
-                delete db.projectRequirements[name];
-              }
-              if (db.projectDescriptions && Object.hasOwn(db.projectDescriptions, name)) {
-                db.projectDescriptions[nextName] = db.projectDescriptions[name];
-                delete db.projectDescriptions[name];
+              for (const key of projectMetadataKeys) {
+                const values = db[key];
+                if (!values || !Object.hasOwn(values, name)) continue;
+                db[key] = { ...values, [nextName]: values[name] };
+                delete db[key][name];
               }
               const timestamp = now();
               for (const task of db.tasks) {
@@ -806,9 +820,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             }
           } else if (action === 'remove') {
             names.splice(index, 1);
-            if (db.projectRequirements) delete db.projectRequirements[name];
-            if (db.projectStages) delete db.projectStages[name];
-            if (db.projectDescriptions) delete db.projectDescriptions[name];
+            for (const key of projectMetadataKeys) {
+              if (db[key]) delete db[key][name];
+            }
           }
         }
         return projectCatalog(db);
