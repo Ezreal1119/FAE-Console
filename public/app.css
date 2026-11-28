@@ -303,17 +303,19 @@ dd { margin: 3px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
 .project-stage-badge.stage-pvt { background: #f3f0ff; color: #6741d9; }
 .project-stage-badge.stage-mp { background: #e6fcf5; color: #087f5b; }
 .project-device-type { width: min(100%, 240px); }
-.project-stage-table table { min-width: 620px; table-layout: fixed; }
-.project-stage-table th:first-child { width: 108px; }
-.project-stage-table th:nth-child(3) { width: 29%; }
-.project-stage-table th:last-child { width: 122px; }
-.project-stage-table :is(th, td):last-child { text-align: right; }
-.project-stage-table td:first-child { font-weight: 650; }
+.project-stage-table table { min-width: 780px; table-layout: auto; }
+.project-stage-table th:first-child { width: 92px; }
+.project-stage-table td:first-child { font-weight: 650; white-space: nowrap; }
 .project-stage-table td:nth-child(2) { white-space: pre-line; }
-.project-stage-table td:last-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-stage-table :is(th, td):nth-child(4) { width: 108px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-stage-table:not(.project-template-table) :is(th, td):nth-child(5),
+.project-stage-table:not(.project-template-table) :is(th, td):nth-child(6),
+.project-stage-table:not(.project-template-table) :is(th, td):nth-child(7) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-template-table table { min-width: 620px; table-layout: fixed; }
+.project-template-table th:nth-child(3) { width: 29%; }
 .project-template-table th:last-child { width: 72px; }
-.project-template-table th:nth-last-child(2) { width: 122px; }
-.project-template-table :is(th, td):nth-last-child(2) { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-template-table :is(th, td):last-child { text-align: right; white-space: nowrap; }
+.project-template-table :is(th, td):nth-child(4) { width: 122px; text-align: right; }
 .project-stage-table td.empty { text-align: center; font-weight: 400; }
 .choice-field { min-width: 0; }
 .choice-field > label { margin-bottom: 6px; }

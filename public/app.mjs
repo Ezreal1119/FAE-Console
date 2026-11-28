@@ -961,7 +961,7 @@ function projectRequirementTabs(requirements, selected, isTemplate = false) {
 function projectRequirementsTable(requirements, isTemplate) {
   const headers = isTemplate
     ? ['编号', '需求说明', '交付内容', '计划投入工时', '操作']
-    : ['编号', '需求说明', '交付内容', '计划投入工时', '需求编号', '任务编号'];
+    : ['编号', '需求说明', '交付内容', '计划投入工时', '需求编号', '任务编号', '任务状态'];
   const canEdit = admin();
   const rows = requirements.map(item => {
     const code = text(item.code);
@@ -970,8 +970,9 @@ function projectRequirementsTable(requirements, isTemplate) {
       ? action(item.demand_code, 'project-req-demand', item.demand_id, 'link') : '—';
     const taskCell = item.task_id && item.task_code
       ? action(item.task_code, 'demand-task', item.task_id, 'link task-code') : '—';
+    const statusCell = item.task_status ? statusBadge(item.task_status) : item.demand_id ? '<span class="tag">待派发</span>' : '—';
     return `<tr><td>${isTemplate || !canEdit ? code : edit}</td><td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
-      <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : `<td>${demandCell}</td><td>${taskCell}</td>`}</tr>`;
+      <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : `<td>${demandCell}</td><td>${taskCell}</td><td>${statusCell}</td>`}</tr>`;
   }).join('');
   return table(headers, rows, '本阶段暂无需求。');
 }

@@ -351,7 +351,8 @@ function enrichedProjectRequirements(db, name) {
         demand_id: demand?.id ?? null,
         demand_code: demand?.code ?? null,
         task_id: task?.id ?? null,
-        task_code: task?.code ?? null
+        task_code: task?.code ?? null,
+        task_status: task?.status ?? null
       };
     })
   ]));
