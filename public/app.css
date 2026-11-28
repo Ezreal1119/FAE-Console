@@ -93,7 +93,32 @@ select { appearance: none; padding-right: 30px; background-image: linear-gradien
 .nav-item:hover { background: #20315e; }
 .nav-item.active { background: #294484; color: #fff; font-weight: 700; }
 .nav-icon { flex: 0 0 18px; text-align: center; font-size: 1.1rem; color: #a7bafa; }
-.sidebar-resources { margin-top: auto; padding: 9px 0; border-top: 1px solid color-mix(in srgb, currentColor 17%, transparent); }
+.sidebar-update { margin-top: auto; padding-bottom: 10px; }
+.sidebar-update[hidden] + .sidebar-resources { margin-top: auto; }
+.sidebar-update-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--brand);
+  color: #fff;
+  font-size: .875rem;
+  font-weight: 650;
+}
+.sidebar-update-button:hover { background: var(--brand-dark); }
+.sidebar-update-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ade80;
+}
+.sidebar-resources { padding: 9px 0; border-top: 1px solid color-mix(in srgb, currentColor 17%, transparent); }
 .sidebar-reference {
   display: flex;
   align-items: center;
@@ -404,6 +429,7 @@ dialog::backdrop { background: #0f183677; }
   .sidebar nav { display: flex; flex-wrap: wrap; gap: 4px; }
   .nav-item { width: auto; padding: 7px 8px; gap: 4px; font-size: .87rem; }
   .nav-icon { flex-basis: 13px; }
+  .sidebar-update { margin-top: 9px; padding-bottom: 0; }
   .sidebar-resources { margin-top: 9px; padding-block: 5px; }
   .sidebar-footer { padding-top: 9px; }
   .topbar { min-height: 42px; }

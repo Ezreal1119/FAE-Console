@@ -313,15 +313,94 @@ async function enter(user, guidelinesPending) {
   }
   await enterWorkspace();
 }
+const UPDATE_POLL_MS = 60_000;
+const UPDATE_IDLE_MS = 60_000;
+const UPDATE_RESTORE_PAGE_KEY = 'fae-console-restore-page';
+let currentAppVersion = null;
+let updateAvailable = false;
+let lastActivityAt = Date.now();
+let reloadingForUpdate = false;
+
+function consumeRestorePage() {
+  try {
+    const saved = sessionStorage.getItem(UPDATE_RESTORE_PAGE_KEY);
+    if (!saved) return null;
+    sessionStorage.removeItem(UPDATE_RESTORE_PAGE_KEY);
+    if (!Object.hasOwn(pages, saved)) return null;
+    if ((saved === 'demandCatalog' || projectPages.includes(saved)) && !admin()) return null;
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+function applyAppUpdate() {
+  if (reloadingForUpdate) return;
+  reloadingForUpdate = true;
+  if (state.user && !['taskLink', 'projectDetail', 'projectConfig'].includes(state.page)) {
+    try { sessionStorage.setItem(UPDATE_RESTORE_PAGE_KEY, state.page); } catch {}
+  }
+  location.reload();
+}
+
+function canAutoReloadForUpdate() {
+  if (!updateAvailable || reloadingForUpdate) return false;
+  if (Date.now() - lastActivityAt < UPDATE_IDLE_MS) return false;
+  if (document.querySelector('dialog[open]')) return false;
+  if (state.page === 'projectDetail' && state.projectDetail) {
+    const stageForm = $('#project-stage-form');
+    if (stageForm && Object.keys(projectConfigChanges(stageForm, state.projectDetail.project)).length) return false;
+  }
+  if (!state.user) {
+    const authForm = $('#auth-form');
+    if (authForm && [...authForm.elements].some(el => el.tagName === 'INPUT' && el.value.trim())) return false;
+  }
+  return true;
+}
+
+function maybeAutoUpdate() {
+  if (canAutoReloadForUpdate()) applyAppUpdate();
+}
+
+async function checkAppVersion() {
+  if (reloadingForUpdate) return;
+  try {
+    const response = await fetch('/api/version', { cache: 'no-store' });
+    if (!response.ok) return;
+    const data = await response.json().catch(() => null);
+    const version = data?.version;
+    if (typeof version !== 'string' || !version) return;
+    if (currentAppVersion === null) {
+      currentAppVersion = version;
+      return;
+    }
+    if (version !== currentAppVersion) {
+      updateAvailable = true;
+      const updateBox = $('#sidebar-update');
+      if (updateBox) updateBox.hidden = false;
+      maybeAutoUpdate();
+    }
+  } catch {}
+}
+
 async function enterWorkspace() {
   if (linkedTaskId() !== null) state.page = 'taskLink';
-  else if (admin()) state.page = linkedProjectPage() ?? state.page;
+  else if (admin() && linkedProjectPage()) state.page = linkedProjectPage();
+  else {
+    const restored = consumeRestorePage();
+    if (restored) state.page = restored;
+  }
   showWorkspace();
   content.innerHTML = '<p class="empty">正在读取工作数据…</p>';
   if (state.guidelinesPending) openGuidelinesNotice();
   if (state.page === 'projectDetail') await loadProjectDetail();
   else if (state.page === 'projectConfig') await loadProjectTemplate();
-  else await refresh();
+  else if (state.page === 'projects') await loadProjects();
+  else if (state.page === 'demandCatalog') await loadDemandCatalog();
+  else {
+    await refresh();
+    if (state.page === 'guidelines') void loadGuidelines();
+  }
 }
 async function refresh() {
   const session = state.user;
@@ -2946,7 +3025,7 @@ const actions = {
     render();
     catalog(kind);
   },
-  password: () => passwordForm(), 'task-attachment-append': id => appendTaskFiles(JSON.parse(id)), 'export-week': exportTasks
+  password: () => passwordForm(), 'app-update': applyAppUpdate, 'task-attachment-append': id => appendTaskFiles(JSON.parse(id)), 'export-week': exportTasks
 };
 
 document.addEventListener('click', async event => {
@@ -3025,6 +3104,16 @@ content.addEventListener('submit', async event => {
 });
 setInterval(updateTaskOverdueIndicators, 60_000);
 document.addEventListener('visibilitychange', updateTaskOverdueIndicators);
+for (const eventName of ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'input', 'change']) {
+  window.addEventListener(eventName, () => { lastActivityAt = Date.now(); }, { passive: true, capture: true });
+}
+void checkAppVersion();
+setInterval(checkAppVersion, UPDATE_POLL_MS);
+setInterval(maybeAutoUpdate, 10_000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) void checkAppVersion();
+});
+window.addEventListener('focus', () => { void checkAppVersion(); });
 bindPlanHours(taskStartDialog.querySelector('[name=plan_hours]'), updateStartDialogDuePreview);
 taskStartDialog.querySelector('[data-start-cancel]').addEventListener('click', () => taskStartDialog.close('cancel'));
 taskStartDialog.addEventListener('submit', event => {

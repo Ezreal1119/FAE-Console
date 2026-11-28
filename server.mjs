@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -55,7 +56,16 @@ const assets = new Map([
   ['/task-planning.mjs', ['task-planning.mjs', 'text/javascript; charset=utf-8']],
   ['/export.mjs', ['export.mjs', 'text/javascript; charset=utf-8']]
 ]);
+const appVersion = await (async () => {
+  const hash = createHash('sha256');
+  for (const [, [filename]] of assets) {
+    hash.update(filename).update('\0');
+    hash.update(await readFile(new URL('./public/' + filename, import.meta.url)));
+  }
+  return hash.digest('hex').slice(0, 16);
+})();
 const apiRoutes = new Map([
+  ['/api/version', 'GET'],
   ['/api/auth-options', 'GET'], ['/api/login', 'POST'], ['/api/register', 'POST'], ['/api/logout', 'POST'],
   ['/api/me', 'GET'], ['/api/password', 'POST'], ['/api/first-password', 'POST'],
   ['/api/guidelines', 'GET'], ['/api/guidelines/acknowledge', 'POST'],
@@ -251,6 +261,9 @@ function privateApi(url, session, body) {
 
 async function handleApi(req, res, url, attachmentRoute, demandAttachmentRoute) {
   const path = url.pathname;
+  if (path === '/api/version') {
+    return sendJson(res, 200, { ok: true, version: appVersion });
+  }
   if (path === '/api/auth-options') {
     return sendJson(res, 200, { ok: true, registrationEnabled: accounts.registrationEnabled });
   }
