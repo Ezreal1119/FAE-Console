@@ -849,8 +849,8 @@ function demandApprovalsPage() {
   return header + pagedListPanel('demandApprovals', toolbar);
 }
 
-const messageCategoryLabels = { demand_approval: '需求审批', project_approval: '项目审批' };
-const messageCategoryFilterMap = { 需求审批: 'demand_approval', 项目审批: 'project_approval' };
+const messageCategoryLabels = { task_notice: '任务通知', demand_approval: '需求审批', project_approval: '项目审批' };
+const messageCategoryFilterMap = { 任务通知: 'task_notice', 需求审批: 'demand_approval', 项目审批: 'project_approval' };
 const messageHeaders = ['状态', '类别', '消息内容', '时间', '操作'];
 function filteredMessages() {
   const cat = messageCategoryFilterMap[state.filters.messageCategory] || '';
@@ -863,7 +863,7 @@ function messageRows(list) {
   return list.map(item => {
     const unread = !item.read_at;
     const statusTag = unread ? '<span class="tag danger">未读</span>' : '<span class="tag">已读</span>';
-    const viewBtn = (item.target_type === 'demand' || item.target_type === 'project' || (item.target_type === 'project_application' && demandApprover()))
+    const viewBtn = (item.target_type === 'task' || item.target_type === 'demand' || item.target_type === 'project' || (item.target_type === 'project_application' && demandApprover()))
       ? action('查看', 'message-open', item.id, 'link') : '';
     const readBtn = unread ? action('标为已读', 'message-read', item.id, 'link') : '';
     const ops = (viewBtn || readBtn) ? `<div class="row-actions">${viewBtn}${readBtn}</div>` : '—';
@@ -877,10 +877,10 @@ function messageRows(list) {
   }).join('');
 }
 function messagesPage() {
-  const categoryFilter = filterSelect('messageCategory', '按消息类别筛选', ['需求审批', '项目审批'], '全部类别');
+  const categoryFilter = filterSelect('messageCategory', '按消息类别筛选', ['任务通知', '需求审批', '项目审批'], '全部类别');
   const toolbar = `<div class="toolbar">${search('messageQuery', '搜索消息标题、内容或处理人')}${categoryFilter}</div>`;
   const readAllBtn = `<button type="button" class="button" data-action="messages-read-all"${state.unreadMessages ? '' : ' disabled'}>全部标为已读</button>`;
-  return heading('消息中心', '记录需求与项目审批申请、通过及驳回通知（永久留痕）。', action('刷新', 'refresh') + readAllBtn) +
+  return heading('消息中心', '记录任务派发、转交、完成及审批通知（永久留痕）。', action('刷新', 'refresh') + readAllBtn) +
     pagedListPanel('messages', toolbar);
 }
 
@@ -3212,7 +3212,9 @@ async function openMessageTarget(id) {
   const msg = state.messages.find(item => same(item.id, id));
   if (!msg) return;
   void markMessageRead(msg.id);
-  if (msg.target_type === 'demand' && msg.target_id != null) {
+  if (msg.target_type === 'task' && msg.target_id != null) {
+    await openLinkedTask(msg.target_id);
+  } else if (msg.target_type === 'demand' && msg.target_id != null) {
     await openLinkedDemand(msg.target_id);
   } else if (msg.target_type === 'project' && msg.target_id != null) {
     history.pushState({ fromProjectList: true }, '', '/?project=' + encodeURIComponent(String(msg.target_id)));

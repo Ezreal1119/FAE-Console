@@ -332,6 +332,15 @@ function autoDispatchProjectDemand(db, project, demand, reqRow, adminUser, times
   appendTaskHistory(db, dispatcher, taskRow.id, (due
     ? `从项目需求自动派发并开始规划（负责人：${taskRow.owner_name}，计划投入工时：${estimatedHours}h）`
     : `从项目需求自动派发任务（负责人：${taskRow.owner_name}）`) + filePart);
+  notifyUsers(db, [npiId], {
+    category: 'task_notice',
+    event: 'assigned',
+    title: `收到新的项目任务：${taskRow.code}`,
+    body: `项目「${project.name}（${project.project_type || DEFAULT_PROJECT_TYPE}）」已自动派发任务「${taskRow.code}」给你${due ? `（已自动开始规划，计划工时 ${estimatedHours}h）` : ''}。`,
+    actor_name: '管理员',
+    target_type: 'task',
+    target_id: taskRow.id
+  });
   return taskRow;
 }
 
@@ -1016,6 +1025,18 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             target_type: 'demand',
             target_id: inserted.row.id
           });
+        } else if (table === 'demands' && op === 'insert' && inserted.row.approval_status === 'approved' &&
+            validId(inserted.row.dispatcher_id) && inserted.row.dispatcher_id !== user.id) {
+          const creatorName = displayName(db, user);
+          notifyUsers(db, [inserted.row.dispatcher_id], {
+            category: 'demand_approval',
+            event: 'delegated',
+            title: `收到委托待派发需求：${inserted.row.code}`,
+            body: `${creatorName} 创建了「${inserted.row.proj}」的需求「${inserted.row.code}」并委托你进行派发。`,
+            actor_name: creatorName,
+            target_type: 'demand',
+            target_id: inserted.row.id
+          });
         }
         if (table === 'tasks') {
           appendTaskHistory(db, user, inserted.row.id,
@@ -1153,6 +1174,19 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         const filePart = files?.length ? [`上传交付文件：${files.map(file => file.name).join('、')}`] : [];
         appendTaskHistory(db, user, result.row.id,
           [`完成任务（状态：${prevStatus} → 已完成，投入工时：${hours}h）`, ...diffs, ...filePart].join('；'));
+        const dispatcherId = result.row.creator_id ?? result.row.owner_id;
+        if (validId(dispatcherId) && dispatcherId !== user.id) {
+          const actorName = displayName(db, user);
+          notifyUsers(db, [dispatcherId], {
+            category: 'task_notice',
+            event: 'completed',
+            title: `任务已完成：${result.row.code}`,
+            body: `${actorName} 已完成任务「${result.row.code}」${result.row.proj ? `（${result.row.proj}）` : ''}，投入工时 ${hours}h，请及时查看验收。`,
+            actor_name: actorName,
+            target_type: 'task',
+            target_id: result.row.id
+          });
+        }
         return result;
       });
       return { task: publicTask(store.read(), user, row) };
@@ -1200,6 +1234,18 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         row.initial_receiver_name = row.owner_name;
         const filePart = files?.length ? `；上传需求文件：${files.map(file => file.name).join('、')}` : '';
         appendTaskHistory(db, user, row.id, `从需求派发任务（负责人：${row.owner_name || '未分配'}${filePart}）`);
+        if (validId(row.assignee_id) && row.assignee_id !== user.id) {
+          const actorName = displayName(db, user);
+          notifyUsers(db, [row.assignee_id], {
+            category: 'task_notice',
+            event: 'assigned',
+            title: `收到新任务：${row.code}`,
+            body: `${actorName} 将需求「${source.code}」${source.proj ? `（${source.proj}）` : ''}派发给你，任务编号：${row.code}。`,
+            actor_name: actorName,
+            target_type: 'task',
+            target_id: row.id
+          });
+        }
         return { created: row, demand: source };
       });
       const db = store.read();
@@ -1218,12 +1264,36 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请刷新后重新转交。');
         if (task.status === '已完成') throw new RequestError(409, '已完成的任务不能转交。');
         if (task.assignee_id === assigneeId) throw new RequestError(400, '请选择其他成员接手任务。');
+        const prevAssigneeId = task.assignee_id ?? null;
         const prevOwner = taskOwnerName(db, task) || '未分配';
         task.transfer_history ??= [];
-        task.transfer_history.push({ from_id: task.assignee_id ?? null, to_id: assigneeId, at: now() });
+        task.transfer_history.push({ from_id: prevAssigneeId, to_id: assigneeId, at: now() });
         const result = applyPatch(db, user, 'tasks', task, { assignee_id: assigneeId }, recordTaskChange);
         const nextOwner = taskOwnerName(db, result.row) || '未分配';
         appendTaskHistory(db, user, result.row.id, `转交负责人：${prevOwner} → ${nextOwner}`);
+        const actorName = displayName(db, user);
+        if (validId(assigneeId) && assigneeId !== user.id) {
+          notifyUsers(db, [assigneeId], {
+            category: 'task_notice',
+            event: 'transferred_in',
+            title: `收到转交任务：${result.row.code}`,
+            body: `${actorName} 将任务「${result.row.code}」${result.row.proj ? `（${result.row.proj}）` : ''}从 ${prevOwner} 转交给你负责。`,
+            actor_name: actorName,
+            target_type: 'task',
+            target_id: result.row.id
+          });
+        }
+        if (validId(prevAssigneeId) && prevAssigneeId !== user.id && prevAssigneeId !== assigneeId) {
+          notifyUsers(db, [prevAssigneeId], {
+            category: 'task_notice',
+            event: 'transferred_out',
+            title: `任务已转出：${result.row.code}`,
+            body: `${actorName} 已将任务「${result.row.code}」${result.row.proj ? `（${result.row.proj}）` : ''}转交给 ${nextOwner} 负责。`,
+            actor_name: actorName,
+            target_type: 'task',
+            target_id: result.row.id
+          });
+        }
         return result;
       });
       return { task: publicTask(store.read(), user, row) };
@@ -1810,7 +1880,20 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           extra: linkedTask ? { task_id: linkedTask.id } : {}
         });
         if (linkedTask) {
-          appendTaskHistory(db, user, linkedTask.id, `上传需求文件：${files.map(file => file.name).join('、')}`);
+          const names = files.map(file => file.name).join('、');
+          appendTaskHistory(db, user, linkedTask.id, `上传需求文件：${names}`);
+          if (validId(linkedTask.assignee_id) && linkedTask.assignee_id !== user.id) {
+            const actorName = displayName(db, user);
+            notifyUsers(db, [linkedTask.assignee_id], {
+              category: 'task_notice',
+              event: 'demand_files_added',
+              title: `需求补传了新文件：${row.code}`,
+              body: `${actorName} 为你负责的任务「${linkedTask.code}」关联需求「${row.code}」补传了文件：${names}。`,
+              actor_name: actorName,
+              target_type: 'task',
+              target_id: linkedTask.id
+            });
+          }
         }
         return row;
       });
