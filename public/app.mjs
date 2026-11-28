@@ -463,7 +463,7 @@ function descCell(value) {
   return `<td class="list-desc-cell"><span class="list-desc"${tooltip}>${shown(value)}</span></td>`;
 }
 function statusBadge(status) {
-  const variant = { 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
+  const variant = { 待派发: 'pending-dispatch', 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
   return `<span class="tag ${variant}">${shown(status)}</span>`;
 }
 function priorityBadge(value, label) {
@@ -682,7 +682,7 @@ function approvalStatusBadge(status) {
 function demandProgressBadge(demand, task) {
   if (demand.approval_status === 'pending') return '<span class="tag test">待审批</span>';
   if (demand.approval_status === 'rejected') return '<span class="tag danger">已驳回</span>';
-  return task ? statusBadge(task.status) : '<span class="tag">待派发</span>';
+  return statusBadge(task ? task.status : '待派发');
 }
 function demandOwner(task) {
   return task?.id && canTransferTask(task)
@@ -1044,7 +1044,7 @@ function projectRequirementsTable(requirements, isTemplate, hasStepName) {
       ? action(item.demand_code, 'project-req-demand', item.demand_id, 'link') : '—';
     const taskCell = item.task_id && item.task_code
       ? action(item.task_code, 'demand-task', item.task_id, 'link task-code') : '—';
-    const statusCell = item.task_status ? statusBadge(item.task_status) : item.demand_id ? '<span class="tag">待派发</span>' : '—';
+    const statusCell = item.task_status ? statusBadge(item.task_status) : item.demand_id ? statusBadge('待派发') : '—';
     const stepNameCell = hasStepName ? `<td>${shown(item.step_name)}</td>` : '';
     return `<tr><td>${isTemplate || !canEdit ? code : edit}</td>${stepNameCell}<td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
       <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : `<td>${demandCell}</td><td>${taskCell}</td><td>${statusCell}</td>`}</tr>`;

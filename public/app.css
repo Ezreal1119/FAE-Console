@@ -206,6 +206,7 @@ tr:last-child td { border-bottom: 0; }
 .row-actions { display: flex; gap: 11px; white-space: nowrap; }
 .number { color: var(--muted); font-size: .79rem; margin-left: 5px; }
 .tag { display: inline-block; border-radius: 5px; padding: 3px 7px; white-space: nowrap; background: #eef2f9; color: #445574; font-size: .8rem; font-weight: 650; }
+.tag.pending-dispatch { background: #f1e7ff; color: #5b21a6; }
 .tag.start { background: #eaf0ff; color: #3151b1; }
 .tag.test { background: #fff2d8; color: #795311; }
 .tag.done { background: #e2f7ef; color: #066448; }
