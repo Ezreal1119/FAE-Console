@@ -666,8 +666,8 @@ function tasksPage() {
   const team = admin() ? filterSelect('taskTeam', '按负责人团队筛选', unique(state.profiles.map(person => person.team)), '全部团队') : '';
   const placeholder = admin() ? '搜索任务编号、描述、项目、设备类型、负责人或工号' : '搜索任务编号、描述、项目或设备类型';
   const toolbar = `<div class="toolbar">${search('taskQuery', placeholder)}${filterSelect('taskStatus', '按任务状态过滤', TASK_STATUS_FILTERS, '全部状态')}${priority}${stage}${team}${scope}</div>`;
-  return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('显示选项', 'task-display-options') +
-    /* action('导出本周任务', 'export-week') + */ action('＋ 新建任务', 'task-new', '', 'button primary')) +
+  return heading('任务中心', '跟进任务分工、进度和交付记录。', action('刷新', 'refresh') + action('显示选项', 'task-display-options')
+    /* + action('导出本周任务', 'export-week') + action('＋ 新建任务', 'task-new', '', 'button primary') */) +
     pagedListPanel('tasks', toolbar);
 }
 
