@@ -987,6 +987,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           return updated;
         }
         if (table === 'demands' && op === 'insert') {
+          if (patch.proposer && !db.demandOptions.proposer.includes(patch.proposer)) {
+            db.demandOptions.proposer.push(patch.proposer);
+          }
           const isApprover = isDemandApprover(user, db);
           let dispatcherId = user.id;
           if (isApprover && patch.dispatcher_id != null) {
