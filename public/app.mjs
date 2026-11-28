@@ -733,6 +733,16 @@ function projectLoading(error, retry) {
     : '<p class="empty" role="status">正在加载项目…</p>';
 }
 
+function projectStageBadge(stage) {
+  const variant = { 立项: 'stage-init', EVT: 'stage-evt', DVT: 'stage-dvt', PVT: 'stage-pvt', MP: 'stage-mp' }[stage] || '';
+  return `<span class="project-stage-badge ${variant}">${shown(stage)}</span>`;
+}
+
+function nextProjectStage(project, stages) {
+  const index = stages.indexOf(project.stage);
+  return index >= 0 && index < stages.length - 1 ? stages[index + 1] : null;
+}
+
 function projectDetailPage() {
   const name = linkedProjectName();
   const detailActions = state.projectDetail
@@ -745,13 +755,17 @@ function projectDetailPage() {
 
   const { project } = state.projectDetail;
   const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
-  const retiredStage = !stages.includes(project.stage);
-  const options = (retiredStage ? `<option selected disabled>${text(project.stage)}（已从基础配置移除）</option>` : '') +
-    stages.map(stage => option(stage, project.stage)).join('');
+  const nextStage = nextProjectStage(project, stages);
+  const advanceButton = nextStage
+    ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
+    : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
   const config = `<form id="project-stage-form">
-    <div class="project-stage-controls"><label>当前项目阶段<select name="stage">${options}</select></label></div>
     ${area('项目描述', 'description', project.description, false)}
     <p class="form-error" role="alert" hidden></p>
+    <div class="project-config-actions">
+      <button type="submit" class="button primary">保存</button>
+      ${advanceButton}
+    </div>
   </form>`;
 
   const selected = state.projectStageTab ?? (npiStages.includes(project.stage) ? project.stage : npiStages[0]);
@@ -759,8 +773,9 @@ function projectDetailPage() {
     aria-controls="npi-panel-${stage}" aria-selected="${stage === selected}" tabindex="${stage === selected ? 0 : -1}">${stage}</button>`).join('');
   const stagePanels = npiStages.map(stage => `<div class="project-stage-table" role="tabpanel" tabindex="0" id="npi-panel-${stage}"
     aria-labelledby="npi-tab-${stage}"${stage === selected ? '' : ' hidden'}>${projectRequirementsTable(stage)}</div>`).join('');
-  return header + panel('项目配置', config) + panel('阶段需求', `<div class="catalog-tabs" role="tablist" aria-label="项目阶段需求">${tabs}</div>` +
-    stagePanels, action('＋ 新增需求', 'project-requirement-add'));
+  return header + panel('项目配置', config, projectStageBadge(project.stage)) +
+    panel('阶段需求', `<div class="catalog-tabs" role="tablist" aria-label="项目阶段需求">${tabs}</div>` +
+      stagePanels, action('＋ 新增需求', 'project-requirement-add'));
 }
 
 function projectRequirementsTable(stage) {
@@ -879,6 +894,21 @@ function projectRenameForm(name) {
       if (newName === name) return;
       await changeProject('rename', name, { newName });
     }, { submit: '确认重命名' });
+}
+
+function projectAdvanceForm() {
+  if (!admin() || !state.projectDetail) return;
+  const { project } = state.projectDetail;
+  const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
+  const nextStage = nextProjectStage(project, stages);
+  if (!nextStage) return;
+  modalForm('推进项目', `是否确定将项目「${project.name}」推进到下一阶段「${nextStage}」，并触发对应阶段的项目任务？`, '', async () => {
+    const form = $('#project-stage-form');
+    const description = form ? optional(form.elements.description?.value) : undefined;
+    const payload = { stage: nextStage };
+    if (form && description !== optional(project.description)) payload.description = description;
+    await changeProject('update', project.name, payload);
+  }, { submit: '确定推进', submitClass: 'success' });
 }
 
 function projectDeleteForm(name) {
@@ -2653,6 +2683,7 @@ const actions = {
   'project-detail-load': loadProjectDetail,
   'project-new': () => projectForm(),
   'project-rename': projectRenameForm,
+  'project-advance': projectAdvanceForm,
   'project-list': () => history.state?.fromProjectList ? history.back() : navigate('projects'),
   'project-requirement-add': () => projectRequirementForm(),
   'project-requirement-edit': projectRequirementForm,
@@ -2766,35 +2797,21 @@ content.addEventListener('keydown', event => {
     Home: 0, End: tabs.length - 1 }[event.key];
   selectProjectStageTab(tabs[destination]);
 });
-content.addEventListener('change', async ({ target }) => {
-  if (target.form?.id !== 'project-stage-form' || target.name !== 'stage') return;
-  const project = state.projectDetail?.project;
-  const stage = target.value;
-  if (!project || !stage) return;
-  showProjectStageTab(stage);
-  if (stage === project.stage) return;
-  const errorMessage = target.form.querySelector('.form-error');
-  target.disabled = true;
-  formError(errorMessage, '');
-  try { await changeProject('update', project.name, { stage }); }
-  catch (error) {
-    target.value = project.stage;
-    formError(errorMessage, error.message);
-  } finally { target.disabled = false; }
-});
-content.addEventListener('focusout', async ({ target }) => {
-  if (target.form?.id !== 'project-stage-form' || target.name !== 'description') return;
+content.addEventListener('submit', async event => {
+  const form = event.target;
+  if (form.id !== 'project-stage-form') return;
+  event.preventDefault();
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit.disabled) return;
   const project = state.projectDetail?.project;
   if (!project) return;
-  const description = optional(target.value);
-  if (description === optional(project.description)) return;
-  const errorMessage = target.form.querySelector('.form-error');
+  const description = optional(form.elements.description?.value);
+  const errorMessage = form.querySelector('.form-error');
+  submit.disabled = true;
   formError(errorMessage, '');
   try { await changeProject('update', project.name, { description }); }
   catch (error) { formError(errorMessage, error.message); }
-});
-content.addEventListener('submit', event => {
-  if (event.target.id === 'project-stage-form') event.preventDefault();
+  finally { submit.disabled = false; }
 });
 setInterval(updateTaskOverdueIndicators, 60_000);
 document.addEventListener('visibilitychange', updateTaskOverdueIndicators);
