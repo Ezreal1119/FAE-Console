@@ -998,6 +998,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         checkTaskPeople(payload, op === 'insert');
         if (op === 'update') {
           checkTaskSchedule(payload);
+          if (Object.hasOwn(patch, 'pri')) throw new RequestError(400, '任务派发后优先级不可修改。');
           if (Object.hasOwn(patch, 'hours')) throw new RequestError(400, '投入工时请在完成任务时填写。');
           if (Object.hasOwn(patch, 'result')) throw new RequestError(400, '完成结果请在完成任务时填写。');
         } else {
@@ -1239,6 +1240,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       checkTaskSchedule(changes);
       checkTaskPeople(changes, false);
       if (!patch.result) throw new RequestError(400, '请填写完成结果。');
+      if (Object.hasOwn(patch, 'pri')) throw new RequestError(400, '任务派发后优先级不可修改。');
       if (Object.hasOwn(patch, 'status') || Object.hasOwn(patch, 'hours')) {
         throw new RequestError(400, '任务状态和投入工时由完成操作记录。');
       }

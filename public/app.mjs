@@ -2260,17 +2260,13 @@ function taskDetail(id) {
   const canEditDetails = canEditTask(task);
   const canEditClassification = canEditTaskClassification(task);
   const canEditProject = canEditDetails && task.demand_id == null;
-  const canEditPriority = canEditClassification && !isPlanning;
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status) && isAssignee;
   const optionKinds = canEditClassification ? ['device_type'] : [];
   const needsChoices = canEditProject || optionKinds.length > 0;
-  const priorityControl = canEditPriority
-    ? selectField('', 'pri', PRIORITY, priority, 'form="dialog-form" aria-label="优先级"')
-    : priorityBadge(priority);
   const statusField = canChangeStatus
     ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
     : statusBadge(task.status);
-  const headingAside = `<div class="dialog-task-meta">${priorityControl}${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>`;
+  const headingAside = `<div class="dialog-task-meta">${priorityBadge(priority)}${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>`;
   const fields = taskDetails(task, {
     editable: { proj: canEditProject, deviceType: canEditClassification, pri: true, status: true, desc: canEditDetails },
     hideOwner
@@ -2301,7 +2297,6 @@ function taskDetail(id) {
       const desc = optional(values.desc);
       if (desc !== optional(latest.desc)) patch.desc = desc;
     }
-    if (canEditPriority && values.pri !== taskPriority(latest.pri)) patch.pri = values.pri;
     return patch;
   }
   const form = modalForm(task.code, '', fields, async values => {
@@ -2401,19 +2396,6 @@ function taskDetail(id) {
         rollback: () => { try { statusSelect.value = getRow('tasks', task.id).status; } catch { /* ignore */ } },
         message: '任务状态已更新。'
       }).finally(() => { statusSelect.disabled = false; });
-    });
-  }
-  if (canEditPriority) {
-    const priSelect = dialog.querySelector('select[name="pri"]');
-    priSelect?.addEventListener('change', () => {
-      const latest = getRow('tasks', task.id);
-      const nextPri = priSelect.value;
-      if (nextPri === taskPriority(latest.pri)) return;
-      priSelect.disabled = true;
-      void autoSave({ pri: nextPri }, {
-        rollback: () => { try { priSelect.value = taskPriority(getRow('tasks', task.id).pri); } catch { /* ignore */ } },
-        message: '优先级已更新。'
-      }).finally(() => { priSelect.disabled = false; });
     });
   }
   if (canEditDetails) {
