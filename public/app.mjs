@@ -764,11 +764,11 @@ function projectDetailPage() {
   const advanceButton = nextStage
     ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
     : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
-  const config = `<form id="project-stage-form">
+  const config = `<form id="project-stage-form" class="stack">
+    <label class="project-device-type">设备类型<select name="device_type">${deviceOptions}</select></label>
     ${area('项目描述', 'description', project.description, false)}
     <p class="form-error" role="alert" hidden></p>
-    <div class="project-config-actions">
-      <label>设备类型<select name="device_type">${deviceOptions}</select></label>
+    <div class="actions">
       <button type="submit" class="button primary">保存</button>
       ${advanceButton}
     </div>
