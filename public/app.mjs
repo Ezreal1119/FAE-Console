@@ -509,7 +509,7 @@ function descCell(value) {
   return `<td class="list-desc-cell"><span class="list-desc"${tooltip}>${shown(value)}</span></td>`;
 }
 function statusBadge(status) {
-  const variant = { 待派发: 'pending-dispatch', 开发中: 'start', 测试中: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
+  const variant = { 待派发: 'pending-dispatch', 开发中: 'start', 测试验证: 'test', 已完成: 'done', 在职: 'done', 请假: 'test', 已离职: 'danger' }[status] || '';
   return `<span class="tag ${variant}">${shown(status)}</span>`;
 }
 function priorityBadge(value, label) {
@@ -3656,7 +3656,7 @@ async function exportTasks() {
   const selected = state.page === 'tasks' ? filteredTasks() : state.tasks.filter(assignedToMe);
   const teamScope = state.page === 'tasks' && admin() && state.filters.taskScope === 'all';
   let rows = selected.filter(task => inWeek(task.startDate, [from, to]) || inWeek(task.endDate, [from, to]));
-  if (!rows.length) rows = selected.filter(task => inWeek(task.dueDate, [from, to]) || ['开发中', '测试中'].includes(task.status));
+  if (!rows.length) rows = selected.filter(task => inWeek(task.dueDate, [from, to]) || ACTIVE_TASK_STATUSES.includes(task.status));
   if (!rows.length) throw new Error('本周没有可导出的任务。');
   const demandCodes = new Map(state.demands.map(row => [row.id, row.code]));
   const exportRows = rows.map(task => ({

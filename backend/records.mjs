@@ -806,8 +806,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
   const needsDemandCode = demand => !demand.code || legacyDemandPrefix.test(demand.code);
   const needsReceiver = task => task.demand_id != null && !Object.hasOwn(task, 'initial_receiver_id');
   const needsRequirementOwner = task => task.demand_id != null && !Object.hasOwn(task, 'requirement_owner_id');
+  const needsTestingRename = task => task.status === '测试中';
   const { demands, tasks } = store.read();
-  if (demands.some(needsDemandCode) || tasks.some(task => needsReceiver(task) || needsRequirementOwner(task) || !task.code)) {
+  if (demands.some(needsDemandCode) || tasks.some(task => needsReceiver(task) || needsRequirementOwner(task) || !task.code || needsTestingRename(task))) {
     store.update(db => {
       const fallback = Date.now();
       for (const demand of db.demands.filter(needsDemandCode).sort((a, b) => a.id - b.id)) {
@@ -823,6 +824,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       for (const task of db.tasks.filter(needsRequirementOwner)) {
         const source = sources.get(task.demand_id);
         task.requirement_owner_id = source?.creator_id ?? source?.owner_id ?? null;
+      }
+      for (const task of db.tasks.filter(needsTestingRename)) {
+        task.status = '测试验证';
       }
     });
   }
@@ -1020,7 +1024,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
                 throw new RequestError(403, '只有当前任务负责人可以切换任务状态。');
               }
               if (!(ACTIVE_TASK_STATUSES.includes(current) && ACTIVE_TASK_STATUSES.includes(patch.status))) {
-                throw new RequestError(409, '任务状态只能在开发中和测试中切换。开始任务请使用开始规划。');
+                throw new RequestError(409, '任务状态只能在开发中和测试验证中切换。开始任务请使用开始规划。');
               }
             }
             const t = list[index];
@@ -1203,7 +1207,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           throw new RequestError(403, '你没有权限完成此任务或修改这些任务信息。');
         }
         if (!ACTIVE_TASK_STATUSES.includes(task.status)) {
-          throw new RequestError(409, '只有开发中或测试中的任务可以完成，请刷新后查看。');
+          throw new RequestError(409, '只有开发中或测试验证的任务可以完成，请刷新后查看。');
         }
         if ((task.revision ?? 0) !== expectedVersion) throw new RequestError(409, '任务已变化，请重新打开更新任务后重试。');
         const prevStatus = task.status;
