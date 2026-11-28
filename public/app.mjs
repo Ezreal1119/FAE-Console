@@ -831,6 +831,7 @@ async function changeProject(action, name, payload = {}) {
       history.replaceState(history.state, '', '/?project=' + encodeURIComponent(nextName.toWellFormed()));
       state.projectDetail.project = result.projects.find(project => project.name === nextName);
       state.projectDetail.stages = result.stages;
+      render();
     }
     await refresh();
     toast('项目已重命名。');
