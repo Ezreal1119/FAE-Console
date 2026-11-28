@@ -2,17 +2,19 @@ import { randomUUID } from 'node:crypto';
 import { RequestError } from './store.mjs';
 
 const stages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
+const ckdStages = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8'];
 export const PROJECT_TYPES = ['标准项目', 'SKD', 'CKD'];
 export const DEFAULT_PROJECT_TYPE = '标准项目';
 const legacyInitiationCode = /^立项-/;
 const emptyList = () => ({ next: 1, rows: [] });
-const emptyTemplate = () => Object.fromEntries(stages.map(stage => [stage, emptyList()]));
+export const projectTemplateStages = type => type === 'CKD' ? ckdStages : stages;
+const emptyTemplate = type => Object.fromEntries(projectTemplateStages(type).map(stage => [stage, emptyList()]));
 
 function normalizeProjectType(type) {
   return PROJECT_TYPES.includes(type) ? type : DEFAULT_PROJECT_TYPE;
 }
 
-function cleanRequirement(input) {
+function cleanRequirement(input, stage) {
   const { description, deliverable, planned_hours: hours } = input ?? {};
   if (typeof description !== 'string' || typeof deliverable !== 'string' ||
       description.length > 10000 || deliverable.length > 10000) {
@@ -22,7 +24,13 @@ function cleanRequirement(input) {
   if (hours !== null && (typeof hours !== 'number' || !Number.isFinite(hours) || hours < 0)) {
     throw new RequestError(400, '请输入有效的计划投入工时。');
   }
-  return { description: description.trim(), deliverable: deliverable.trim(), planned_hours: hours };
+  const fields = { description: description.trim(), deliverable: deliverable.trim(), planned_hours: hours };
+  if (ckdStages.includes(stage)) {
+    const stepName = input.step_name ?? '';
+    if (typeof stepName !== 'string' || stepName.length > 500) throw new RequestError(400, '步骤名须在 500 字以内。');
+    fields.step_name = stepName.trim();
+  }
+  return fields;
 }
 
 function storedRequirements(db, name) {
@@ -58,13 +66,13 @@ export function ensureProjectRequirementTemplates(db) {
     db.projectRequirementTemplates = {
       [DEFAULT_PROJECT_TYPE]: db.projectRequirementTemplate ?? emptyTemplate(),
       SKD: emptyTemplate(),
-      CKD: emptyTemplate()
+      CKD: emptyTemplate('CKD')
     };
   } else {
     for (const type of PROJECT_TYPES) {
       if (!existing[type]) existing[type] = type === DEFAULT_PROJECT_TYPE && db.projectRequirementTemplate
         ? db.projectRequirementTemplate
-        : emptyTemplate();
+        : emptyTemplate(type);
     }
   }
   db.projectRequirementTemplate = db.projectRequirementTemplates[DEFAULT_PROJECT_TYPE];
@@ -92,7 +100,7 @@ export function initializeProjectRequirements(db, key, projectType = DEFAULT_PRO
   const templates = ensureProjectRequirementTemplates(db);
   const template = templates[normalizeProjectType(projectType)];
   const lists = storedRequirements(db, storeKey) ?? {};
-  for (const stage of stages) {
+  for (const stage of projectTemplateStages(projectType)) {
     const defaults = template?.[stage];
     if (!lists[stage]) {
       lists[stage] = defaults
@@ -100,7 +108,7 @@ export function initializeProjectRequirements(db, key, projectType = DEFAULT_PRO
         : emptyList();
     } else {
       // The initial seed can also populate projects that already have their own rows.
-      for (const row of defaults?.rows ?? []) appendRequirement(stage, lists[stage], cleanRequirement(row));
+      for (const row of defaults?.rows ?? []) appendRequirement(stage, lists[stage], cleanRequirement(row, stage));
     }
   }
   db.projectRequirements = { ...db.projectRequirements, [storeKey]: lists };
@@ -124,27 +132,33 @@ export function seedProjectRequirements(store, seed) {
   });
 }
 
-function requirementRows(lists) {
-  return Object.fromEntries(stages.map(stage => [stage, lists?.[stage]?.rows ?? []]));
+function requirementRows(lists, stageNames) {
+  return Object.fromEntries(stageNames.map(stage => [stage, lists?.[stage]?.rows ?? []]));
 }
 
-export const projectRequirementRows = (db, key) => requirementRows(storedRequirements(db, String(key)));
+export function projectRequirementStages(db, key) {
+  const lists = storedRequirements(db, String(key));
+  // Existing projects keep the workflow they were initialized with.
+  return lists && ckdStages.some(stage => Object.hasOwn(lists, stage)) ? ckdStages : stages;
+}
+
+export const projectRequirementRows = (db, key) => requirementRows(storedRequirements(db, String(key)), projectRequirementStages(db, key));
 export const projectTemplateRows = (db, projectType = DEFAULT_PROJECT_TYPE) => {
   const templates = db.projectRequirementTemplates;
   const source = templates ? templates[normalizeProjectType(projectType)] : (projectType === DEFAULT_PROJECT_TYPE ? db.projectRequirementTemplate : null);
-  return requirementRows(source);
+  return requirementRows(source, projectTemplateStages(projectType));
 };
 export const allProjectTemplateRows = db => Object.fromEntries(
   PROJECT_TYPES.map(type => [type, projectTemplateRows(db, type)])
 );
 
-function changeRequirement(lists, { stage, action, code, revision, ...fields }) {
-  if (!stages.includes(stage) || !['add', 'update', 'remove'].includes(action)) {
+function changeRequirement(lists, stageNames, { stage, action, code, revision, ...fields }) {
+  if (!stageNames.includes(stage) || !['add', 'update', 'remove'].includes(action)) {
     throw new RequestError(400, '项目阶段或需求操作无效。');
   }
   const list = lists[stage] ??= emptyList();
   if (action === 'add') {
-    appendRequirement(stage, list, cleanRequirement(fields));
+    appendRequirement(stage, list, cleanRequirement(fields, stage));
   } else {
     const index = list.rows.findIndex(row => row.code === code);
     if (index < 0 || list.rows[index].revision !== revision) {
@@ -153,19 +167,19 @@ function changeRequirement(lists, { stage, action, code, revision, ...fields }) 
     if (action === 'remove') list.rows.splice(index, 1);
     else list.rows[index] = {
       code,
-      ...cleanRequirement(fields),
+      ...cleanRequirement(fields, stage),
       ...(list.rows[index].pushed ? { pushed: true } : {}),
       revision: randomUUID()
     };
   }
-  return { requirements: requirementRows(lists) };
+  return { requirements: requirementRows(lists, stageNames) };
 }
 
 export function changeProjectRequirement(db, { projectKey, name, ...input }) {
   const key = projectKey != null ? String(projectKey) : name;
   const stored = storedRequirements(db, key);
   const lists = stored ?? {};
-  const result = changeRequirement(lists, input);
+  const result = changeRequirement(lists, projectRequirementStages(db, key), input);
   if (!stored) db.projectRequirements = { ...db.projectRequirements, [key]: lists };
   return result;
 }
@@ -173,6 +187,6 @@ export function changeProjectRequirement(db, { projectKey, name, ...input }) {
 export function changeProjectTemplateRequirement(db, { project_type: projectType = DEFAULT_PROJECT_TYPE, ...input }) {
   if (!PROJECT_TYPES.includes(projectType)) throw new RequestError(400, '项目类型无效。');
   const templates = ensureProjectRequirementTemplates(db);
-  const result = changeRequirement(templates[projectType] ??= emptyTemplate(), input);
+  const result = changeRequirement(templates[projectType], projectTemplateStages(projectType), input);
   return { ...result, project_type: projectType, templates: allProjectTemplateRows(db) };
 }

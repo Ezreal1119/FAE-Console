@@ -3,7 +3,8 @@ import { attachmentKind, bindAttachments } from './attachments.mjs';
 import { isAdmin, isDemandApprover, isPrimaryAdmin, now, optionalText } from './accounts.mjs';
 import {
   allProjectTemplateRows, changeProjectRequirement, changeProjectTemplateRequirement, DEFAULT_PROJECT_TYPE,
-  ensureProjectRequirementTemplates, initializeProjectRequirements, PROJECT_TYPES, projectRequirementRows
+  ensureProjectRequirementTemplates, initializeProjectRequirements, PROJECT_TYPES, projectRequirementRows,
+  projectRequirementStages, projectTemplateStages
 } from './project-requirements.mjs';
 import { RequestError } from './store.mjs';
 import { ACTIVE_TASK_STATUSES, normalizeTaskPriority, plannedCompletion, TASK_PRIORITIES } from '../public/task-planning.mjs';
@@ -167,7 +168,11 @@ function syncDemandOptionProjects(db) {
   db.demandOptions.proj = [...new Set((db.projects ?? []).map(project => project.name))];
 }
 
-function projectStageOptions(db) {
+function projectStageOptions(db, project) {
+  if (project) {
+    const stages = projectRequirementStages(db, project.id);
+    if (stages[0] === 'P1') return stages;
+  }
   return [...new Set([defaultProjectStage, ...db.demandOptions.project_stage])];
 }
 
@@ -243,6 +248,7 @@ function projectSummary(db, project) {
 
 function formatProjectRequirementDescription(row) {
   const lines = [];
+  if (row.step_name) lines.push(`步骤名：${row.step_name}`);
   if (row.description) lines.push(`需求描述：${row.description}`);
   if (row.deliverable) lines.push(`交付内容：${row.deliverable}`);
   if (row.planned_hours != null) lines.push(`计划投入工时：${row.planned_hours} 小时`);
@@ -391,7 +397,9 @@ function projectCatalog(db) {
   const templates = allProjectTemplateRows(db);
   const initiationRequirementsByType = Object.fromEntries(PROJECT_TYPES.map(type => [
     type,
-    (templates[type]?.立项 ?? []).map(({ code, description, deliverable }) => ({ code, description, deliverable }))
+    templates[type][projectTemplateStages(type)[0]].map(({ code, description, deliverable, step_name }) => ({
+      code, description, deliverable, step_name
+    }))
   ]));
   return {
     projects: (db.projects ?? []).map(project => projectSummary(db, project)),
@@ -1170,7 +1178,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       if (!project) throw new RequestError(404, '未找到此项目。');
       return {
         project: projectSummary(db, project),
-        stages: projectStageOptions(db),
+        stages: projectStageOptions(db, project),
         deviceTypes: db.demandOptions.device_type,
         projectTypes: PROJECT_TYPES,
         projectManagers: db.demandOptions.project_manager ?? [],
@@ -1268,8 +1276,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       }
       if (action === 'update') {
         if (stage !== undefined) {
-          if (stage === null) stage = defaultProjectStage;
-          if (typeof stage !== 'string') throw new RequestError(400, '请选择项目阶段。');
+          if (stage !== null && typeof stage !== 'string') throw new RequestError(400, '请选择项目阶段。');
         }
         if (description !== undefined) description = optionalText(description, 10000);
         if (deviceType !== undefined) deviceType = optionalText(deviceType);
@@ -1293,10 +1300,11 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             throw new RequestError(409, '项目经理已不可选，请刷新后重试。');
           }
           taskMember(db, npiId, 'NPI');
+          const firstStage = projectTemplateStages(projectType)[0];
           const project = {
             id: db.seq.project++,
             name,
-            stage: defaultProjectStage,
+            stage: firstStage,
             description: null,
             device_type: deviceType,
             project_type: projectType,
@@ -1306,7 +1314,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           db.projects.push(project);
           syncDemandOptionProjects(db);
           initializeProjectRequirements(db, project.id, project.project_type);
-          syncProjectStageDemands(db, project, defaultProjectStage, recordTaskChange, initiationFiles ?? {}, user);
+          syncProjectStageDemands(db, project, firstStage, recordTaskChange, initiationFiles ?? {}, user);
         } else {
           const project = findProject(db, { projectId, id, name });
           if (!project) throw new RequestError(404, '未找到这个项目，请刷新后重试。');
@@ -1351,12 +1359,14 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
               }
             }
             if (stage !== undefined) {
-              if (!projectStageOptions(db).includes(stage)) {
+              const allowedStages = projectStageOptions(db, project);
+              const nextStage = stage ?? allowedStages[0];
+              if (!allowedStages.includes(nextStage)) {
                 throw new RequestError(409, '项目阶段已不可选，请刷新后重试。');
               }
-              const prevStage = project.stage || defaultProjectStage;
-              project.stage = stage;
-              if (stage !== prevStage) syncProjectStageDemands(db, project, stage, recordTaskChange);
+              const prevStage = project.stage || allowedStages[0];
+              project.stage = nextStage;
+              if (nextStage !== prevStage) syncProjectStageDemands(db, project, nextStage, recordTaskChange);
             }
           } else if (action === 'rename') {
             if (nextName !== project.name) {

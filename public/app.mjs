@@ -22,7 +22,6 @@ const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', demandApprovals: '需求审批', projects: '项目中心', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理' };
-const npiStages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
 const PROJECT_TYPES = ['标准项目', 'SKD', 'CKD'];
 const PROJECT_TYPE_CONFIG_LABELS = { 标准项目: '标准项目配置', SKD: 'SKD项目配置', CKD: 'CKD项目配置' };
 const projectPages = ['projects', 'projectDetail', 'projectConfig'];
@@ -998,8 +997,9 @@ function projectDetailPage() {
     </div>`;
   }
 
+  const { requirements } = state.projectDetail;
   return header + panel('项目配置', config, projectStageBadge(project.stage)) +
-    panel('阶段需求', projectRequirementTabs(state.projectDetail.requirements, selectedRequirementStage(project)),
+    panel('阶段需求', projectRequirementTabs(requirements, selectedRequirementStage(requirements, project)),
       isAdminUser ? '<div class="actions">' + action('一键推送', 'project-requirement-push-stage') + action('＋ 新增需求', 'project-requirement-add') + '</div>' : '');
 }
 
@@ -1011,27 +1011,31 @@ function projectConfigPage() {
   const requirements = state.projectTemplate.templates?.[currentType] ?? state.projectTemplate.requirements;
   return header +
     `<div class="catalog-tabs" role="group" aria-label="项目模板类型">${typeTabs}</div>` +
-    panel(PROJECT_TYPE_CONFIG_LABELS[currentType] || currentType, projectRequirementTabs(requirements, selectedRequirementStage(), true),
+    panel(PROJECT_TYPE_CONFIG_LABELS[currentType] || currentType, projectRequirementTabs(requirements, selectedRequirementStage(requirements), true),
       action('＋ 新增需求', 'project-requirement-add'));
 }
 
-function selectedRequirementStage(project) {
-  return state.projectStageTab ?? (project ? (npiStages.includes(project.stage) ? project.stage : 'EVT') : npiStages[0]);
+function selectedRequirementStage(requirements, project) {
+  if (Object.hasOwn(requirements, state.projectStageTab)) return state.projectStageTab;
+  if (project && Object.hasOwn(requirements, project.stage)) return project.stage;
+  if (project && Object.hasOwn(requirements, 'EVT')) return 'EVT';
+  return Object.keys(requirements)[0];
 }
 
 function projectRequirementTabs(requirements, selected, isTemplate = false) {
-  const tabs = npiStages.map(stage => `<button type="button" class="button" role="tab" id="npi-tab-${stage}" data-project-stage-tab="${stage}"
+  const stages = Object.keys(requirements);
+  const hasStepName = Object.hasOwn(requirements, 'P1');
+  const tabs = stages.map(stage => `<button type="button" class="button" role="tab" id="npi-tab-${stage}" data-project-stage-tab="${stage}"
     aria-controls="npi-panel-${stage}" aria-selected="${stage === selected}" tabindex="${stage === selected ? 0 : -1}">${stage}</button>`).join('');
-  const stagePanels = npiStages.map(stage => `<div class="project-stage-table${isTemplate ? ' project-template-table' : ''}" role="tabpanel"
+  const stagePanels = stages.map(stage => `<div class="project-stage-table${isTemplate ? ' project-template-table' : ''}${hasStepName ? ' project-ckd-table' : ''}" role="tabpanel"
     tabindex="0" id="npi-panel-${stage}" aria-labelledby="npi-tab-${stage}"${stage === selected ? '' : ' hidden'}>
-    ${projectRequirementsTable(requirements[stage], isTemplate)}</div>`).join('');
+    ${projectRequirementsTable(requirements[stage], isTemplate, hasStepName)}</div>`).join('');
   return `<div class="catalog-tabs" role="tablist" aria-label="项目阶段需求">${tabs}</div>` + stagePanels;
 }
 
-function projectRequirementsTable(requirements, isTemplate) {
-  const headers = isTemplate
-    ? ['编号', '需求说明', '交付内容', '计划投入工时', '操作']
-    : ['编号', '需求说明', '交付内容', '计划投入工时', '需求编号', '任务编号', '任务状态'];
+function projectRequirementsTable(requirements, isTemplate, hasStepName) {
+  const headers = ['编号', ...(hasStepName ? ['步骤名'] : []), '需求说明', '交付内容', '计划投入工时',
+    ...(isTemplate ? ['操作'] : ['需求编号', '任务编号', '任务状态'])];
   const canEdit = admin();
   const rows = requirements.map(item => {
     const code = text(item.code);
@@ -1041,10 +1045,19 @@ function projectRequirementsTable(requirements, isTemplate) {
     const taskCell = item.task_id && item.task_code
       ? action(item.task_code, 'demand-task', item.task_id, 'link task-code') : '—';
     const statusCell = item.task_status ? statusBadge(item.task_status) : item.demand_id ? '<span class="tag">待派发</span>' : '—';
-    return `<tr><td>${isTemplate || !canEdit ? code : edit}</td><td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
+    const stepNameCell = hasStepName ? `<td>${shown(item.step_name)}</td>` : '';
+    return `<tr><td>${isTemplate || !canEdit ? code : edit}</td>${stepNameCell}<td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
       <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : `<td>${demandCell}</td><td>${taskCell}</td><td>${statusCell}</td>`}</tr>`;
   }).join('');
   return table(headers, rows, '本阶段暂无需求。');
+}
+
+function updateProjectRequirementTables(requirements, isTemplate) {
+  const hasStepName = Object.hasOwn(requirements, 'P1');
+  for (const [stage, rows] of Object.entries(requirements)) {
+    const panelEl = document.getElementById('npi-panel-' + stage);
+    if (panelEl) panelEl.innerHTML = projectRequirementsTable(rows, isTemplate, hasStepName);
+  }
 }
 
 async function openLinkedDemand(id) {
@@ -1218,7 +1231,8 @@ function projectForm(initial = {}) {
     const activeFiles = new Map([...selectedFiles.entries()].filter(([code, list]) => activeCodes.has(code) && list.length));
     const totalFiles = [...activeFiles.values()].reduce((sum, list) => sum + list.length, 0);
     const confirmFields = totalFiles ? uploadProgress : '';
-    const confirmForm = modalForm('确认新建项目', `是否确定新建${projectType}「${name}（${deviceType}）」？系统将自动创建立项阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`, confirmFields, async () => {
+    const firstStage = projectType === 'CKD' ? 'P1' : '立项';
+    const confirmForm = modalForm('确认新建项目', `是否确定新建${projectType}「${name}（${deviceType}）」？系统将自动创建${firstStage}阶段需求并派发给 NPI${totalFiles ? `，同时上传 ${totalFiles} 份交付文件` : ''}。`, confirmFields, async () => {
       const progress = confirmForm.querySelector('[data-upload-progress]');
       const uploadedByCode = {};
       const uploadedIds = [];
@@ -1280,11 +1294,12 @@ function projectForm(initial = {}) {
       container.innerHTML = '';
       return;
     }
+    const firstStage = type === 'CKD' ? 'P1' : '立项';
     container.innerHTML = `<div class="project-init-files">
-      <p class="file-upload-title">立项交付文件（选填，上传后自动归入对应任务的交付文件）</p>
+      <p class="file-upload-title">${firstStage}交付文件（选填，上传后自动归入对应任务的交付文件）</p>
       ${items.map(item => `<div class="project-init-file-item" data-init-code="${text(item.code)}">
         <div class="project-init-file-head">
-          <span><strong>${text(item.code)}</strong> · ${text(item.deliverable || item.description)}</span>
+          <span><strong>${text(item.code)}</strong> · ${text(item.deliverable || item.step_name || item.description)}</span>
           <button type="button" class="button" data-init-file-pick="${text(item.code)}">选择文件</button>
         </div>
         <input type="file" multiple hidden data-init-file-input="${text(item.code)}">
@@ -1481,18 +1496,20 @@ function projectRequirementForm(code) {
   const project = isTemplate ? null : detail.project;
   const templateType = isTemplate ? (PROJECT_TYPES.includes(state.projectTemplateType) ? state.projectTemplateType : '标准项目') : null;
   const requirements = isTemplate ? (detail.templates?.[templateType] ?? detail.requirements) : detail.requirements;
-  const stage = selectedRequirementStage(project);
+  const stage = selectedRequirementStage(requirements, project);
   const row = requirements[stage].find(item => item.code === code);
   if (code && !row) return;
   const subtitle = (project?.name ?? (PROJECT_TYPE_CONFIG_LABELS[templateType] || '项目模板')) + ' · ' + (row?.code ?? stage);
-  const fields = area('需求说明', 'description', row?.description) + area('交付内容', 'deliverable', row?.deliverable) +
+  const hasStepName = Object.hasOwn(requirements, 'P1');
+  const fields = (hasStepName ? field('步骤名', 'step_name', row?.step_name, 'maxlength="500"') : '') +
+    area('需求说明', 'description', row?.description) + area('交付内容', 'deliverable', row?.deliverable) +
     field('计划投入工时（小时）', 'hours', row?.planned_hours, 'type="number" min="0" step="any" inputmode="decimal"');
   async function save(action, values = {}) {
     const endpoint = isTemplate ? '/api/admin/projects/requirement-template/change' : '/api/admin/projects/requirements/change';
     const result = await post(endpoint, {
       ...(isTemplate ? { project_type: templateType } : { projectId: project.id }),
       stage, action, code: row?.code, revision: row?.revision,
-      description: values.description, deliverable: values.deliverable,
+      step_name: values.step_name, description: values.description, deliverable: values.deliverable,
       planned_hours: values.hours ? Number(values.hours) : null
     });
     if (state.page === page && (isTemplate ? state.projectTemplate : state.projectDetail) === detail) {
@@ -1501,10 +1518,7 @@ function projectRequirementForm(code) {
       } else {
         detail.requirements = result.requirements;
       }
-      for (const phase of npiStages) {
-        const panelEl = document.getElementById('npi-panel-' + phase);
-        if (panelEl) panelEl.innerHTML = projectRequirementsTable(result.requirements[phase], isTemplate);
-      }
+      if (!isTemplate || state.projectTemplateType === templateType) updateProjectRequirementTables(result.requirements, isTemplate);
     }
     toast(action === 'remove' ? '需求已删除。' : '需求已保存。');
   }
@@ -1541,10 +1555,7 @@ function projectRequirementForm(code) {
         const result = await post('/api/admin/projects/requirements/push', { projectId: project.id, stage, code: row.code });
         if (state.page === page && state.projectDetail === detail && result.requirements) {
           detail.requirements = result.requirements;
-          for (const phase of npiStages) {
-            const panelEl = document.getElementById('npi-panel-' + phase);
-            if (panelEl) panelEl.innerHTML = projectRequirementsTable(result.requirements[phase], false);
-          }
+          updateProjectRequirementTables(result.requirements, false);
         }
         if (result.alreadyPushed) {
           modal('提示', '', '<p>该需求已经推送过，无需重复推送。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
@@ -1562,7 +1573,7 @@ function projectRequirementPushStage() {
   if (!admin() || state.page !== 'projectDetail' || !state.projectDetail) return;
   const detail = state.projectDetail;
   const { project, requirements } = detail;
-  const stage = selectedRequirementStage(project);
+  const stage = selectedRequirementStage(requirements, project);
   const pending = (requirements[stage] ?? []).filter(item => !item.pushed && !item.demand_id);
   if (!pending.length) {
     modal('提示', '', '<p>当前阶段没有待推送的需求。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
@@ -1572,10 +1583,7 @@ function projectRequirementPushStage() {
     const result = await post('/api/admin/projects/requirements/push-stage', { projectId: project.id, stage });
     if (state.page === 'projectDetail' && state.projectDetail === detail && result.requirements) {
       detail.requirements = result.requirements;
-      for (const phase of npiStages) {
-        const panelEl = document.getElementById('npi-panel-' + phase);
-        if (panelEl) panelEl.innerHTML = projectRequirementsTable(result.requirements[phase], false);
-      }
+      updateProjectRequirementTables(result.requirements, false);
     }
     for (const demand of result.demands ?? []) updateRow('demands', demand);
     for (const task of result.tasks ?? []) updateRow('tasks', normalizeTask(task));
