@@ -2167,7 +2167,7 @@ function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
   return info + demandSection + remarks;
 }
 function taskDialogLeadingActions(task) {
-  const canDelete = task.status === '已完成' ? admin() : canEditTask(task);
+  const canDelete = demandApprover();
   const remove = canDelete ? '<button type="button" class="button danger" data-task-dialog-action="delete">删除</button>' : '';
   const transfer = canTransferTask(task) ? '<button type="button" class="button" data-task-dialog-action="transfer">转交负责人</button>' : '';
   return remove + transfer;

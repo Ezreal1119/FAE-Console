@@ -482,6 +482,22 @@ function demandApproverIds(db) {
   return db.users.filter(user => isDemandApprover(user, db)).map(user => user.id);
 }
 
+function demandApproverId(db, demand) {
+  if (!demand) return null;
+  if (validId(demand.approved_by_id)) return demand.approved_by_id;
+  if (demandApprovalStatus(demand) === 'approved') {
+    const creator = db.users.find(user => user.id === (demand.creator_id ?? demand.owner_id));
+    if (creator && isDemandApprover(creator, db)) return creator.id;
+  }
+  return null;
+}
+
+function taskDemandApproverId(db, task) {
+  if (task?.demand_id == null) return null;
+  const demand = db.demands.find(row => row.id === task.demand_id);
+  return demandApproverId(db, demand);
+}
+
 function notifyUsers(db, recipientIds, { category, event, title, body, actor_name = null, target_type = null, target_id = null }) {
   const uniqueIds = [...new Set(recipientIds.filter(validId))];
   if (!uniqueIds.length) return;
@@ -712,6 +728,9 @@ function changeable(db, user, table, row, op, patch) {
   if (table === 'profiles') {
     if (row.owner_id === user.id) return op !== 'delete';
     return isAdmin(user) && !db.users.some(account => account.id === row.owner_id && isPrimaryAdmin(account));
+  }
+  if (table === 'tasks' && op === 'delete') {
+    return isDemandApprover(user, db);
   }
   if (table === 'tasks' && op === 'update' && taskClassificationFields.some(field => Object.hasOwn(patch, field))) {
     const source = row.demand_id == null ? null : db.demands.find(demand => demand.id === row.demand_id);
@@ -955,10 +974,14 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if (id !== null) {
           const index = list.findIndex(item => item.id === id);
           if (index === -1) throw new RequestError(404, '未找到此记录。');
-          if (!changeable(db, user, table, list[index], op, patch)) throw new RequestError(403, '你没有权限修改或删除这条记录。');
+          if (!changeable(db, user, table, list[index], op, patch)) {
+            throw new RequestError(403, table === 'tasks' && op === 'delete'
+              ? '仅超级管理员或指定审批人可以删除任务。'
+              : '你没有权限修改或删除这条记录。');
+          }
           if (table === 'tasks' && list[index].status === '已完成') {
             if (op === 'update') throw new RequestError(409, '任务已完成，无法修改。');
-            if (!isAdmin(user)) throw new RequestError(403, '只有管理员可以删除已完成的任务。');
+            if (!isDemandApprover(user, db)) throw new RequestError(403, '仅超级管理员或指定审批人可以删除任务。');
           }
           if (op === 'delete') {
             if (table === 'demands') {
@@ -974,6 +997,18 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
               delete db.taskComments?.[row.id];
               delete db.taskHistory?.[row.id];
               for (const file of db.attachments) if (file.task_id === row.id) file.state = 'deleting';
+              if (row.status !== '已完成' && validId(row.assignee_id) && row.assignee_id !== user.id) {
+                const actorName = displayName(db, user);
+                notifyUsers(db, [row.assignee_id], {
+                  category: 'task_notice',
+                  event: 'deleted',
+                  title: `任务已删除：${row.code}`,
+                  body: `${actorName} 已删除分配给你的任务「${row.code}」${row.proj ? `（${row.proj}）` : ''}。`,
+                  actor_name: actorName,
+                  target_type: null,
+                  target_id: null
+                });
+              }
             }
             return { row };
           }
@@ -1181,9 +1216,11 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         appendTaskHistory(db, user, result.row.id,
           [`完成任务（状态：${prevStatus} → 已完成，投入工时：${hours}h）`, ...diffs, ...filePart].join('；'));
         const dispatcherId = result.row.creator_id ?? result.row.owner_id;
-        if (validId(dispatcherId) && dispatcherId !== user.id) {
+        const approverId = taskDemandApproverId(db, result.row);
+        const recipients = [...new Set([dispatcherId, approverId].filter(uid => validId(uid) && uid !== user.id))];
+        if (recipients.length) {
           const actorName = displayName(db, user);
-          notifyUsers(db, [dispatcherId], {
+          notifyUsers(db, recipients, {
             category: 'task_notice',
             event: 'completed',
             title: `任务已完成：${result.row.code}`,
@@ -1252,6 +1289,19 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             target_id: row.id
           });
         }
+        const approverId = demandApproverId(db, source);
+        if (validId(approverId) && approverId !== user.id && approverId !== row.assignee_id) {
+          const actorName = displayName(db, user);
+          notifyUsers(db, [approverId], {
+            category: 'task_notice',
+            event: 'dispatched',
+            title: `委托需求已派发：${row.code}`,
+            body: `${actorName} 已将需求「${source.code}」${source.proj ? `（${source.proj}）` : ''}派发给 ${row.owner_name || '未分配'}，任务编号：${row.code}。`,
+            actor_name: actorName,
+            target_type: 'task',
+            target_id: row.id
+          });
+        }
         return { created: row, demand: source };
       });
       const db = store.read();
@@ -1295,6 +1345,18 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
             event: 'transferred_out',
             title: `任务已转出：${result.row.code}`,
             body: `${actorName} 已将任务「${result.row.code}」${result.row.proj ? `（${result.row.proj}）` : ''}转交给 ${nextOwner} 负责。`,
+            actor_name: actorName,
+            target_type: 'task',
+            target_id: result.row.id
+          });
+        }
+        const approverId = taskDemandApproverId(db, result.row);
+        if (validId(approverId) && approverId !== user.id && approverId !== assigneeId && approverId !== prevAssigneeId) {
+          notifyUsers(db, [approverId], {
+            category: 'task_notice',
+            event: 'transferred_notice',
+            title: `任务已转交：${result.row.code}`,
+            body: `${actorName} 将任务「${result.row.code}」${result.row.proj ? `（${result.row.proj}）` : ''}负责人由 ${prevOwner} 转交给 ${nextOwner}。`,
             actor_name: actorName,
             target_type: 'task',
             target_id: result.row.id
