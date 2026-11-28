@@ -1009,6 +1009,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
         if (op === 'update') {
           checkTaskSchedule(payload);
           if (Object.hasOwn(patch, 'pri')) throw new RequestError(400, '任务派发后优先级不可修改。');
+          if (Object.hasOwn(patch, 'device_type')) throw new RequestError(400, '任务派发后设备类型不可修改。');
           if (Object.hasOwn(patch, 'hours')) throw new RequestError(400, '投入工时请在完成任务时填写。');
           if (Object.hasOwn(patch, 'result')) throw new RequestError(400, '完成结果请在完成任务时填写。');
         } else {
@@ -1201,6 +1202,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       checkTaskSchedule(changes);
       checkTaskPeople(changes, false);
       if (Object.hasOwn(patch, 'pri')) throw new RequestError(400, '开始规划时优先级为只读。');
+      if (Object.hasOwn(patch, 'device_type')) throw new RequestError(400, '任务派发后设备类型不可修改。');
       if (['status', 'hours', 'result'].some(field => Object.hasOwn(patch, field))) {
         throw new RequestError(400, '开始任务时只填写计划投入工时。');
       }
@@ -1251,6 +1253,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       checkTaskPeople(changes, false);
       if (!patch.result) throw new RequestError(400, '请填写完成结果。');
       if (Object.hasOwn(patch, 'pri')) throw new RequestError(400, '任务派发后优先级不可修改。');
+      if (Object.hasOwn(patch, 'device_type')) throw new RequestError(400, '任务派发后设备类型不可修改。');
       if (Object.hasOwn(patch, 'status') || Object.hasOwn(patch, 'hours')) {
         throw new RequestError(400, '任务状态和投入工时由完成操作记录。');
       }

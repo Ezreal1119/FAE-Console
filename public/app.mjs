@@ -2278,17 +2278,16 @@ function taskDetail(id) {
   const isAssignee = assignedToMe(task);
   const isPlanning = task.status === '待规划';
   const canEditDetails = canEditTask(task);
-  const canEditClassification = canEditTaskClassification(task);
   const canEditProject = canEditDetails && task.demand_id == null;
   const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status) && isAssignee;
-  const optionKinds = canEditClassification ? ['device_type'] : [];
-  const needsChoices = canEditProject || optionKinds.length > 0;
+  const optionKinds = [];
+  const needsChoices = canEditProject;
   const statusField = canChangeStatus
     ? selectField('', 'status', ACTIVE_TASK_STATUSES, task.status, 'form="dialog-form" aria-label="状态"')
     : statusBadge(task.status);
   const headingAside = `<div class="dialog-task-meta">${priorityBadge(priority)}${plannedHoursBadge(task, '计划投入工时 ')}${statusField}</div>`;
   const fields = taskDetails(task, {
-    editable: { proj: canEditProject, deviceType: canEditClassification, pri: true, status: true, desc: canEditDetails },
+    editable: { proj: canEditProject, deviceType: false, pri: true, status: true, desc: canEditDetails },
     hideOwner
   }) +
     (canEditDetails ? area('任务描述', 'desc', task.desc, false) : '') +
