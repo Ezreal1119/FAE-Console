@@ -419,7 +419,7 @@ function publicDemand(db, user, row, linkedTasks) {
     attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
     linked_tasks: linkedTasks.map(task => {
       const summary = { owner_name: taskOwnerName(db, task), initial_receiver_name: task.initial_receiver_name, status: task.status };
-      return visibleTask(user, task) ? { ...summary, id: task.id, code: task.code } : summary;
+      return readableTask(db, user, task) ? { ...summary, id: task.id, code: task.code } : summary;
     }) };
 }
 
@@ -463,6 +463,18 @@ function visibleTask(user, task) {
   return managesRecord(user, task) || task.requirement_owner_id === user.id || taskHandledAt(user, task) !== null;
 }
 
+function isProjectTask(db, task) {
+  if (!task) return false;
+  if (task.task_kind === 'P') return true;
+  if (task.demand_id == null) return false;
+  const demand = db.demands.find(row => row.id === task.demand_id);
+  return Boolean(demand && (demand.is_project_demand || demand.proposer === '项目'));
+}
+
+function readableTask(db, user, task) {
+  return visibleTask(user, task) || isProjectTask(db, task);
+}
+
 function canAppendAttachment(user, task, kind) {
   if (kind === 'requirement') {
     const fromDemand = task.demand_id != null || Object.hasOwn(task, 'initial_receiver_id');
@@ -479,7 +491,7 @@ function canDeleteDeliveryAttachment(user, task) {
 
 function taskForComments(db, user, taskId) {
   const task = db.tasks.find(row => row.id === taskId);
-  if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
+  if (!task || !readableTask(db, user, task)) throw new RequestError(404, '未找到此任务。');
   return task;
 }
 
@@ -614,7 +626,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           if (eq !== undefined) {
             const id = recordId(Array.isArray(eq) && eq[0] === 'id' ? eq[1] : null);
             const task = db.tasks.find(row => row.id === id);
-            return { data: task && visibleTask(user, task) ? [publicTask(db, user, task)] : [] };
+            return { data: task && readableTask(db, user, task) ? [publicTask(db, user, task)] : [] };
           }
           const demands = new Map(db.demands.map(demand => [demand.id, demand]));
           const attachments = new Map();
@@ -1140,8 +1152,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       return { attachments: projectAttachments(store.read(), name) };
     },
 
-    projectAttachmentForDownload(user, fileId) {
-      if (!isAdmin(user)) throw new RequestError(403, '仅管理员可以下载项目文件。');
+    projectAttachmentForDownload(_user, fileId) {
       const file = store.read().attachments.find(item => item.kind === 'project' && item.id === fileId && item.state === 'bound');
       if (!file) throw new RequestError(404, '未找到这份项目文件。');
       return file;
@@ -1269,7 +1280,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
     attachmentForDownload(user, taskId, fileId) {
       const id = recordId(taskId);
       const db = store.read();
-      const task = db.tasks.find(row => row.id === id && visibleTask(user, row));
+      const task = db.tasks.find(row => row.id === id && readableTask(db, user, row));
       const file = task && db.attachments.find(row => row.task_id === id && row.state === 'bound' &&
         (fileId ? row.id === fileId : row.kind === 'legacy' && row.id === task.attachment_path));
       if (!file) throw new RequestError(404, '这条任务没有这份可下载的文件。');

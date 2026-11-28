@@ -19,7 +19,7 @@ const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
 const TASK_KINDS = { L: '临时任务', W: '工作任务', P: '项目任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
-const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
+const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目中心', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
 const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理' };
 const npiStages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
@@ -278,7 +278,6 @@ function showWorkspace() {
   $('#loading-view').hidden = true;
   $('#auth-view').hidden = true;
   $('#workspace').hidden = false;
-  $('[data-page="projects"]').hidden = !admin();
   $('[data-page="demandCatalog"]').hidden = !admin();
   const label = myName() || state.user.account;
   $('#user-name').textContent = label;
@@ -327,7 +326,7 @@ function consumeRestorePage() {
     if (!saved) return null;
     sessionStorage.removeItem(UPDATE_RESTORE_PAGE_KEY);
     if (!Object.hasOwn(pages, saved)) return null;
-    if ((saved === 'demandCatalog' || projectPages.includes(saved)) && !admin()) return null;
+    if ((saved === 'demandCatalog' || saved === 'projectConfig') && !admin()) return null;
     return saved;
   } catch {
     return null;
@@ -384,8 +383,9 @@ async function checkAppVersion() {
 }
 
 async function enterWorkspace() {
+  const linkedProj = linkedProjectPage();
   if (linkedTaskId() !== null) state.page = 'taskLink';
-  else if (admin() && linkedProjectPage()) state.page = linkedProjectPage();
+  else if (linkedProj === 'projectDetail' || (linkedProj === 'projectConfig' && admin())) state.page = linkedProj;
   else {
     const restored = consumeRestorePage();
     if (restored) state.page = restored;
@@ -819,9 +819,11 @@ async function changeDemandOption(kind, operation, name) {
 }
 
 function projectsPage() {
-  const configLink = '<a class="button" data-project-link="projectConfig" href="/?project-config=1">项目配置</a>';
-  const header = heading(PAGE_TITLES.projects, '', configLink +
-    (state.projectCatalog ? action('＋ 新建项目', 'project-new', '', 'button primary') : ''));
+  const actionsHtml = admin()
+    ? '<a class="button" data-project-link="projectConfig" href="/?project-config=1">项目配置</a>' +
+      (state.projectCatalog ? action('＋ 新建项目', 'project-new', '', 'button primary') : '')
+    : '';
+  const header = heading(PAGE_TITLES.projects, '', actionsHtml);
   if (!state.projectCatalog) return header + panel('项目列表', projectLoading(state.projectCatalogError, 'project-load'));
   const rows = state.projectCatalog.projects.toSorted((a, b) => sortZh(a.name, b.name)).map(project => `<tr>
     <td><a class="link" data-project-link="projectDetail" href="/?project=${encodeURIComponent(project.name.toWellFormed())}">${text(project.name)}</a></td>
@@ -855,11 +857,12 @@ function projectSelectOptions(values, kind, current, placeholder) {
 function projectFilesListMarkup(attachments) {
   const list = [...(attachments ?? [])].sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
   if (!list.length) return '<p class="muted text-small">暂无项目文件。</p>';
+  const canDelete = admin();
   return `<div class="upload-history-list">${list.map(file => `<div class="upload-history-item">
     <div class="upload-history-meta"><strong>${text(file.name)}</strong><time class="muted text-small">${text(attachmentUploadTime(file.created_at))}</time></div>
     <div class="upload-history-actions">
-      <a class="button" href="/api/admin/project-attachments/${encodeURIComponent(file.id)}" download>下载</a>
-      <button type="button" class="button danger" data-project-file-delete="${text(file.id)}">删除</button>
+      <a class="button" href="/api/project-attachments/${encodeURIComponent(file.id)}" download>下载</a>
+      ${canDelete ? `<button type="button" class="button danger" data-project-file-delete="${text(file.id)}">删除</button>` : ''}
     </div>
   </div>`).join('')}</div>`;
 }
@@ -875,55 +878,68 @@ function projectNpiOptions(people, currentId, currentName) {
 
 function projectDetailPage() {
   const name = linkedProjectName();
-  const detailActions = state.projectDetail
+  const isAdminUser = admin();
+  const detailActions = isAdminUser && state.projectDetail
     ? action('重命名项目', 'project-rename', state.projectDetail.project.name) +
       action('删除项目', 'project-remove', state.projectDetail.project.name, 'button danger') +
-      action('返回项目列表', 'project-list')
-    : action('返回项目列表', 'project-list');
+      action('返回项目中心', 'project-list')
+    : action('返回项目中心', 'project-list');
   const header = heading(name || PAGE_TITLES.projectDetail, '', detailActions);
   if (!state.projectDetail) return header + panel('项目详情', projectLoading(state.projectDetailError, 'project-detail-load'));
 
   const { project } = state.projectDetail;
-  const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
-  const nextStage = nextProjectStage(project, stages);
-  const deviceOptions = projectSelectOptions(state.projectDetail.deviceTypes, 'device_type', project.device_type ?? '', '请选择设备类型');
-  const managerOptions = projectSelectOptions(state.projectDetail.projectManagers, 'project_manager', project.project_manager ?? '', '请选择项目经理');
-  const npiOptions = projectNpiOptions(state.projectDetail.people, project.npi_manager_id, project.npi_manager);
-  const advanceButton = nextStage
-    ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
-    : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
-  const config = `<form id="project-stage-form" class="stack">
-    <div class="form-grid">
-      <label>设备类型<select name="device_type">${deviceOptions}</select></label>
-      <label>项目经理<select name="project_manager">${managerOptions}</select></label>
-      <label>NPI<select name="npi_manager_id">${npiOptions}</select></label>
+  let config;
+  if (isAdminUser) {
+    const stages = catalogOptionNames(state.projectDetail.stages, 'project_stage');
+    const nextStage = nextProjectStage(project, stages);
+    const deviceOptions = projectSelectOptions(state.projectDetail.deviceTypes, 'device_type', project.device_type ?? '', '请选择设备类型');
+    const managerOptions = projectSelectOptions(state.projectDetail.projectManagers, 'project_manager', project.project_manager ?? '', '请选择项目经理');
+    const npiOptions = projectNpiOptions(state.projectDetail.people, project.npi_manager_id, project.npi_manager);
+    const advanceButton = nextStage
+      ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
+      : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
+    config = `<form id="project-stage-form" class="stack">
+      <div class="form-grid">
+        <label>设备类型<select name="device_type">${deviceOptions}</select></label>
+        <label>项目经理<select name="project_manager">${managerOptions}</select></label>
+        <label>NPI<select name="npi_manager_id">${npiOptions}</select></label>
+      </div>
+      ${area('项目描述', 'description', project.description, false)}
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="submit" class="button primary">保存</button>
+        ${advanceButton}
+      </div>
+    </form>
+    <div class="project-files-section" data-project-file-upload>
+      <p class="file-upload-title">项目文件（每次最多 12 个，每个最多 50 MB）</p>
+      <input type="file" multiple hidden data-project-file-input>
+      <button type="button" class="import-drop file-drop" data-project-file-drop>
+        <strong>点击选择文件，或拖拽文件到这里</strong>
+        <span>支持多选，每次最多 12 个，单个不超过 50 MB</span>
+      </button>
+      <p class="muted text-small" data-project-upload-progress role="status" hidden></p>
+      <p class="form-error" data-project-file-error role="alert" hidden></p>
+      <div id="project-files-list">${projectFilesListMarkup(state.projectDetail.attachments)}</div>
+    </div>`;
+  } else {
+    config = `<div class="stack">
+      ${details([['设备类型', project.device_type], ['项目经理', project.project_manager], ['NPI', project.npi_manager]])}
+      ${details([['项目描述', project.description]], 'stack')}
     </div>
-    ${area('项目描述', 'description', project.description, false)}
-    <p class="form-error" role="alert" hidden></p>
-    <div class="actions">
-      <button type="submit" class="button primary">保存</button>
-      ${advanceButton}
-    </div>
-  </form>
-  <div class="project-files-section" data-project-file-upload>
-    <p class="file-upload-title">项目文件（每次最多 12 个，每个最多 50 MB）</p>
-    <input type="file" multiple hidden data-project-file-input>
-    <button type="button" class="import-drop file-drop" data-project-file-drop>
-      <strong>点击选择文件，或拖拽文件到这里</strong>
-      <span>支持多选，每次最多 12 个，单个不超过 50 MB</span>
-    </button>
-    <p class="muted text-small" data-project-upload-progress role="status" hidden></p>
-    <p class="form-error" data-project-file-error role="alert" hidden></p>
-    <div id="project-files-list">${projectFilesListMarkup(state.projectDetail.attachments)}</div>
-  </div>`;
+    <div class="project-files-section">
+      <p class="file-upload-title">项目文件</p>
+      <div id="project-files-list">${projectFilesListMarkup(state.projectDetail.attachments)}</div>
+    </div>`;
+  }
 
   return header + panel('项目配置', config, projectStageBadge(project.stage)) +
     panel('阶段需求', projectRequirementTabs(state.projectDetail.requirements, selectedRequirementStage(project)),
-      action('＋ 新增需求', 'project-requirement-add'));
+      isAdminUser ? action('＋ 新增需求', 'project-requirement-add') : '');
 }
 
 function projectConfigPage() {
-  const header = heading(PAGE_TITLES.projectConfig, '模板用于初始化之后新建项目的阶段需求。', action('返回项目列表', 'project-list'));
+  const header = heading(PAGE_TITLES.projectConfig, '模板用于初始化之后新建项目的阶段需求。', action('返回项目中心', 'project-list'));
   if (!state.projectTemplate) return header + panel('阶段需求模板', projectLoading(state.projectTemplateError, 'project-template-load'));
   return header + panel('阶段需求模板', projectRequirementTabs(state.projectTemplate.requirements, selectedRequirementStage(), true),
     action('＋ 新增需求', 'project-requirement-add'));
@@ -946,6 +962,7 @@ function projectRequirementsTable(requirements, isTemplate) {
   const headers = isTemplate
     ? ['编号', '需求说明', '交付内容', '计划投入工时', '操作']
     : ['编号', '需求说明', '交付内容', '计划投入工时', '需求编号', '任务编号'];
+  const canEdit = admin();
   const rows = requirements.map(item => {
     const code = text(item.code);
     const edit = `<button type="button" class="link" data-action="project-requirement-edit" data-id="${code}" aria-label="编辑需求 ${code}">${isTemplate ? '编辑' : code}</button>`;
@@ -953,7 +970,7 @@ function projectRequirementsTable(requirements, isTemplate) {
       ? action(item.demand_code, 'project-req-demand', item.demand_id, 'link') : '—';
     const taskCell = item.task_id && item.task_code
       ? action(item.task_code, 'demand-task', item.task_id, 'link task-code') : '—';
-    return `<tr><td>${isTemplate ? code : edit}</td><td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
+    return `<tr><td>${isTemplate || !canEdit ? code : edit}</td><td>${shown(item.description)}</td><td>${shown(item.deliverable)}</td>
       <td>${item.planned_hours == null ? '—' : text(item.planned_hours) + ' 小时'}</td>${isTemplate ? '<td>' + edit + '</td>' : `<td>${demandCell}</td><td>${taskCell}</td>`}</tr>`;
   }).join('');
   return table(headers, rows, '本阶段暂无需求。');
@@ -993,11 +1010,10 @@ function showProjectStageTab(stage) {
 }
 
 async function loadProjects() {
-  if (!admin()) return;
   const session = state.user;
   state.projectCatalogError = '';
   if (state.page === 'projects') render();
-  const pending = request('/api/admin/projects', { signal: AbortSignal.timeout(10000) });
+  const pending = request('/api/projects', { signal: AbortSignal.timeout(10000) });
   projectCatalogLoad = pending;
   try {
     const result = await pending;
@@ -1014,7 +1030,7 @@ async function loadProjectDetail() {
   state.projectDetail = null;
   state.projectDetailError = '';
   render();
-  const pending = request('/api/admin/projects/detail?' + new URLSearchParams({ name }), { signal: AbortSignal.timeout(10000) });
+  const pending = request('/api/projects/detail?' + new URLSearchParams({ name }), { signal: AbortSignal.timeout(10000) });
   projectDetailLoad = pending;
   const current = () => projectDetailLoad === pending && session === state.user && state.page === 'projectDetail' && name === linkedProjectName();
   try {
@@ -1358,6 +1374,7 @@ function confirmProjectTemplateChange(label, subtitle) {
 }
 
 function projectRequirementForm(code) {
+  if (!admin()) return;
   const page = state.page;
   const isTemplate = page === 'projectConfig';
   const detail = isTemplate ? state.projectTemplate : state.projectDetail;
@@ -1630,7 +1647,7 @@ function render() {
   content.innerHTML = warnings + pages[state.page]();
 }
 function navigate(page) {
-  if (!Object.hasOwn(pages, page) || ((page === 'demandCatalog' || projectPages.includes(page)) && !admin())) return;
+  if (!Object.hasOwn(pages, page) || ((page === 'demandCatalog' || page === 'projectConfig') && !admin())) return;
   const queryKey = pageQueryKeys[state.page];
   if (queryKey && page !== state.page) {
     const url = new URL(location.href);
@@ -3371,9 +3388,9 @@ content.addEventListener('drop', event => {
   if (!drop.disabled) void uploadProjectFiles(event.dataTransfer?.files || []);
 });
 window.addEventListener('popstate', () => {
-  if (!admin()) return;
+  if (!state.user) return;
   const page = linkedProjectPage();
-  if (page) navigate(page);
+  if (page === 'projectDetail' || (page === 'projectConfig' && admin())) navigate(page);
   else if (state.page === 'projectDetail' || state.page === 'projectConfig') navigate('projects');
 });
 content.addEventListener('keydown', event => {

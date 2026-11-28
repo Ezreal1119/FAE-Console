@@ -73,6 +73,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-import-template', 'GET'], ['/api/admin/import-members', 'POST'],
   ['/api/admin/reset-account', 'POST'], ['/api/admin/delete-account', 'POST'],
   ['/api/admin/member-wecom', 'POST'],
+  ['/api/projects', 'GET'], ['/api/projects/detail', 'GET'],
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
   ['/api/admin/projects/requirements/push', 'POST'],
@@ -228,7 +229,9 @@ function privateApi(url, session, body) {
     case '/api/admin/accounts': return accounts.list();
     case '/api/admin/member-wecom': return accounts.setWecomUserId(session.user, body);
     case '/api/admin/member-role': return accounts.setAdminRole(session.user, body);
+    case '/api/projects':
     case '/api/admin/projects': return records.projectCatalog();
+    case '/api/projects/detail':
     case '/api/admin/projects/detail': return records.projectDetail(url.searchParams.get('name'));
     case '/api/admin/projects/change': return records.changeProject(session.user, body);
     case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
@@ -348,7 +351,7 @@ const server = createServer(async (req, res) => {
     }
     const attachmentRoute = path.match(/^\/api\/attachments\/(\d+)(?:\/([a-f0-9-]{36}))?$/);
     const demandAttachmentRoute = path.match(/^\/api\/demand-attachments\/(\d+)\/([a-f0-9-]{36})$/);
-    const projectAttachmentRoute = path.match(/^\/api\/admin\/project-attachments\/([a-f0-9-]{36})$/);
+    const projectAttachmentRoute = path.match(/^\/api\/(?:admin\/)?project-attachments\/([a-f0-9-]{36})$/);
     const method = apiRoutes.get(path) || (attachmentRoute || demandAttachmentRoute || projectAttachmentRoute ? 'GET' : undefined);
     if (!method) throw new RequestError(404, '页面或接口不存在。');
     if (req.method !== method) throw new RequestError(405, '请求方法不受支持。');
