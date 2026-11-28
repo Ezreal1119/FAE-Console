@@ -65,6 +65,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-wecom', 'POST'],
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
+  ['/api/admin/projects/requirements/push', 'POST'],
   ['/api/admin/projects/requirement-template', 'GET'], ['/api/admin/projects/requirement-template/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
   ['/api/demands/attachments', 'POST'], ['/api/demands/attachments/delete', 'POST'],
@@ -220,6 +221,7 @@ function privateApi(url, session, body) {
     case '/api/admin/projects/detail': return records.projectDetail(url.searchParams.get('name'));
     case '/api/admin/projects/change': return records.changeProject(body);
     case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
+    case '/api/admin/projects/requirements/push': return records.pushProjectRequirement(session.user, body);
     case '/api/admin/projects/requirement-template': return records.projectRequirementTemplate();
     case '/api/admin/projects/requirement-template/change': return records.changeProjectTemplateRequirement(body);
     case '/api/demand-options': return records.demandChoices();

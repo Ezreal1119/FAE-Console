@@ -16,7 +16,7 @@ const guidelinesConfirm = $('#confirm-guidelines');
 const guidelinesScrollHint = $('#guidelines-scroll-hint');
 const STATUS = ['待规划', ...ACTIVE_TASK_STATUSES, '已完成'];
 const TASK_STATUS_FILTERS = ['未完成', ...STATUS];
-const TASK_KINDS = { L: '临时任务', W: '工作任务' };
+const TASK_KINDS = { L: '临时任务', W: '工作任务', P: '项目任务' };
 const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '调岗', '已离职'];
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
@@ -28,7 +28,7 @@ const pageQueryKeys = { taskLink: 'task', projectDetail: 'project', projectConfi
 const colors = ['#8c9eb9', '#5879e4', '#cc912d', '#26a980'];
 const defaultFilters = {
   taskQuery: '', taskStatus: '未完成', taskPriority: '', taskStage: '', taskTeam: '', taskScope: 'mine',
-  demandQuery: '', peopleQuery: '', peopleTeam: ''
+  demandQuery: '', demandType: '', peopleQuery: '', peopleTeam: ''
 };
 const listPageSize = 10;
 const firstListPages = { home: 1, tasks: 1, demands: 1 };
@@ -55,6 +55,7 @@ let guidelinesLoad;
 let guidelinesReachedEnd = false;
 let refreshVersion = 0;
 let authOptionsVersion = 0;
+let linkedTaskOpenVersion = 0;
 
 function text(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -183,7 +184,6 @@ function canEditTaskClassification(task) {
   const source = task.demand_id == null ? null : state.demands.find(demand => same(demand.id, task.demand_id));
   return source ? canManageDemand(source) : canEditTask(task);
 }
-function canDeleteDemand(demand) { return admin() || (canManageDemand(demand) && !demand.linked_tasks?.length); }
 
 function loadCatalog() {
   try {
@@ -592,9 +592,14 @@ function demandOwner(task) {
   return task?.id && canTransferTask(task)
     ? action(task.owner_name || '设置负责人', 'task-transfer', task.id, 'link') : shown(task?.owner_name);
 }
+const isProjectDemandRow = row => Boolean(row?.is_project_demand) || row?.proposer === '项目';
 function filteredDemands() {
-  return state.demands.filter(row => hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.project_stage, row.descr, row.proposer,
-    ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name])));
+  return state.demands.filter(row => {
+    if (state.filters.demandType === '项目需求' && !isProjectDemandRow(row)) return false;
+    if (state.filters.demandType === '非项目需求' && isProjectDemandRow(row)) return false;
+    return hasText(state.filters.demandQuery, row.code, row.title, row.proj, row.project_stage, row.descr, row.proposer,
+      ...(row.linked_tasks || []).flatMap(task => [task.owner_name, task.initial_receiver_name]));
+  });
 }
 function demandCreator(demand) {
   const mine = same(demand.creator_id ?? demand.owner_id, state.user.id);
@@ -612,7 +617,8 @@ function demandRows(demands) {
   }).join('');
 }
 function demandsPage() {
-  const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求编码、项目或任务负责人')}</div>`;
+  const demandType = filterSelect('demandType', '按需求类型筛选', ['项目需求', '非项目需求'], '全部类型');
+  const toolbar = `<div class="toolbar">${search('demandQuery', '搜索需求编码、项目或任务负责人')}${demandType}</div>`;
   return heading('需求中心', '登记需求、派发任务并跟踪进度。', action('刷新', 'refresh') + action('＋ 新建需求', 'demand-new', '', 'button primary')) +
     pagedListPanel('demands', toolbar);
 }
@@ -929,6 +935,9 @@ async function changeProject(action, name, payload = {}) {
       render();
     }
   }
+  if (action === 'create' || payload.stage !== undefined) {
+    await refresh();
+  }
   const message = action === 'create' ? '项目已新建。'
     : payload.stage !== undefined ? '项目阶段已保存。' : '项目配置已保存。';
   toast(message);
@@ -1031,6 +1040,7 @@ function projectRequirementForm(code) {
     }
     toast(action === 'remove' ? '需求已删除。' : '需求已保存。');
   }
+  const canPush = Boolean(row && !isTemplate);
   const form = modalForm(row ? '编辑阶段需求' : '新增阶段需求', subtitle, fields, async (values, remove) => {
     if (!remove && !trimmed(values.description) && !trimmed(values.deliverable)) throw new Error('请填写需求说明或交付内容。');
     const operation = remove ? 'remove' : row ? 'update' : 'add';
@@ -1046,8 +1056,42 @@ function projectRequirementForm(code) {
       return false;
     }
     return save(operation, values);
-  }, { secondarySubmit: row ? '删除' : undefined });
+  }, {
+    secondarySubmit: row ? '删除' : undefined,
+    hideCancel: !isTemplate,
+    leadingActions: canPush ? '<button type="button" class="button" data-action-push>推送需求</button>' : ''
+  });
   if (isTemplate && row) form.querySelector('[value="secondary"]').formNoValidate = true;
+  if (canPush) {
+    const pushBtn = form.querySelector('[data-action-push]');
+    const messageEl = form.querySelector('.form-error');
+    pushBtn.addEventListener('click', async () => {
+      if (pushBtn.disabled) return;
+      pushBtn.disabled = true;
+      formError(messageEl, '');
+      try {
+        const result = await post('/api/admin/projects/requirements/push', { name: project.name, stage, code: row.code });
+        if (state.page === page && state.projectDetail === detail && result.requirements) {
+          detail.requirements = result.requirements;
+          for (const phase of npiStages) {
+            const panelEl = document.getElementById('npi-panel-' + phase);
+            if (panelEl) panelEl.innerHTML = projectRequirementsTable(result.requirements[phase], false);
+          }
+        }
+        if (result.alreadyPushed) {
+          modal('提示', '', '<p>该需求已经推送过，无需重复推送。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
+          return;
+        }
+        if (result.demand) updateRow('demands', result.demand);
+        if (dialog.contains(form)) dialog.close();
+        toast('已推送到需求中心。');
+      } catch (error) {
+        formError(messageEl, error.message);
+      } finally {
+        pushBtn.disabled = false;
+      }
+    });
+  }
 }
 
 function boardPage() {
@@ -1638,6 +1682,53 @@ function taskDetail(id) {
     if (state.user) taskTransferForm(task.id, { returnToDetail: true });
   });
 }
+async function openLinkedTask(id) {
+  const session = state.user;
+  const page = state.page;
+  const version = ++linkedTaskOpenVersion;
+  const findTask = () => state.tasks.find(row => same(row.id, id));
+  const cached = findTask();
+  if (cached) taskDetail(id);
+
+  const heading = dialog.firstElementChild;
+  const stillOpen = () => state.user === session && state.page === page &&
+    linkedTaskOpenVersion === version && dialog.open && dialog.firstElementChild === heading;
+  const listeners = new AbortController();
+  let interacted = false;
+  if (cached) {
+    const markInteraction = () => { interacted = true; };
+    for (const event of ['pointerdown', 'keydown', 'focusin', 'input', 'change', 'click', 'drop']) {
+      dialog.addEventListener(event, markInteraction, { capture: true, signal: listeners.signal });
+    }
+  }
+  try {
+    const result = await db('tasks', 'select', undefined, id);
+    if (!stillOpen()) return;
+    const current = findTask();
+    const row = result?.data?.find(task => same(task.id, id));
+    if (!row) {
+      if (current && current !== cached) return;
+      if (cached) {
+        state.tasks = state.tasks.filter(task => !same(task.id, id));
+        dialog.close();
+        render();
+      }
+      toast('找不到该任务，或你没有权限查看。');
+      return;
+    }
+    if (interacted) return;
+    if (current === cached) {
+      const fresh = normalizeTask(row);
+      if (cached && JSON.stringify(fresh) === JSON.stringify(cached)) return;
+      updateRow('tasks', fresh);
+    } else if (!current || cached) return;
+    taskDetail(id);
+  } catch (error) {
+    if (stillOpen()) toast(error.message);
+  } finally {
+    listeners.abort();
+  }
+}
 function taskLinkPage() {
   const task = state.tasks.find(row => same(row.id, linkedTaskId()));
   const back = action('返回任务中心', 'task-list');
@@ -2003,6 +2094,11 @@ function bindPlanHours(input, preview) {
 
 function taskForm(demand) {
   const isDispatch = Boolean(demand);
+  const isProjectDemand = isDispatch && isProjectDemandRow(demand);
+  const defaultKind = isProjectDemand ? 'P' : '';
+  const lockedDeviceType = isProjectDemand && demand.project_device_type ? demand.project_device_type : null;
+  const defaultEstimatedHours = isProjectDemand && demand.planned_hours > 0
+    ? String(Number(Number(demand.planned_hours).toFixed(2))) : '';
   const priority = taskPriority();
   const dispatchKey = demand && crypto.randomUUID();
   const ownerField = choiceField('负责人', 'assignee_id', { required: isDispatch });
@@ -2010,20 +2106,24 @@ function taskForm(demand) {
     ? ownerField
     : `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true })}${ownerField}</div>`;
   const kindField = `<label>任务类型（必填）<select name="task_kind" required>
-    <option value="" selected disabled>请选择任务类型</option>
-    ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, '', label)).join('')}</select></label>`;
+    <option value=""${defaultKind ? '' : ' selected'} disabled>请选择任务类型</option>
+    ${Object.entries(TASK_KINDS).map(([value, label]) => option(value, defaultKind, label)).join('')}</select></label>`;
   const priorityField = isDispatch
     ? `<label>优先级（必填）<select name="pri" required>${PRIORITY.map(item => option(item, priority, `${item}（${PRIORITY_BUFFER_HOURS[item]}小时余量）`)).join('')}</select></label>`
     : selectField('优先级', 'pri', PRIORITY, priority);
+  const deviceTypeField = lockedDeviceType
+    ? `<label>设备类型<input type="text" value="${text(lockedDeviceType)}" readonly disabled></label>`
+    : taskOptionField('device_type', isDispatch);
   const fields = identityFields +
-    `<div class="form-grid">${kindField}${priorityField}${taskOptionField('device_type', isDispatch)}</div>` +
-    (isDispatch ? field('预计工时（小时，选填）', 'estimated_hours', '', 'type="number" min="0.01" step="0.01" inputmode="decimal"') : '') +
+    `<div class="form-grid">${kindField}${priorityField}${deviceTypeField}</div>` +
+    (isDispatch ? field('预计工时（小时，选填）', 'estimated_hours', defaultEstimatedHours, 'type="number" min="0.01" step="0.01" inputmode="decimal"') : '') +
     area(isDispatch ? '任务描述' : '任务描述（必填）', 'desc', demand?.descr, !isDispatch) +
     choiceStatus;
   let project, owner, loadChoices;
+  let defaultOwnerApplied = false;
   const form = modalForm(demand ? '派发任务' : '新建任务', demand?.code || '', fields, async values => {
     const formUser = state.user;
-    const patch = taskOptions.changes();
+    const patch = lockedDeviceType ? { device_type: lockedDeviceType } : taskOptions.changes();
     if (!isDispatch) {
       const proj = project.value();
       if (proj !== null) patch.proj = proj;
@@ -2032,7 +2132,7 @@ function taskForm(demand) {
     if (!isDispatch && !desc) throw new Error('请填写任务描述。');
     if (desc !== optional(demand?.descr)) patch.desc = desc;
     patch.pri = values.pri;
-    if (!Object.hasOwn(TASK_KINDS, values.task_kind)) throw new Error('请选择临时任务或工作任务。');
+    if (!Object.hasOwn(TASK_KINDS, values.task_kind)) throw new Error('请选择有效的任务类型。');
     patch.task_kind = values.task_kind;
     const assignee = owner.value();
     if (!Number.isSafeInteger(assignee)) throw new Error('请选择负责人。');
@@ -2055,7 +2155,7 @@ function taskForm(demand) {
     }
     toast(demand ? '任务已派发。' : '任务已创建。');
   }, { submit: demand ? '派发任务' : '保存' });
-  const taskOptions = bindTaskOptions(form, {}, ['device_type']);
+  const taskOptions = lockedDeviceType ? null : bindTaskOptions(form, {}, ['device_type']);
   if (!isDispatch) {
     project = bindChoice(form.querySelector('[data-choice=proj]'), { value: null, label: '' }, { allowCustom: true });
   }
@@ -2064,8 +2164,14 @@ function taskForm(demand) {
   }, { clearable: false });
   loadChoices = prepareFormChoices(form, ({ people, options }) => {
     project?.setOptions(catalogChoiceEntries(options.proj));
-    taskOptions.setOptions(options);
-    owner.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
+    taskOptions?.setOptions(options);
+    const choices = peopleChoices(people);
+    owner.setOptions(choices.map(({ id, label }) => ({ value: id, label })));
+    if (isProjectDemand && !defaultOwnerApplied && owner.value() === null) {
+      defaultOwnerApplied = true;
+      const match = people.find(person => person.emp_no === '801946' || person.name === '洪俊峰');
+      if (match) owner.setValue(match.id);
+    }
   });
 }
 
@@ -2297,9 +2403,8 @@ function prepareFormChoices(form, applyChoices) {
 }
 
 function confirmDeleteDemand(row, onCancel) {
-  if (!canDeleteDemand(row)) return;
-  const description = '确定删除「' + row.code + '」？' + (row.linked_tasks?.length ? ' 关联任务及其进度和附件会保留。' : '');
-  confirmDelete('删除需求', description, async () => {
+  if (!canManageDemand(row)) return;
+  confirmDelete('删除需求', '确定删除「' + row.code + '」？', async () => {
     await removeRow('demands', row, '需求已删除。');
     if (state.user) await refresh();
   }, onCancel ? { onCancel } : {});
@@ -2310,7 +2415,6 @@ function demandDetail(id) {
   const tasks = demand.linked_tasks || [];
   const task = tasks[0];
   const canEdit = canManageDemand(demand);
-  const canDelete = canDeleteDemand(demand);
   const canDispatch = canEdit && !tasks.length;
   const items = tasks.map(row => `<div class="detail-item demand-task-item">
     <div>${row.id ? action(row.code, 'demand-task', row.id, 'link') : '<strong>任务</strong>'}
@@ -2331,7 +2435,7 @@ function demandDetail(id) {
   const filesSection = canEdit
     ? taskFileField('requirement') + uploadProgress + demandFilesList
     : (demand.attachments?.length ? `<div class="details-list"><div class="detail-item"><strong>需求文件</strong>${demandFilesList}</div></div>` : '');
-  const leading = canDelete ? '<div class="dialog-actions-start"><button type="button" class="button danger" data-demand-dialog-action="delete">删除</button></div>' : '';
+  const leading = canEdit ? '<div class="dialog-actions-start"><button type="button" class="button danger" data-demand-dialog-action="delete">删除</button></div>' : '';
   const dispatchBtn = canDispatch ? '<button type="button" class="button primary" data-demand-dialog-action="dispatch">派发任务</button>' : '';
   const footer = (leading || dispatchBtn) ? `<div class="dialog-actions">${leading}${dispatchBtn}</div>` : '';
   const body = `<form id="dialog-form"><div class="stack">${info}${descriptionBlock}${linkedBlock}${filesSection}${canEdit ? choiceStatus : ''}</div><p class="form-error" role="alert" hidden></p>${footer}</form>`;
@@ -2478,7 +2582,12 @@ function demandDetail(id) {
     });
   }
   form.querySelector('[data-demand-dialog-action="delete"]')?.addEventListener('click', () => {
-    confirmDeleteDemand(getRow('demands', demand.id), () => demandDetail(demand.id));
+    const current = getRow('demands', demand.id);
+    if (current.linked_tasks?.length) {
+      formError(formMessage, '该需求已关联任务，无法删除。');
+      return;
+    }
+    confirmDeleteDemand(current, () => demandDetail(demand.id));
   });
   form.querySelector('[data-demand-dialog-action="dispatch"]')?.addEventListener('click', async () => {
     const descrField = form.elements.descr;
@@ -2776,10 +2885,7 @@ const actions = {
   'task-display-options': taskDisplayOptions,
   'task-transfer': id => taskTransferForm(id),
   'demand-new': () => demandForm(), 'demand-detail': demandDetail,
-  'demand-task': async id => {
-    await refresh();
-    if (state.user) taskDetail(id);
-  },
+  'demand-task': openLinkedTask,
   'project-load': loadProjects,
   'project-detail-load': loadProjectDetail,
   'project-template-load': loadProjectTemplate,

@@ -104,7 +104,12 @@ function changeRequirement(lists, { stage, action, code, revision, ...fields }) 
       throw new RequestError(409, '这条需求已变化，请重新加载后再操作。');
     }
     if (action === 'remove') list.rows.splice(index, 1);
-    else list.rows[index] = { code, ...cleanRequirement(fields), revision: randomUUID() };
+    else list.rows[index] = {
+      code,
+      ...cleanRequirement(fields),
+      ...(list.rows[index].pushed ? { pushed: true } : {}),
+      revision: randomUUID()
+    };
   }
   return { requirements: requirementRows(lists) };
 }
