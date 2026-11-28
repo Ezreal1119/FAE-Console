@@ -581,6 +581,7 @@ function workspacePage() {
     pagedListPanel('home');
 }
 
+const extraTaskDisplayKeys = ['demand_proposer', 'demand_creator_name', 'dispatched_by_name', 'requirement_files', 'delivery_files', 'result', 'history'];
 const taskColumns = [
   { key: 'code', label: '任务编号', cell: task => `<td>${action(task.code, 'task-detail', task.id, 'link task-code')}${task.blocked ? '<small class="text-red">阻塞</small>' : ''}</td>` },
   { key: 'proj', label: '项目', cell: task => `<td>${shown(task.proj)}</td>` },
@@ -592,7 +593,14 @@ const taskColumns = [
   { key: 'dueTime', label: '计划完成时间', sortKey: 'dueTime', cell: taskDeadlineCell },
   { key: 'endDate', label: '完成日期', sortKey: 'endDate', cell: task => `<td class="task-date">${shown(task.endDate)}</td>` },
   { key: 'hours', label: '投入工时', sortKey: 'hours', cell: task => `<td>${text(withHours(task.hours))}</td>` },
-  { key: 'desc', label: '任务描述', cell: task => descCell(task.desc) }
+  { key: 'desc', label: '任务描述', cell: task => descCell(task.desc) },
+  { key: 'demand_proposer', label: '需求来源', cell: task => `<td>${shown(task.demand_proposer)}</td>` },
+  { key: 'demand_creator_name', label: '需求创建人', cell: task => `<td>${shown(task.demand_creator_name)}</td>` },
+  { key: 'dispatched_by_name', label: '需求派发人', cell: task => `<td>${shown(task.dispatched_by_name)}</td>` },
+  { key: 'requirement_files', label: '需求文件', cell: task => `<td>${task.attachments.some(file => file.kind === 'requirement') ? action('点击查看', 'task-req-files', task.id, 'link') : '<span class="muted">无</span>'}</td>` },
+  { key: 'delivery_files', label: '交付文件', cell: task => `<td>${task.attachments.some(file => file.kind === 'delivery') ? action('点击查看', 'task-upload-history', task.id, 'link') : '<span class="muted">无</span>'}</td>` },
+  { key: 'result', label: '完成结果', cell: task => descCell(task.result) },
+  { key: 'history', label: '修改记录', cell: task => `<td>${(task.history_count ?? 0) > 0 ? action('点击查看', 'task-history', task.id, 'link') : '<span class="muted">无</span>'}</td>` }
 ];
 const taskDisplayFields = taskColumns;
 const taskDisplayStorageKey = () => 'yxt-web-task-display-' + state.user.id;
@@ -605,7 +613,7 @@ function loadHiddenTaskFields() {
       return new Set(taskDisplayFields.filter(({ key }) => key !== 'code' && saved.includes(key)).map(({ key }) => key));
     }
   } catch { /* The list can still be configured for this session. */ }
-  return admin() ? new Set() : new Set(['endDate', 'hours']);
+  return admin() ? new Set() : new Set(['endDate', 'hours', ...extraTaskDisplayKeys]);
 }
 
 function canShowTaskField(field) {
@@ -2677,6 +2685,28 @@ function openTaskUploadHistory(id) {
   taskUploadHistoryDialog.showModal();
 }
 
+function openTaskRequirementFiles(id) {
+  const task = getRow('tasks', id);
+  const requirements = task.attachments
+    .filter(file => file.kind === 'requirement')
+    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
+  const body = requirements.length
+    ? `<div class="upload-history-list">${requirements.map(file => {
+      const name = file.id
+        ? `<strong>${text(file.name)}</strong>`
+        : `<strong>${text(file.name)}</strong> <small class="muted">桌面本地附件</small>`;
+      const download = file.id
+        ? `<div class="upload-history-actions"><a class="button" href="${attachmentUrl(task.id, file.id)}" download>下载</a></div>`
+        : '';
+      return `<div class="upload-history-item">
+        <div class="upload-history-meta">${name}<time class="muted text-small">${text(attachmentUploadTime(file.created_at))}</time></div>
+        ${download}
+      </div>`;
+    }).join('')}</div>`
+    : '<p class="empty">暂无需求文件。</p>';
+  modal('需求文件', task.code, body + '<div class="dialog-actions">' + action('关闭', 'close', '', 'button') + '</div>', false, '', true);
+}
+
 const uploadProgress = '<p class="muted text-small" data-upload-progress role="status" hidden></p>';
 function taskFileField(kind, required = false) {
   const title = attachmentLabels[kind] + '（' + (required ? '必填，' : '选填，') + '每次最多 12 个，每个最多 50 MB）';
@@ -3890,7 +3920,7 @@ const actions = {
     section.scrollIntoView({ block: 'start' });
   },
   logout: async () => { await post('/api/logout'); showAuth(); },
-  'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-upload-history': openTaskUploadHistory, 'task-history': openTaskHistory, 'task-list': () => navigate('tasks'),
+  'task-new': () => taskForm(), 'task-detail': taskDetail, 'task-upload-history': openTaskUploadHistory, 'task-req-files': openTaskRequirementFiles, 'task-history': openTaskHistory, 'task-list': () => navigate('tasks'),
   'task-display-options': taskDisplayOptions,
   'task-transfer': id => taskTransferForm(id),
   'demand-new': () => demandForm(), 'demand-detail': demandDetail,

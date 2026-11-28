@@ -459,6 +459,14 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
   const handledAt = taskHandledAt(user, task);
   const resolvedProject = resolveProjectForRecord(db, row.project_id ?? demand?.project_id, row.proj);
   const hasPendingExtension = (db.taskExtensions ?? []).some(item => item.task_id === task.id && item.status === 'pending');
+  let demandCreatorName = null;
+  if (demand) {
+    const demandCreatorId = demand.creator_id ?? demand.owner_id;
+    const demandCreator = db.users.find(account => account.id === demandCreatorId);
+    demandCreatorName = demandCreator ? displayName(db, demandCreator)
+      : db.profiles.find(profile => profile.owner_id === demandCreatorId)?.display_name || demand.owner_name || null;
+  }
+  const historyCount = (db.taskHistory?.[task.id]?.rows ?? []).length;
   return { ...row, owner_name: taskOwnerName(db, task), version: revision ?? 0,
     attachments: files.map(({ id, kind, name, size, created_at }) => ({ id, kind, name, size, created_at: created_at ?? null })),
     canAppendRequirement: canAppendAttachment(user, task, 'requirement'),
@@ -466,9 +474,12 @@ function publicTask(db, user, task, demand = db.demands.find(row => row.id === t
     canDeleteDelivery: canDeleteDeliveryAttachment(user, task),
     canExtend: canExtendTask(db, user, task),
     hasPendingExtension,
+    history_count: historyCount,
     project_stage: resolvedProject ? (resolvedProject.stage || defaultProjectStage) : null,
     project_type: row.project_type ?? demand?.project_type ?? resolvedProject?.project_type ?? null,
     demand_code: demand?.code ?? null,
+    demand_proposer: demand?.proposer ?? null,
+    demand_creator_name: demandCreatorName,
     handled_by_me: handledAt !== null, handled_at: handledAt || null };
 }
 
