@@ -1803,7 +1803,6 @@ function taskDetails(task, { editable = {}, hideOwner = false } = {}) {
     ...(!editable.status ? [['计划投入工时', plannedHoursBadge(task), true]] : []),
     ...(isCompleted ? [['投入工时', withHours(task.hours)]] : []),
     ...(isCompleted ? [['完成日期', task.endDate]] : []),
-    ...(isCompleted ? [['交付文件', taskFiles(task, 'delivery'), true]] : []),
     ...(task.attachments.some(file => file.kind === 'legacy') ? [['历史附件', taskFiles(task, 'legacy'), true]] : [])
   ]);
   const demandSection = taskDemandSection(task, source);
@@ -2112,9 +2111,13 @@ function attachmentUploadTime(value) {
 
 function taskUploadHistorySection(task) {
   const count = task.attachments.filter(file => file.kind === 'delivery').length;
+  const appendDelivery = task.status === '已完成' && task.canAppendDelivery
+    ? `<button type="button" class="button" data-action="task-attachment-append" data-id="${text(JSON.stringify([task.id, 'delivery']))}">补传交付文件</button>`
+    : '';
   return `<div class="task-upload-history-bar">
     <button type="button" class="button" data-action="task-upload-history" data-id="${text(task.id)}">上传记录${count ? '（' + count + '）' : ''}</button>
     <button type="button" class="button" data-action="task-history" data-id="${text(task.id)}">修改记录</button>
+    ${appendDelivery}
   </div>`;
 }
 
