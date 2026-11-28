@@ -1075,7 +1075,7 @@ async function changeProject(action, name, payload = {}) {
       state.projectDetail.people = result.people;
       render();
     }
-    await refresh();
+    void refresh();
     toast('项目已重命名。');
     return;
   }
@@ -1095,11 +1095,11 @@ async function changeProject(action, name, payload = {}) {
     state.projectDetail.people = result.people;
     if (payload.stage !== undefined) {
       state.projectStageTab = null;
-      await loadProjectDetail();
+      void loadProjectDetail();
     }
   }
   if (action === 'create' || payload.stage !== undefined) {
-    await refresh();
+    void refresh();
   }
   const message = action === 'create' ? '项目已新建。'
     : payload.stage !== undefined ? '项目阶段已保存。' : '项目配置已保存。';
@@ -1744,7 +1744,12 @@ function confirmDelete(title, message, perform, options = {}) {
 function confirmDeleteTask(row, onCancel) {
   confirmDelete('删除任务', '确定删除「' + row.code + '」？', async () => {
     await removeRow('tasks', row, '任务已删除。');
-    if (row.demand_id != null && state.user) await refresh();
+    if (row.demand_id != null && state.user) {
+      state.demands = state.demands.map(demand => same(demand.id, row.demand_id)
+        ? { ...demand, linked_tasks: (demand.linked_tasks ?? []).filter(task => !same(task.id, row.id)) }
+        : demand);
+      void refresh();
+    }
   }, onCancel ? { onCancel } : {});
 }
 function getRow(key, id) {
