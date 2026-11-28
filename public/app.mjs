@@ -21,7 +21,7 @@ const MEMBER_STATUS = ['在职', '开发中', '会议中', '请假', '出差', '
 const dispatchTimeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' });
 const PAGE_TITLES = { home: '工作台', tasks: '任务中心', taskLink: '任务详情', demands: '需求中心', projects: '项目管理', projectDetail: '项目详情', projectConfig: '项目配置', demandCatalog: '基础配置', people: '人员中心', board: '数据看板', guidelines: '行为规范' };
 const dictionaries = { teams: '团队', roles: '岗位' };
-const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理', npi_manager: 'NPI经理' };
+const catalogLabels = { proposer: '需求提出方', device_type: '设备类型', project_stage: '项目阶段', task_status: '任务状态', project_manager: '项目经理' };
 const npiStages = ['立项', 'EVT', 'DVT', 'PVT', 'MP'];
 const projectPages = ['projects', 'projectDetail', 'projectConfig'];
 const pageQueryKeys = { taskLink: 'task', projectDetail: 'project', projectConfig: 'project-config' };
@@ -864,6 +864,15 @@ function projectFilesListMarkup(attachments) {
   </div>`).join('')}</div>`;
 }
 
+function projectNpiOptions(people, currentId, currentName) {
+  const choices = peopleChoices(people ?? []);
+  const selected = currentId == null ? '' : String(currentId);
+  const missing = currentId != null && !choices.some(person => same(person.id, currentId));
+  return option('', selected, '请选择 NPI') +
+    (missing ? option(selected, selected, (currentName || '原 NPI') + '（已不可选）') : '') +
+    choices.map(({ id, label }) => option(String(id), selected, label)).join('');
+}
+
 function projectDetailPage() {
   const name = linkedProjectName();
   const detailActions = state.projectDetail
@@ -879,7 +888,7 @@ function projectDetailPage() {
   const nextStage = nextProjectStage(project, stages);
   const deviceOptions = projectSelectOptions(state.projectDetail.deviceTypes, 'device_type', project.device_type ?? '', '请选择设备类型');
   const managerOptions = projectSelectOptions(state.projectDetail.projectManagers, 'project_manager', project.project_manager ?? '', '请选择项目经理');
-  const npiOptions = projectSelectOptions(state.projectDetail.npiManagers, 'npi_manager', project.npi_manager ?? '', '请选择 NPI');
+  const npiOptions = projectNpiOptions(state.projectDetail.people, project.npi_manager_id, project.npi_manager);
   const advanceButton = nextStage
     ? '<button type="button" class="button success" data-action="project-advance">推进项目</button>'
     : '<button type="button" class="button" disabled title="已处于最终阶段">推进项目</button>';
@@ -887,7 +896,7 @@ function projectDetailPage() {
     <div class="form-grid">
       <label>设备类型<select name="device_type">${deviceOptions}</select></label>
       <label>项目经理<select name="project_manager">${managerOptions}</select></label>
-      <label>NPI<select name="npi_manager">${npiOptions}</select></label>
+      <label>NPI<select name="npi_manager_id">${npiOptions}</select></label>
     </div>
     ${area('项目描述', 'description', project.description, false)}
     <p class="form-error" role="alert" hidden></p>
@@ -1024,7 +1033,7 @@ async function changeProject(action, name, payload = {}) {
       state.projectDetail.stages = result.stages;
       state.projectDetail.deviceTypes = result.deviceTypes;
       state.projectDetail.projectManagers = result.projectManagers;
-      state.projectDetail.npiManagers = result.npiManagers;
+      state.projectDetail.people = result.people;
       render();
     }
     await refresh();
@@ -1044,7 +1053,7 @@ async function changeProject(action, name, payload = {}) {
     state.projectDetail.stages = result.stages;
     state.projectDetail.deviceTypes = result.deviceTypes;
     state.projectDetail.projectManagers = result.projectManagers;
-    state.projectDetail.npiManagers = result.npiManagers;
+    state.projectDetail.people = result.people;
     if (payload.stage !== undefined) {
       state.projectStageTab = null;
       render();
@@ -1062,25 +1071,38 @@ function projectForm(initial = {}) {
   if (!admin() || !state.projectCatalog) return;
   const values0 = typeof initial === 'string' ? { name: initial } : (initial ?? {});
   const managers = catalogOptionNames(state.projectCatalog.projectManagers ?? [], 'project_manager');
-  const npis = catalogOptionNames(state.projectCatalog.npiManagers ?? [], 'npi_manager');
-  const missingHint = (!managers.length || !npis.length)
-    ? '<p class="muted text-small">请先在「基础配置」中添加项目经理和 NPI 经理选项。</p>' : '';
+  const people = state.projectCatalog.people ?? [];
+  const missingHint = !managers.length
+    ? '<p class="muted text-small">请先在「基础配置」中添加项目经理选项。</p>' : '';
   const fields = field('项目名称', 'name', values0.name ?? '', 'required maxlength="100"') +
+    choiceField('设备类型', 'device_type', { allowCustom: true, required: true }) +
     `<label>项目经理（必填）<select name="project_manager" required>${option('', values0.project_manager ?? '', '请选择项目经理')}${managers.map(item => option(item, values0.project_manager ?? '')).join('')}</select></label>` +
-    `<label>NPI（必填）<select name="npi_manager" required>${option('', values0.npi_manager ?? '', '请选择 NPI')}${npis.map(item => option(item, values0.npi_manager ?? '')).join('')}</select></label>` +
+    choiceField('NPI', 'npi_manager_id', { required: true }) +
     missingHint;
-  modalForm('新建项目', '', fields, async values => {
+  let devicePicker, npiPicker;
+  const form = modalForm('新建项目', '', fields, async values => {
     const name = trimmed(values.name);
+    const deviceType = optional(devicePicker.value());
     const projectManager = trimmed(values.project_manager);
-    const npiManager = trimmed(values.npi_manager);
+    const npiManagerId = npiPicker.value();
     if (!name) throw new Error('请填写项目名称。');
+    if (!deviceType) throw new Error('请选择或输入设备类型。');
     if (!projectManager) throw new Error('请选择项目经理。');
-    if (!npiManager) throw new Error('请选择 NPI。');
-    modalForm('确认新建项目', `是否确定新建项目「${name}」？系统将自动创建立项阶段及默认阶段需求清单。`, '', async () => {
-      await changeProject('create', name, { project_manager: projectManager, npi_manager: npiManager });
-    }, { submit: '确定新建', onCancel: () => projectForm({ name, project_manager: projectManager, npi_manager: npiManager }) });
+    if (!Number.isSafeInteger(npiManagerId)) throw new Error('请选择 NPI。');
+    const npiLabel = npiPicker.selection().label || '';
+    modalForm('确认新建项目', `是否确定新建项目「${name}」？系统将自动创建立项阶段需求并派发给 NPI。`, '', async () => {
+      await changeProject('create', name, { device_type: deviceType, project_manager: projectManager, npi_manager_id: npiManagerId });
+    }, { submit: '确定新建', onCancel: () => projectForm({ name, device_type: deviceType, project_manager: projectManager, npi_manager_id: npiManagerId, npi_label: npiLabel }) });
     return false;
   }, { submit: '确定新建' });
+  devicePicker = bindChoice(form.querySelector('[data-choice=device_type]'), {
+    value: values0.device_type ?? null, label: values0.device_type ?? ''
+  }, { allowCustom: true });
+  devicePicker.setOptions(catalogChoiceEntries(state.projectCatalog.deviceTypes ?? [], 'device_type'));
+  npiPicker = bindChoice(form.querySelector('[data-choice=npi_manager_id]'), {
+    value: values0.npi_manager_id ?? null, label: values0.npi_label ?? ''
+  }, { clearable: false });
+  npiPicker.setOptions(peopleChoices(people).map(({ id, label }) => ({ value: id, label })));
 }
 
 function projectRenameForm(name) {
@@ -1112,12 +1134,13 @@ function projectConfigChanges(form, project) {
   const description = optional(form.elements.description.value);
   const deviceType = optional(form.elements.device_type.value);
   const projectManager = optional(form.elements.project_manager?.value);
-  const npiManager = optional(form.elements.npi_manager?.value);
+  const npiRaw = form.elements.npi_manager_id?.value;
+  const npiManagerId = npiRaw ? Number(npiRaw) : null;
   const changes = {};
   if (description !== optional(project.description)) changes.description = description;
   if (deviceType !== optional(project.device_type)) changes.device_type = deviceType;
   if (form.elements.project_manager && projectManager !== optional(project.project_manager)) changes.project_manager = projectManager;
-  if (form.elements.npi_manager && npiManager !== optional(project.npi_manager)) changes.npi_manager = npiManager;
+  if (form.elements.npi_manager_id && npiManagerId !== (project.npi_manager_id ?? null)) changes.npi_manager_id = npiManagerId;
   return changes;
 }
 
@@ -1288,8 +1311,9 @@ function projectRequirementForm(code) {
           return;
         }
         if (result.demand) updateRow('demands', result.demand);
+        if (result.task) updateRow('tasks', normalizeTask(result.task));
         if (dialog.contains(form)) dialog.close();
-        toast('已推送到需求中心。');
+        toast(result.task ? '已推送到需求中心并派发给 NPI。' : '已推送到需求中心。');
       } catch (error) {
         formError(messageEl, error.message);
       } finally {
@@ -2372,9 +2396,9 @@ function taskForm(demand) {
     taskOptions?.setOptions(options);
     const choices = peopleChoices(people);
     owner.setOptions(choices.map(({ id, label }) => ({ value: id, label })));
-    if (isProjectDemand && !defaultOwnerApplied && owner.value() === null) {
+    if (isProjectDemand && !defaultOwnerApplied && owner.value() === null && demand.project_npi_manager_id != null) {
       defaultOwnerApplied = true;
-      const match = people.find(person => person.emp_no === '801946' || person.name === '洪俊峰');
+      const match = people.find(person => same(person.id, demand.project_npi_manager_id));
       if (match) owner.setValue(match.id);
     }
   });
@@ -3118,7 +3142,7 @@ const actions = {
   },
   'demand-option-remove': id => {
     const [kind, name] = JSON.parse(id);
-    const records = kind === 'proposer' ? '需求' : ['project_stage', 'project_manager', 'npi_manager'].includes(kind) ? '项目' : '任务';
+    const records = kind === 'proposer' ? '需求' : ['project_stage', 'project_manager'].includes(kind) ? '项目' : '任务';
     confirmDelete('删除' + catalogLabels[kind], '确定删除「' + name + '」？已有' + records + '会保留原值。',
       () => changeDemandOption(kind, 'remove', name));
   },
