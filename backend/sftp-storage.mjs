@@ -8,10 +8,27 @@ import { RequestError } from './store.mjs';
 const directories = new Map([
   ['requirement', 'requirements'], ['delivery', 'deliverables'], ['project', 'projects'], ['legacy', 'legacy']
 ]);
-const missingFile = error => error.code === 2;
+const missingPath = error => error.code === 2 || error.code === 10;
 const sftpCall = (sftp, method, ...args) => new Promise((resolve, reject) => {
   sftp[method](...args, (error, value) => error ? reject(error) : resolve(value));
 });
+
+async function ensureDirectory(sftp, path) {
+  try {
+    const stat = await sftpCall(sftp, 'lstat', path);
+    if (!stat.isDirectory()) throw new Error('附件 SFTP 目录无效。');
+    return;
+  } catch (error) {
+    if (!missingPath(error)) throw error;
+  }
+  try {
+    await sftpCall(sftp, 'mkdir', path);
+  } catch (error) {
+    // Another upload can create the directory after lstat.
+    const stat = await sftpCall(sftp, 'lstat', path).catch(() => null);
+    if (!stat?.isDirectory()) throw error;
+  }
+}
 
 const downloadChunkSize = 32 * 1024;
 const downloadReadAhead = 4;
@@ -105,13 +122,7 @@ export function openSftpStorage(settings) {
     prepare() {
       return withSftp(async sftp => {
         for (const path of [root, ...[...directories.values()].map(name => posix.join(root, name))]) {
-          try {
-            const stat = await sftpCall(sftp, 'lstat', path);
-            if (!stat.isDirectory()) throw new Error('附件 SFTP 目录无效。');
-          } catch (error) {
-            if (!missingFile(error)) throw error;
-            await sftpCall(sftp, 'mkdir', path);
-          }
+          await ensureDirectory(sftp, path);
         }
       });
     },
@@ -123,8 +134,8 @@ export function openSftpStorage(settings) {
         try {
           handle = await sftpCall(sftp, 'open', path, 'wx', 0o600);
         } catch (error) {
-          if (!missingFile(error)) throw error;
-          try { await sftpCall(sftp, 'mkdir', posix.dirname(path)); } catch {}
+          if (!missingPath(error)) throw error;
+          await ensureDirectory(sftp, posix.dirname(path));
           handle = await sftpCall(sftp, 'open', path, 'wx', 0o600);
         }
         // Finish the writes before waiting for the server to acknowledge CLOSE.
@@ -140,7 +151,7 @@ export function openSftpStorage(settings) {
         let handle;
         try { handle = await sftpCall(sftp, 'open', path, 'r'); }
         catch (error) {
-          if (missingFile(error)) throw new RequestError(404, '存储中找不到这份文件。');
+          if (missingPath(error)) throw new RequestError(404, '存储中找不到这份文件。');
           throw error;
         }
         const stat = await sftpCall(sftp, 'fstat', handle);
@@ -158,7 +169,7 @@ export function openSftpStorage(settings) {
       return withSftp(async sftp => {
         try { await sftpCall(sftp, 'unlink', remotePath(file)); }
         catch (error) {
-          if (!missingFile(error)) throw error;
+          if (!missingPath(error)) throw error;
         }
       });
     }
