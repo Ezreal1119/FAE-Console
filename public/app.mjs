@@ -3055,9 +3055,13 @@ function demandDetail(id) {
 function demandForm() {
   if (!admin()) return;
   const initial = { proj: { value: null, label: '' }, proposer: { value: null, label: '' } };
-  const form = modalForm('新建需求', '需求编码将在保存后自动生成。',
-    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true, required: true })}${choiceField('需求提出方', 'proposer', { required: true })}</div>` + area('需求说明（必填）', 'descr', '', true) +
+  let picker, upload;
+  const form = modalForm('新建需求', '需求编码将在提交后自动生成。',
+    `<div class="form-grid">${choiceField('项目', 'proj', { allowCustom: true, required: true })}${choiceField('需求提出方', 'proposer', { required: true })}</div>` +
+    area('需求说明（必填）', 'descr', '', true) +
+    taskFileField('requirement', false) + uploadProgress +
     choiceStatus, async values => {
+    const formUser = state.user;
     const descr = optional(values.descr);
     const proj = pickers.proj.value();
     const proposer = pickers.proposer.value();
@@ -3065,19 +3069,27 @@ function demandForm() {
     if (!proposer) throw new Error('请选择需求提出方。');
     if (!descr) throw new Error('请填写需求说明。');
     try {
-      const saved = await saveRow('demands', { proj, proposer, descr });
+      const uploaded = await upload('requirement');
+      if (state.user !== formUser || !dialog.open || !dialog.contains(form)) return false;
+      let saved = await saveRow('demands', { proj, proposer, descr });
+      if (uploaded.length) {
+        const attached = await post('/api/demands/attachments', { demandId: saved.id, files: uploaded });
+        saved = attached.demand;
+      }
       updateRow('demands', saved);
     } catch (error) {
       if (error.status === 409) await loadChoices().catch(() => {});
       throw error;
     }
-    toast('需求已保存。');
-  });
+    toast('需求申请已提交。');
+  }, { submit: '提交申请' });
+  picker = bindTaskFilePicker(form);
+  upload = bindFileUploads(form, () => picker.files());
   const pickers = Object.fromEntries(Object.entries(initial).map(([key, entry]) =>
     [key, bindChoice(form.querySelector(`[data-choice="${key}"]`), entry, { allowCustom: key === 'proj', clearable: false })]));
   const loadChoices = prepareFormChoices(form, ({ options }) => {
-    for (const [key, picker] of Object.entries(pickers)) {
-      picker.setOptions(catalogChoiceEntries(options[key]));
+    for (const [key, choice] of Object.entries(pickers)) {
+      choice.setOptions(catalogChoiceEntries(options[key]));
     }
   });
 }
