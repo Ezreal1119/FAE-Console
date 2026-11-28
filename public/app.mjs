@@ -2046,10 +2046,15 @@ function modalForm(title, description, fields, onSave, options = {}) {
       ? `<button type="button" class="button" data-dialog-cancel>${text(options.cancel || '取消')}</button>`
       : action(options.cancel || '取消', 'close');
   const submitClass = options.submitClass || (options.danger ? 'danger' : 'primary');
+  const submitButton = options.hideSubmit
+    ? ''
+    : `<button type="submit" class="button ${submitClass}">${text(options.submit || '保存')}</button>`;
   const secondary = options.secondarySubmit
     ? `<button type="submit" class="button" value="secondary">${text(options.secondarySubmit)}</button>` : '';
+  const actionsHtml = leading || buttons || submitButton || secondary
+    ? `<div class="dialog-actions">${leading}${buttons}${submitButton}${secondary}</div>` : '';
   modal(title, description, `<form id="dialog-form"><div class="stack">${fields}</div><p class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions">${leading}${buttons}<button type="submit" class="button ${submitClass}">${text(options.submit || '保存')}</button>${secondary}</div></form>`, options.locked, options.headingAside, options.focusTitle);
+    ${actionsHtml}</form>`, options.locked, options.headingAside, options.focusTitle);
   const form = dialog.querySelector('form');
   if (options.onCancel && !options.hideCancel) {
     form.querySelector('[data-dialog-cancel]').addEventListener('click', () => {
@@ -2061,6 +2066,7 @@ function modalForm(title, description, fields, onSave, options = {}) {
   const submitButtons = [...form.querySelectorAll('[type=submit]')];
   form.addEventListener('submit', async event => {
     event.preventDefault();
+    if (options.hideSubmit || !onSave) return;
     if (submitButtons.some(button => button.disabled)) return;
     submitButtons.forEach(button => { button.disabled = true; });
     formError(message, '');
@@ -2188,12 +2194,13 @@ function taskDetail(id) {
     });
     return;
   }
+  const isAssignee = assignedToMe(task);
   const isPlanning = task.status === '待规划';
   const canEditDetails = canEditTask(task);
   const canEditClassification = canEditTaskClassification(task);
   const canEditProject = canEditDetails && task.demand_id == null;
   const canEditPriority = canEditClassification && !isPlanning;
-  const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status);
+  const canChangeStatus = ACTIVE_TASK_STATUSES.includes(task.status) && isAssignee;
   const optionKinds = canEditClassification ? ['device_type'] : [];
   const needsChoices = canEditProject || optionKinds.length > 0;
   const priorityControl = canEditPriority
@@ -2211,9 +2218,11 @@ function taskDetail(id) {
     (canChangeStatus ? taskFileField('delivery') + uploadProgress : '') +
     taskUploadHistorySection(task) +
     (needsChoices ? choiceStatus : '');
-  const formOptions = isPlanning
-    ? { submit: '开始规划', submitClass: 'primary', hideCancel: true, leadingActions, headingAside, focusTitle: true }
-    : { submit: '完成任务', submitClass: 'success', hideCancel: true, leadingActions, headingAside, focusTitle: true };
+  const formOptions = !isAssignee
+    ? { hideSubmit: true, hideCancel: true, leadingActions, headingAside, focusTitle: true }
+    : isPlanning
+      ? { submit: '开始规划', submitClass: 'primary', hideCancel: true, leadingActions, headingAside, focusTitle: true }
+      : { submit: '完成任务', submitClass: 'success', hideCancel: true, leadingActions, headingAside, focusTitle: true };
   let project, loadChoices, completionDraft, planDraftHours;
   let saveQueue = Promise.resolve();
   function collectPendingPatch(values) {
@@ -2446,7 +2455,7 @@ function taskLinkPage() {
     return heading('任务详情', '', back) + '<p class="panel">' + message + '</p>';
   }
   const manage = task.status !== '已完成' && canUpdateTaskProgress(task)
-    ? action(task.status === '待规划' ? '开始规划' : '更新任务', 'task-detail', task.id, 'button primary')
+    ? action(task.status === '待规划' && assignedToMe(task) ? '开始规划' : '更新任务', 'task-detail', task.id, 'button primary')
     : '';
   return heading(task.code, '', back + manage) + panel('任务详情', taskDetails(task) + taskUploadHistorySection(task));
 }

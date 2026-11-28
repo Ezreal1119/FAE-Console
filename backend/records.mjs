@@ -686,12 +686,11 @@ function canAppendAttachment(user, task, kind) {
     return fromDemand && (isAdmin(user) || task.requirement_owner_id === user.id);
   }
   return (task.status === '已完成' || ACTIVE_TASK_STATUSES.includes(task.status)) &&
-    (managesRecord(user, task) || task.assignee_id === user.id);
+    task.assignee_id === user.id;
 }
 
 function canDeleteDeliveryAttachment(user, task) {
-  if (task.status === '已完成') return isAdmin(user);
-  return ACTIVE_TASK_STATUSES.includes(task.status) && (managesRecord(user, task) || task.assignee_id === user.id);
+  return ACTIVE_TASK_STATUSES.includes(task.status) && task.assignee_id === user.id;
 }
 
 function taskForComments(db, user, taskId) {
@@ -776,7 +775,7 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
   function planningTask(db, user, id) {
     const task = db.tasks.find(row => row.id === id);
     if (!task) throw new RequestError(404, '未找到此任务。');
-    if (!changeable(db, user, 'tasks', task, 'update', {})) throw new RequestError(403, '你没有权限规划此任务。');
+    if (task.assignee_id !== user.id) throw new RequestError(403, '只有当前任务负责人可以开始规划。');
     if (task.status !== '待规划') throw new RequestError(409, '任务已不在待规划状态，请刷新后查看。');
     return task;
   }
@@ -981,9 +980,13 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
           let taskBefore = null;
           if (table === 'tasks') {
             const current = list[index].status;
-            if (Object.hasOwn(patch, 'status') && patch.status !== current &&
-                !(ACTIVE_TASK_STATUSES.includes(current) && ACTIVE_TASK_STATUSES.includes(patch.status))) {
-              throw new RequestError(409, '任务状态只能在开发中和测试中切换。开始任务请使用开始规划。');
+            if (Object.hasOwn(patch, 'status') && patch.status !== current) {
+              if (list[index].assignee_id !== user.id) {
+                throw new RequestError(403, '只有当前任务负责人可以切换任务状态。');
+              }
+              if (!(ACTIVE_TASK_STATUSES.includes(current) && ACTIVE_TASK_STATUSES.includes(patch.status))) {
+                throw new RequestError(409, '任务状态只能在开发中和测试中切换。开始任务请使用开始规划。');
+              }
             }
             const t = list[index];
             taskBefore = { proj: t.proj, device_type: t.device_type, pri: normalizeTaskPriority(t.pri), status: t.status, desc: t.desc };
@@ -1158,6 +1161,9 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       const { row } = store.update(db => {
         const task = db.tasks.find(item => item.id === id);
         if (!task || !visibleTask(user, task)) throw new RequestError(404, '未找到此任务。');
+        if (task.assignee_id !== user.id) {
+          throw new RequestError(403, '只有当前任务负责人可以完成任务。');
+        }
         if (!changeable(db, user, 'tasks', task, 'update', patch)) {
           throw new RequestError(403, '你没有权限完成此任务或修改这些任务信息。');
         }
