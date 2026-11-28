@@ -987,6 +987,24 @@ export function openRecords(store, { recordTaskChange, cleanupAttachments } = {}
       };
     },
 
+    pushProjectStageRequirements(user, { name, stage }) {
+      if (typeof name !== 'string' || !name || typeof stage !== 'string' || !stage) {
+        throw new RequestError(400, '推送参数无效。');
+      }
+      const result = store.update(db => {
+        if (!db.demandOptions.proj.includes(name)) throw new RequestError(404, '未找到此项目。');
+        const created = syncProjectStageDemands(db, name, stage, recordTaskChange);
+        return { created, requirements: enrichedProjectRequirements(db, name) };
+      });
+      const db = store.read();
+      return {
+        pushedCount: result.created.length,
+        demands: result.created.map(({ demand }) => publicRecord(db, user, 'demands', demand)),
+        tasks: result.created.filter(({ task }) => task).map(({ demand, task }) => publicTask(db, user, task, demand)),
+        requirements: result.requirements
+      };
+    },
+
     projectRequirementTemplate: () => ({ requirements: projectTemplateRows(store.read()) }),
 
     changeProjectTemplateRequirement: input => store.update(db => changeProjectTemplateRequirement(db, input)),

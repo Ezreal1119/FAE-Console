@@ -935,7 +935,7 @@ function projectDetailPage() {
 
   return header + panel('项目配置', config, projectStageBadge(project.stage)) +
     panel('阶段需求', projectRequirementTabs(state.projectDetail.requirements, selectedRequirementStage(project)),
-      isAdminUser ? action('＋ 新增需求', 'project-requirement-add') : '');
+      isAdminUser ? '<div class="actions">' + action('一键推送', 'project-requirement-push-stage') + action('＋ 新增需求', 'project-requirement-add') + '</div>' : '');
 }
 
 function projectConfigPage() {
@@ -1426,12 +1426,12 @@ function projectRequirementForm(code) {
   if (isTemplate && row) form.querySelector('[value="secondary"]').formNoValidate = true;
   if (canPush) {
     const pushBtn = form.querySelector('[data-action-push]');
-    const messageEl = form.querySelector('.form-error');
-    pushBtn.addEventListener('click', async () => {
-      if (pushBtn.disabled) return;
-      pushBtn.disabled = true;
-      formError(messageEl, '');
-      try {
+    pushBtn.addEventListener('click', () => {
+      if (row.pushed || row.demand_id) {
+        modal('提示', '', '<p>该需求已经推送过，无需重复推送。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
+        return;
+      }
+      modalForm('确认推送需求', `确定将「${subtitle}」推送到需求中心并派发给 NPI 吗？`, '', async () => {
         const result = await post('/api/admin/projects/requirements/push', { name: project.name, stage, code: row.code });
         if (state.page === page && state.projectDetail === detail && result.requirements) {
           detail.requirements = result.requirements;
@@ -1442,19 +1442,39 @@ function projectRequirementForm(code) {
         }
         if (result.alreadyPushed) {
           modal('提示', '', '<p>该需求已经推送过，无需重复推送。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
-          return;
+          return false;
         }
         if (result.demand) updateRow('demands', result.demand);
         if (result.task) updateRow('tasks', normalizeTask(result.task));
-        if (dialog.contains(form)) dialog.close();
         toast(result.task ? '已推送到需求中心并派发给 NPI。' : '已推送到需求中心。');
-      } catch (error) {
-        formError(messageEl, error.message);
-      } finally {
-        pushBtn.disabled = false;
-      }
+      }, { submit: '确认推送', onCancel: () => projectRequirementForm(code) });
     });
   }
+}
+
+function projectRequirementPushStage() {
+  if (!admin() || state.page !== 'projectDetail' || !state.projectDetail) return;
+  const detail = state.projectDetail;
+  const { project, requirements } = detail;
+  const stage = selectedRequirementStage(project);
+  const pending = (requirements[stage] ?? []).filter(item => !item.pushed && !item.demand_id);
+  if (!pending.length) {
+    modal('提示', '', '<p>当前阶段没有待推送的需求。</p><div class="dialog-actions">' + action('确定', 'close', '', 'button primary') + '</div>');
+    return;
+  }
+  modalForm('一键推送阶段需求', `确定将「${project.name} · ${stage}」尚未推送的 ${pending.length} 条需求推送到需求中心并自动派发给 NPI 吗？`, '', async () => {
+    const result = await post('/api/admin/projects/requirements/push-stage', { name: project.name, stage });
+    if (state.page === 'projectDetail' && state.projectDetail === detail && result.requirements) {
+      detail.requirements = result.requirements;
+      for (const phase of npiStages) {
+        const panelEl = document.getElementById('npi-panel-' + phase);
+        if (panelEl) panelEl.innerHTML = projectRequirementsTable(result.requirements[phase], false);
+      }
+    }
+    for (const demand of result.demands ?? []) updateRow('demands', demand);
+    for (const task of result.tasks ?? []) updateRow('tasks', normalizeTask(task));
+    toast(result.pushedCount ? `已推送 ${result.pushedCount} 条需求。` : '当前阶段没有待推送的需求。');
+  }, { submit: '确认推送' });
 }
 
 function boardPage() {
@@ -3267,6 +3287,7 @@ const actions = {
   'project-list': () => history.state?.fromProjectList ? history.back() : navigate('projects'),
   'project-requirement-add': () => projectRequirementForm(),
   'project-requirement-edit': projectRequirementForm,
+  'project-requirement-push-stage': projectRequirementPushStage,
   'project-remove': projectDeleteForm,
   'demand-catalog-load': loadDemandCatalog,
   'demand-catalog-tab': kind => {

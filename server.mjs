@@ -77,6 +77,7 @@ const apiRoutes = new Map([
   ['/api/admin/member-role', 'POST'], ['/api/admin/projects', 'GET'], ['/api/admin/projects/change', 'POST'],
   ['/api/admin/projects/detail', 'GET'], ['/api/admin/projects/requirements/change', 'POST'],
   ['/api/admin/projects/requirements/push', 'POST'],
+  ['/api/admin/projects/requirements/push-stage', 'POST'],
   ['/api/admin/projects/attachments', 'POST'], ['/api/admin/projects/attachments/delete', 'POST'],
   ['/api/admin/projects/requirement-template', 'GET'], ['/api/admin/projects/requirement-template/change', 'POST'],
   ['/api/demand-options', 'GET'], ['/api/admin/demand-options', 'POST'], ['/api/demands/dispatch', 'POST'],
@@ -236,6 +237,7 @@ function privateApi(url, session, body) {
     case '/api/admin/projects/change': return records.changeProject(session.user, body);
     case '/api/admin/projects/requirements/change': return records.changeProjectRequirement(body);
     case '/api/admin/projects/requirements/push': return records.pushProjectRequirement(session.user, body);
+    case '/api/admin/projects/requirements/push-stage': return records.pushProjectStageRequirements(session.user, body);
     case '/api/admin/projects/attachments': return records.appendProjectAttachments(session.user, body);
     case '/api/admin/projects/attachments/delete': return records.deleteProjectAttachment(session.user, body);
     case '/api/admin/projects/requirement-template': return records.projectRequirementTemplate();

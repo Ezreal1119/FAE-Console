@@ -6,7 +6,7 @@ import ssh2 from 'ssh2';
 import { RequestError } from './store.mjs';
 
 const directories = new Map([
-  ['requirement', 'requirements'], ['delivery', 'deliverables'], ['legacy', 'legacy']
+  ['requirement', 'requirements'], ['delivery', 'deliverables'], ['project', 'projects'], ['legacy', 'legacy']
 ]);
 const missingFile = error => error.code === 2;
 const sftpCall = (sftp, method, ...args) => new Promise((resolve, reject) => {
@@ -119,7 +119,14 @@ export function openSftpStorage(settings) {
     put(file, source, signal) {
       return withSftp(async (sftp, transferSignal) => {
         const path = remotePath(file);
-        const handle = await sftpCall(sftp, 'open', path, 'wx', 0o600);
+        let handle;
+        try {
+          handle = await sftpCall(sftp, 'open', path, 'wx', 0o600);
+        } catch (error) {
+          if (!missingFile(error)) throw error;
+          try { await sftpCall(sftp, 'mkdir', posix.dirname(path)); } catch {}
+          handle = await sftpCall(sftp, 'open', path, 'wx', 0o600);
+        }
         // Finish the writes before waiting for the server to acknowledge CLOSE.
         const output = sftp.createWriteStream(path, { handle, autoClose: false });
         await pipeline(source, output, { signal: transferSignal });
